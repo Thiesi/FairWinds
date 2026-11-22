@@ -1,0 +1,742 @@
+<meta charset="utf-8">
+<title>Fair Winds Door Proposal</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: one left-aligned reading column on weather-chart paper; terminal screens break out to the full measure. */
+:root{
+  --paper:#edf1f4; --panel:#e1e7ed; --ink:#14202d; --muted:#556374; --rule:#c4ced9;
+  --warm:#c23b2b; --cold:#1d5dab; --term:#070b12; --term-edge:#1c2738; --term-ink:#9fb0c6;
+  --display:"Barlow Condensed","Arial Narrow",system-ui,sans-serif;
+  --body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"Cascadia Mono",Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#0c131d; --panel:#131d2b; --ink:#e3e9f0; --muted:#94a2b4; --rule:#26344a;
+    --warm:#ff7d60; --cold:#72b2ff; --term:#05080e; --term-edge:#22304a; --term-ink:#9fb0c6;
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0c131d; --panel:#131d2b; --ink:#e3e9f0; --muted:#94a2b4; --rule:#26344a;
+  --warm:#ff7d60; --cold:#72b2ff; --term:#05080e; --term-edge:#22304a; --term-ink:#9fb0c6;
+  color-scheme:dark;
+}
+body{background:var(--paper);color:var(--ink);font-family:var(--body);font-size:1rem;line-height:1.6}
+.page{max-width:86rem;margin:0 auto;padding-block:2.5rem 5rem;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));
+  display:flex;flex-direction:column;gap:3.25rem}
+.prose{max-width:68ch;display:flex;flex-direction:column;gap:1rem;min-width:0}
+.prose p,.prose ul,.prose ol{margin:0}
+.prose ul,.prose ol{padding-left:1.2rem;display:flex;flex-direction:column;gap:.45rem}
+h1,h2,h3{font-family:var(--display);font-weight:600;line-height:1.05;margin:0;text-wrap:balance}
+h1{font-size:clamp(3.4rem,9vw,6.5rem);letter-spacing:.01em;text-transform:uppercase}
+h2{font-size:clamp(1.9rem,4vw,2.6rem);text-transform:uppercase;letter-spacing:.02em}
+h3{font-size:1.35rem;letter-spacing:.02em;font-weight:500;color:var(--cold);text-transform:uppercase}
+.eyebrow{font-family:var(--mono);font-size:.78rem;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.tagline{font-family:var(--display);font-weight:500;font-size:clamp(1.5rem,3.4vw,2.2rem);color:var(--warm);line-height:1.15}
+.lede{font-size:1.14rem;max-width:62ch}
+.hero{display:flex;flex-direction:column;gap:.7rem}
+.front{display:block;width:11rem;height:.7rem;color:var(--cold)}
+.front.warm{color:var(--warm)}
+.sec{display:flex;flex-direction:column;gap:1.4rem}
+.sec>header{display:flex;flex-direction:column;gap:.5rem}
+strong{font-weight:600}
+code,.mono{font-family:var(--mono);font-size:.88em}
+
+figure{margin:0;display:flex;flex-direction:column;gap:.7rem}
+.bezel{background:var(--term);border:1px solid var(--term-edge);border-radius:6px;overflow:hidden}
+.bar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:.5rem 1rem;
+  padding:.4rem .75rem;border-bottom:1px solid var(--term-edge);
+  font-family:var(--mono);font-size:.74rem;letter-spacing:.06em;color:var(--term-ink)}
+.bar button{font:inherit;color:var(--term-ink);background:transparent;border:1px solid var(--term-edge);
+  border-radius:4px;padding:.2rem .6rem;cursor:pointer}
+.bar button:hover{border-color:var(--term-ink)}
+.bar button:focus-visible{outline:2px solid var(--cold);outline-offset:2px}
+.scroll{overflow-x:auto}
+.scroll canvas{display:block;width:100%;height:auto;min-width:54rem}
+.scroll canvas.small{width:40rem;min-width:34rem;max-width:100%}
+figcaption{font-size:.92rem;color:var(--muted);max-width:74ch}
+
+.loops{display:grid;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr));gap:1.5rem 2rem;margin:0}
+.loops div{border-top:2px solid var(--ink);padding-top:.7rem;display:flex;flex-direction:column;gap:.35rem;min-width:0}
+.loops dt{font-family:var(--display);font-weight:600;font-size:1.45rem;text-transform:uppercase;letter-spacing:.02em}
+.loops .span{font-family:var(--mono);font-size:.76rem;letter-spacing:.1em;text-transform:uppercase;color:var(--warm)}
+.loops dd{margin:0;font-size:.95rem}
+
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(19rem,1fr));gap:1.6rem 2.5rem;max-width:70rem}
+.cols>div{display:flex;flex-direction:column;gap:.6rem;min-width:0}
+.cols p,.cols ul{margin:0;font-size:.97rem}
+.cols ul{padding-left:1.1rem;display:flex;flex-direction:column;gap:.35rem}
+
+.tablewrap{overflow-x:auto;max-width:64rem}
+table{border-collapse:collapse;width:100%;font-size:.93rem;font-variant-numeric:tabular-nums}
+th,td{text-align:left;vertical-align:top;padding:.5rem .9rem .5rem 0;border-bottom:1px solid var(--rule)}
+th{font-family:var(--mono);font-weight:500;font-size:.74rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);border-bottom:2px solid var(--ink)}
+tr.us td{font-weight:600;color:var(--cold)}
+.note{background:var(--panel);border-radius:6px;padding:.9rem 1.1rem;font-size:.93rem;max-width:74ch}
+</style>
+
+<main class="page">
+
+<header class="hero">
+  <p class="eyebrow">NetBBS door game proposal</p>
+  <h1>Fair Winds</h1>
+  <p class="tagline">Read the wind. Carry the post. Finish the map.</p>
+  <p class="lede">A balloon cannot steer. It can only climb or sink, and every altitude blows a different way. Fair Winds is a turn-based navigation game built on that one fact. It is set on a continent that is unique to each BBS, starts out blank, and is charted by the node's callers together. Everyone flies the same weather, and the weather follows the real calendar.</p>
+</header>
+
+<figure>
+  <div class="bezel">
+    <div class="bar"><span>FLIGHT · 168 × 46 · TRUECOLOR · UTF-8</span><button type="button" id="motion-toggle">Pause motion</button></div>
+    <div class="scroll"><canvas id="scr-flight" role="img" aria-label="Mockup of the flight screen: a relief map with animated wind streaks, a balloon with three dotted tracks fanning out, and an instrument panel on the right listing wind for six altitude layers."></canvas></div>
+  </div>
+  <figcaption>The flight screen on a wide terminal. Streaks show the wind in your current layer. The three dotted tracks show where layers 2, 3 and 4 would carry you over the next two and a half hours. Choosing between them is the whole game.</figcaption>
+</figure>
+
+<p class="note">Every mockup on this page is drawn by script onto a strict character grid: one glyph, one foreground and one background colour per cell, with half blocks used as pixels. Nothing shown needs more than a truecolor UTF-8 terminal can display. Frame rates and bandwidth still have to be measured on real transports.</p>
+
+<section class="sec">
+  <header><svg class="front" viewBox="0 0 176 11" aria-hidden="true"><path d="M0 10H176" stroke="currentColor" stroke-width="2" fill="none"/><path d="M10 10l7-9 7 9zM50 10l7-9 7 9zM90 10l7-9 7 9zM130 10l7-9 7 9z" fill="currentColor"/></svg>
+  <h2>Why this game</h2></header>
+  <div class="prose">
+    <p><strong>The mechanic is new to doors.</strong> Steering by altitude is how real balloons navigate, and it makes a clean turn-based puzzle: two keys, visible consequences, and a lot to learn. I know of no door game built on it, and few games of any kind.</p>
+    <p><strong>Truecolor is the playfield.</strong> A wind field over shaded relief only reads with thousands of colours. The game's best pictures are skies: dusk, storms, aurora. Gradients like these are what a 16-colour door could never draw.</p>
+    <p><strong>Wide screens show more world.</strong> Extra columns become more map and more instruments, so a wide terminal is a real advantage and a narrow one still plays.</p>
+    <p><strong>It fills the gap in the NetBBS line-up.</strong> None of the current doors is cooperative, and none is calm.</p>
+  </div>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Door</th><th>Pace</th><th>Players</th><th>Feel</th></tr></thead>
+    <tbody>
+      <tr><td>Retro Trivia</td><td>One round per call</td><td>Solo</td><td>Quiz</td></tr>
+      <tr><td>Voidrunner</td><td>Turn-based career</td><td>Solo</td><td>Trade and fight</td></tr>
+      <tr><td>War Dialer</td><td>15 turns a day</td><td>Shared world, rivals</td><td>Competitive</td></tr>
+      <tr><td>Lunar Lander</td><td>Real time</td><td>Solo</td><td>Dexterity</td></tr>
+      <tr><td>Karst 41</td><td>Real time</td><td>Shared world, live</td><td>Action RPG</td></tr>
+      <tr class="us"><td>Fair Winds</td><td>One flying day per world day</td><td>Shared world, cooperative</td><td>Navigation and discovery</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section class="sec">
+  <header><svg class="front warm" viewBox="0 0 176 11" aria-hidden="true"><path d="M0 10H176" stroke="currentColor" stroke-width="2" fill="none"/><path d="M10 10a7 7 0 0 1 14 0zM50 10a7 7 0 0 1 14 0zM90 10a7 7 0 0 1 14 0zM130 10a7 7 0 0 1 14 0z" fill="currentColor"/></svg>
+  <h2>Four loops, one inside the next</h2></header>
+  <dl class="loops">
+    <div><span class="span">Seconds</span><dt>The turn</dt><dd>One turn is fifteen minutes of flight. Look at where each layer would take you, then climb, sink or hold. Climbing burns fuel, sinking is free, holding costs a little. The balloon drifts and the weather moves one step.</dd></div>
+    <div><span class="span">5 to 10 minutes</span><dt>The flying day</dt><dd>Launch at dawn, be down by dusk: 30 to 50 turns. Deliver mail, chart blank map, photograph what you find. Land at a station or camp in the wild. Where you land is where the next day starts.</dd></div>
+    <div><span class="span">28 world days</span><dt>The season</dt><dd>Each 28-day season brings a weather regime and a goal for the whole node, such as opening a mountain pass with a chain of mooring masts. A long-distance race fills the last week. Medals close it.</dd></div>
+    <div><span class="span">Months</span><dt>The continent</dt><dd>The chart grows from blank to complete. The almanac fills with named winds. The ring of stations closes in on the Gyre, the standing storm at the centre that nobody has entered.</dd></div>
+  </dl>
+</section>
+
+<figure>
+  <div class="bezel">
+    <div class="bar"><span>STATION · 132 × 40 · TRUECOLOR</span></div>
+    <div class="scroll"><canvas id="scr-dusk" role="img" aria-label="Mockup of a station screen: a striped balloon moored under a dusk sky with layered mountains and a lit town, above a menu of station services and a guestbook."></canvas></div>
+  </div>
+  <figcaption>A station at dusk. Stations are the hub screens: mail, stores, the balloon, the almanac, the chart, and a guestbook other callers have signed. This one was planted by a player.</figcaption>
+</figure>
+
+<section class="sec">
+  <header><svg class="front" viewBox="0 0 176 11" aria-hidden="true"><path d="M0 10H176" stroke="currentColor" stroke-width="2" fill="none"/><path d="M10 10l7-9 7 9zM50 10l7-9 7 9zM90 10l7-9 7 9zM130 10l7-9 7 9z" fill="currentColor"/></svg>
+  <h2>One flying day, start to finish</h2></header>
+  <div class="prose">
+    <ol>
+      <li><strong>Briefing.</strong> Where you are, today's weather in two lines, what is in your basket.</li>
+      <li><strong>Launch.</strong> Step through the layers with <code>W</code> and <code>S</code>. The tracks redraw before you commit.</li>
+      <li><strong>Fly.</strong> Fuel, ballast and daylight run down while you work toward the destination or off into blank map.</li>
+      <li><strong>Land.</strong> A full-screen scene, then the tally: distance, map charted, mail delivered, and what your observations did for other callers' forecasts.</li>
+      <li><strong>Sign the guestbook.</strong> Stay the night, or launch again if daylight remains.</li>
+    </ol>
+    <p><strong>Paced by the calendar, never by the call.</strong> A new world day opens at the node's midnight. A pilot flies each world day once, and can never fly a day that has not opened. Up to three opened days wait, so a missed day costs nothing. Connecting again changes nothing: a flight is saved every turn and resumes exactly where it stopped, and every outcome is fixed by the world's seed, so hanging up rerolls nothing.</p>
+    <p>There is always something to fly. <strong>Trials</strong> are challenge flights with medals and unlimited attempts. The <strong>Daily Drift</strong> is one short course, the same for everyone on the node, with one scored attempt per world day and unlimited practice.</p>
+  </div>
+</section>
+
+<section class="sec">
+  <header><svg class="front warm" viewBox="0 0 176 11" aria-hidden="true"><path d="M0 10H176" stroke="currentColor" stroke-width="2" fill="none"/><path d="M10 10a7 7 0 0 1 14 0zM50 10a7 7 0 0 1 14 0zM90 10a7 7 0 0 1 14 0zM130 10a7 7 0 0 1 14 0z" fill="currentColor"/></svg>
+  <h2>How it plays</h2></header>
+  <div class="cols">
+    <div><h3>Flying</h3>
+      <ul>
+        <li>Six layers from the surface to the jet stream, each with its own wind. Mountains block the low ones, so a range has to be climbed over or threaded through a gap.</li>
+        <li><strong>Fuel</strong> pays for climbing and holding. <strong>Ballast</strong> is the emergency: jettison a sack for an instant free climb, with no refill until a station. A <strong>pibal</strong> is a pilot balloon that reads every layer above you exactly, once.</li>
+        <li>Midday sun gives free lift. Night doubles fuel use and hides the ground, so dusk is a real deadline unless a lit mast is in reach.</li>
+        <li>Hazards are weather: squalls, icing up high, rotor behind ridges, dawn fog, surface wind too strong to land in.</li>
+      </ul>
+    </div>
+    <div><h3>Weather</h3>
+      <p>The weather is a pure function of the node's seed and the real date: prevailing winds per layer, a few highs and lows that take days to cross, sea breezes, valley winds, and noise. Nothing runs while nobody is playing. When a caller connects, the door computes today.</p>
+      <p>Everyone flying today gets the same day. A low that parks over the Kettle Range stays there until Thursday for all callers, which gives a message board something to talk about.</p>
+      <p>The forecast is the same function with error added. The error grows with time and with distance from the nearest weather station, and stations are planted by players.</p>
+    </div>
+    <div><h3>Failure</h3>
+      <p>No career ends. Run out of fuel and you come down where you are. Over land you are stranded until you walk out, which costs two days, or until another caller flies supplies in. Over water the packet boat picks you up and the mail is lost. The cost is time and reputation.</p>
+    </div>
+    <div><h3>Progress</h3>
+      <ul>
+        <li><strong>Licence</strong>, from Fledgling to Commodore of the Post, earned by distance, deliveries and clean landings.</li>
+        <li><strong>The balloon</strong>: a bigger envelope, a better burner, instruments that lengthen the forecast, night gear, oxygen for the jet layer, and late on a small engine that can crab across the wind. You choose the envelope's colours and pattern, and other callers see them on their maps.</li>
+        <li><strong>The almanac</strong>: fly a recurring wind often enough and it is entered under your name. From then on every caller sees it in the forecast.</li>
+        <li><strong>Wonders</strong>: forty rare sights, each a full-screen picture. <strong>Stamps</strong> from every town.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<figure>
+  <div class="bezel">
+    <div class="bar"><span>THE CHART · 168 × 46 · TRUECOLOR</span></div>
+    <div class="scroll"><canvas id="scr-chart" role="img" aria-label="Mockup of the shared chart: a continent partly drawn in colour and partly blank, with isobars, towns, stations, other players' camps and a large spiral storm labelled The Gyre."></canvas></div>
+  </div>
+  <figcaption>The node's chart. Coloured land has been flown over by someone. The rest is blank for everyone. Isobars show today's pressure systems, and the spiral in the east is the Gyre.</figcaption>
+</figure>
+
+<section class="sec">
+  <header><svg class="front" viewBox="0 0 176 11" aria-hidden="true"><path d="M0 10H176" stroke="currentColor" stroke-width="2" fill="none"/><path d="M10 10l7-9 7 9zM50 10l7-9 7 9zM90 10l7-9 7 9zM130 10l7-9 7 9z" fill="currentColor"/></svg>
+  <h2>A world the callers build</h2></header>
+  <div class="cols">
+    <div><h3>Shared work</h3>
+      <ul>
+        <li><strong>Charting.</strong> Flying over blank map fills it in for everyone. The first caller to chart a peak, lake or pass names it. Names are composed from the game's word lists, so nothing needs moderating.</li>
+        <li><strong>Stations.</strong> Plant one where you land. It sharpens the forecast around it for every caller. It needs resupply now and then or it lapses.</li>
+        <li><strong>Masts.</strong> Several callers fly materials in to raise a station into a mooring mast: night landings, fuel, a post office. This is how the frontier moves.</li>
+        <li><strong>Rescue.</strong> Stranded callers show on the chart. Fly supplies in and both of you are rewarded.</li>
+        <li><strong>Guestbooks.</strong> One line per visit at each station.</li>
+      </ul>
+      <p>The game has to work for a single caller on a quiet node. Other callers make everything faster. They never gate it.</p>
+    </div>
+    <div><h3>The Gyre</h3>
+      <p>At the heart of every continent stands a permanent storm. Its winds get faster and stranger toward the centre, the forecast fails there, and nothing can be built inside it. Seasons push the ring of masts inward.</p>
+      <p>Reaching the eye takes a late-game balloon, a community's worth of stations and a real understanding of spiral winds. The first caller on a node to do it is recorded for good. What is in the eye is the game's one secret.</p>
+    </div>
+    <div><h3>No rivals</h3>
+      <p>There is no combat and no way to harm another caller. Competition is in the standings: the Daily Drift, distance flown, features named, the season race.</p>
+    </div>
+  </div>
+</section>
+
+<figure>
+  <div class="bezel">
+    <div class="bar"><span>WONDER · 132 × 38 · TRUECOLOR</span></div>
+    <div class="scroll"><canvas id="scr-aurora" role="img" aria-label="Mockup of a wonder: green and violet aurora over snowy peaks, reflected in a lake, with a small balloon in the sky and a caption box."></canvas></div>
+  </div>
+  <figcaption>A wonder. These are the collectibles: rare sights that have to be reached at the right place, hour and weather, shown full screen and credited to whoever saw them first.</figcaption>
+</figure>
+
+<section class="sec">
+  <header><svg class="front warm" viewBox="0 0 176 11" aria-hidden="true"><path d="M0 10H176" stroke="currentColor" stroke-width="2" fill="none"/><path d="M10 10a7 7 0 0 1 14 0zM50 10a7 7 0 0 1 14 0zM90 10a7 7 0 0 1 14 0zM130 10a7 7 0 0 1 14 0z" fill="currentColor"/></svg>
+  <h2>Any terminal</h2></header>
+  <div class="prose">
+    <p>Play never depends on colour alone. Wind always has a direction glyph, a compass point and a number. The same turn can be played on a classic 80 × 24 terminal in 16 colours, and callers with motion switched off get a still streak pattern.</p>
+  </div>
+  <figure>
+    <div class="bezel">
+      <div class="bar"><span>FLIGHT · 80 × 24 · 16 COLOURS · CP437</span></div>
+      <div class="scroll"><canvas id="scr-classic" class="small" role="img" aria-label="Mockup of the same flight on a classic 80 by 24 terminal in 16 colours, with a shaded character map and the layer winds as a table."></canvas></div>
+    </div>
+    <figcaption>The same moment of the same flight on a classic terminal.</figcaption>
+  </figure>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Terminal</th><th>What the caller gets</th></tr></thead>
+    <tbody>
+      <tr><td>80 × 24, 16 colours, CP437</td><td>The full game. Shaded character map, wind as line glyphs, layers as a table.</td></tr>
+      <tr><td>132 × 40, truecolor</td><td>Half-block relief map, animated wind, the sky column, full-screen scenes.</td></tr>
+      <tr><td>168 and wider</td><td>Adds the forecast timeline, callers in the air, cargo and a longer log.</td></tr>
+      <tr><td>200 and wider</td><td>Flight map and chart side by side.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section class="sec">
+  <header><svg class="front" viewBox="0 0 176 11" aria-hidden="true"><path d="M0 10H176" stroke="currentColor" stroke-width="2" fill="none"/><path d="M10 10l7-9 7 9zM50 10l7-9 7 9zM90 10l7-9 7 9zM130 10l7-9 7 9z" fill="currentColor"/></svg>
+  <h2>How it uses the door contract</h2></header>
+  <div class="tablewrap"><table>
+    <thead><tr><th>NetBBS provides</th><th>Fair Winds uses it for</th></tr></thead>
+    <tbody>
+      <tr><td>Native stdio door, door API 5</td><td>One Python file, standard library only, like the four bundled doors.</td></tr>
+      <tr><td><code>color_depth</code>, <code>charset</code>, <code>quadrants</code></td><td>Picking the renderer: truecolor half blocks, 256 colours, or 16-colour CP437.</td></tr>
+      <tr><td><code>terminal_width</code>, <code>terminal_height</code>, resize signal</td><td>Picking the layout tier, and changing it live.</td></tr>
+      <tr><td><code>node_id</code></td><td>The seed. Each node's continent, weather and Gyre are its own.</td></tr>
+      <tr><td><code>user_id</code></td><td>The pilot record.</td></tr>
+      <tr><td><code>timezone</code></td><td>When a new world day opens.</td></tr>
+      <tr><td><code>session_limit_seconds</code></td><td>A warning to land before the session is cut.</td></tr>
+      <tr><td>Shared persistent storage</td><td>One SQLite world per node: charted cells, stations, names, guestbooks, pilots. Saved every turn. Weather is computed and never stored.</td></tr>
+      <tr><td>Game events</td><td><code>rank</code> for licence grades, <code>achievement</code> for almanac entries, <code>capture</code> for wonders, <code>medal</code> and <code>season</code> for the monthly cycle.</td></tr>
+      <tr><td>Standings</td><td>The Daily Drift table for <code>!top</code>.</td></tr>
+      <tr><td>Board posts</td><td>A weekly Gazette: new stations, named features, records, the season's progress.</td></tr>
+      <tr><td>Chat lines</td><td>Optional storm warnings, far inside the hourly ceiling.</td></tr>
+      <tr><td>Guest launches</td><td>Trials and Daily Drift practice, with nothing written to the world.</td></tr>
+    </tbody>
+  </table></div>
+  <div class="prose"><p>No companion service is needed. The world is asynchronous, and the weather is a function of the clock.</p></div>
+</section>
+
+<section class="sec">
+  <header><svg class="front warm" viewBox="0 0 176 11" aria-hidden="true"><path d="M0 10H176" stroke="currentColor" stroke-width="2" fill="none"/><path d="M10 10a7 7 0 0 1 14 0zM50 10a7 7 0 0 1 14 0zM90 10a7 7 0 0 1 14 0zM130 10a7 7 0 0 1 14 0z" fill="currentColor"/></svg>
+  <h2>What to test before building</h2></header>
+  <div class="prose">
+    <ol>
+      <li><strong>Is choosing a layer fun for forty turns?</strong> Build the wind model and a plain-text flight first, with no art. If reading three tracks and picking one does not hold up, nothing else matters.</li>
+      <li><strong>Render budget.</strong> Animated wind over a 118 × 38 map changes several hundred cells a frame. Measure bytes and CPU over SSH, Telnet and the browser terminal against the 300 CPU-second default. The fallback is animation in short bursts between turns.</li>
+      <li><strong>The quiet node.</strong> Check that one caller alone can make steady progress, and that three callers feel like a community.</li>
+      <li><strong>Legibility at 80 × 24.</strong> The layer table has to carry the decision when the map cannot.</li>
+      <li><strong>The calendar window.</strong> Three waiting days is a first guess.</li>
+    </ol>
+  </div>
+</section>
+
+<section class="sec">
+  <header><svg class="front" viewBox="0 0 176 11" aria-hidden="true"><path d="M0 10H176" stroke="currentColor" stroke-width="2" fill="none"/><path d="M10 10l7-9 7 9zM50 10l7-9 7 9zM90 10l7-9 7 9zM130 10l7-9 7 9z" fill="currentColor"/></svg>
+  <h2>Set aside</h2></header>
+  <div class="prose">
+    <p><strong>A deep-sea descent</strong> with a real light engine: a lamp cone, bioluminescence, colour fading with depth. It would look superb, but dive, collect and upgrade is a well-worn loop.</p>
+    <p><strong>Shortwave listening</strong> on a truecolor waterfall display, hunting and decoding stations. Too close in feel to War Dialer's scanning.</p>
+    <p><strong>Working title during the pitch:</strong> Aerostat.</p>
+  </div>
+</section>
+
+</main>
+
+<script>
+(function(){
+'use strict';
+var CW=8,CH=16,S=2;
+var FONT='"IBM Plex Mono","Cascadia Mono",Consolas,"DejaVu Sans Mono",monospace';
+var clamp=function(v,a,b){return v<a?a:v>b?b:v;};
+var smooth=function(v,a,b){var t=clamp((v-a)/(b-a),0,1);return t*t*(3-2*t);};
+var mix=function(a,b,t){return [a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t];};
+function ramp(st,t){t=clamp(t,0,1)*(st.length-1);var i=Math.min(st.length-2,Math.floor(t));return mix(st[i],st[i+1],t-i);}
+function hash(ix,iy,seed){var h=(Math.imul(ix,374761393)+Math.imul(iy,668265263)+Math.imul(seed,974711))|0;h=Math.imul(h^(h>>>13),1274126177);h^=h>>>16;return (h>>>0)/4294967296;}
+function vnoise(x,y,seed){var ix=Math.floor(x),iy=Math.floor(y),fx=x-ix,fy=y-iy,u=fx*fx*(3-2*fx),v=fy*fy*(3-2*fy);
+  var a=hash(ix,iy,seed),b=hash(ix+1,iy,seed),c=hash(ix,iy+1,seed),d=hash(ix+1,iy+1,seed);
+  return a+(b-a)*u+(c-a)*v+(a-b-c+d)*u*v;}
+function fbm(x,y,oct,seed){var s=0,a=0.5,f=1,n=0;for(var i=0;i<oct;i++){s+=a*vnoise(x*f,y*f,seed+i*17);n+=a;a*=0.5;f*=2.03;}return s/n;}
+function rng(seed){var a=seed>>>0;return function(){a=(a+0x6D2B79F5)|0;var t=Math.imul(a^(a>>>15),1|a);t=(t+Math.imul(t^(t>>>7),61|t))^t;return ((t^(t>>>14))>>>0)/4294967296;};}
+function css(r,g,b){return 'rgb('+(r|0)+','+(g|0)+','+(b|0)+')';}
+
+/* ---------- terminal grid ---------- */
+var BOX={'─':[1,1,0,0],'│':[0,0,1,1],'┌':[0,1,0,1],'┐':[1,0,0,1],'└':[0,1,1,0],'┘':[1,0,1,0],'├':[0,1,1,1],'┤':[1,0,1,1],'┬':[1,1,0,1],'┴':[1,1,1,0],'┼':[1,1,1,1],'╭':[0,1,0,1],'╮':[1,0,0,1],'╰':[0,1,1,0],'╯':[1,0,1,0]};
+var ARROW={'→':0,'↗':45,'↑':90,'↖':135,'←':180,'↙':225,'↓':270,'↘':315};
+var ARR8=['→','↗','↑','↖','←','↙','↓','↘'];
+function Term(canvas,cols,rows,base){
+  this.cols=cols;this.rows=rows;this.cv=canvas;canvas.width=cols*CW*S;canvas.height=rows*CH*S;
+  this.ctx=canvas.getContext('2d');var n=cols*rows;
+  this.ch=new Array(n);this.fg=new Uint8ClampedArray(n*3);this.bg=new Uint8ClampedArray(n*3);
+  for(var i=0;i<n;i++){this.ch[i]=' ';this.bg.set(base,i*3);this.fg.set([200,206,216],i*3);}
+}
+Term.prototype.put=function(x,y,ch,fg,bg){if(x<0||y<0||x>=this.cols||y>=this.rows)return;var i=y*this.cols+x;this.ch[i]=ch;if(fg)this.fg.set(fg,i*3);if(bg)this.bg.set(bg,i*3);};
+Term.prototype.text=function(x,y,s,fg,bg){var i=0;for(var c of s){this.put(x+i,y,c,fg,bg);i++;}return x+i;};
+Term.prototype.fill=function(x0,y0,x1,y1,bg){for(var y=y0;y<=y1;y++)for(var x=x0;x<=x1;x++)this.put(x,y,' ',null,bg);};
+Term.prototype.over=function(x,y,ch,fg,dark){if(x<0||y<0||x>=this.cols||y>=this.rows)return;var i=(y*this.cols+x)*3,b;
+  if(this.ch[y*this.cols+x]==='▀')b=[(this.fg[i]+this.bg[i])/2,(this.fg[i+1]+this.bg[i+1])/2,(this.fg[i+2]+this.bg[i+2])/2];
+  else b=[this.bg[i],this.bg[i+1],this.bg[i+2]];
+  if(dark)b=mix(b,[6,9,16],dark);this.put(x,y,ch,fg,b);};
+Term.prototype.label=function(x,y,s,fg,dark,xmax){var i=0;if(dark===undefined)dark=0.66;for(var c of s){if(xmax!==undefined&&x+i>xmax)break;this.over(x+i,y,c,fg,dark);i++;}};
+Term.prototype.blit=function(pb,x0,y0){for(var y=0;y<pb.h;y+=2)for(var x=0;x<pb.w;x++){var i=(y0+(y>>1))*this.cols+x0+x,p=(y*pb.w+x)*3,q=p+pb.w*3,j=i*3;
+  this.ch[i]='▀';this.fg[j]=pb.d[p];this.fg[j+1]=pb.d[p+1];this.fg[j+2]=pb.d[p+2];this.bg[j]=pb.d[q];this.bg[j+1]=pb.d[q+1];this.bg[j+2]=pb.d[q+2];}};
+Term.prototype.draw=function(x0,y0,x1,y1){
+  if(x0===undefined){x0=0;y0=0;x1=this.cols-1;y1=this.rows-1;}
+  var c=this.ctx,w=CW*S,h=CH*S;c.font=Math.round(h*0.8)+'px '+FONT;c.textAlign='center';c.textBaseline='alphabetic';c.lineCap='butt';
+  for(var y=y0;y<=y1;y++)for(var x=x0;x<=x1;x++){
+    var i=y*this.cols+x,j=i*3,ch=this.ch[i],X=x*w,Y=y*h,fr=this.fg[j],fgc=this.fg[j+1],fb=this.fg[j+2],br=this.bg[j],bgc=this.bg[j+1],bb=this.bg[j+2];
+    c.fillStyle=css(br,bgc,bb);c.fillRect(X,Y,w,h);
+    if(ch===' ')continue;
+    var F=css(fr,fgc,fb);c.fillStyle=F;c.strokeStyle=F;
+    if(ch==='▀'){c.fillRect(X,Y,w,h/2);continue;}
+    if(ch==='▄'){c.fillRect(X,Y+h/2,w,h/2);continue;}
+    if(ch==='█'){c.fillRect(X,Y,w,h);continue;}
+    if(ch==='░'||ch==='▒'||ch==='▓'){var q=4;for(var py=0;py<h/q;py++)for(var px=0;px<w/q;px++){
+      var dot=((py&1)===0)&&(((px+(py>>1))&1)===0),on=ch==='▒'?((px+py)&1)===0:(ch==='░'?dot:!dot);
+      if(on)c.fillRect(X+px*q,Y+py*q,q,q);}continue;}
+    var bx=BOX[ch];
+    if(bx){var t=S,cx=X+w/2,cy=Y+h/2;if(bx[0])c.fillRect(X,cy-t/2,w/2+t/2,t);if(bx[1])c.fillRect(cx-t/2,cy-t/2,w/2+t/2,t);if(bx[2])c.fillRect(cx-t/2,Y,t,h/2+t/2);if(bx[3])c.fillRect(cx-t/2,cy-t/2,t,h/2+t/2);continue;}
+    if(ch==='┄'){c.fillRect(X+2,Y+h/2-1,w/2-3,S);c.fillRect(X+w/2+2,Y+h/2-1,w/2-3,S);continue;}
+    var cx2=X+w/2,cy2=Y+h/2;
+    if(ARROW[ch]!==undefined){var a=ARROW[ch]*Math.PI/180,dx=Math.cos(a),dy=-Math.sin(a),L=w*0.44;c.lineWidth=S*1.1;c.beginPath();
+      c.moveTo(cx2-dx*L,cy2-dy*L);c.lineTo(cx2+dx*L,cy2+dy*L);
+      var hx=cx2+dx*L,hy=cy2+dy*L,hl=w*0.42;[2.5,-2.5].forEach(function(o){c.moveTo(hx,hy);c.lineTo(hx+Math.cos(a+o)*hl,hy-Math.sin(a+o)*hl);});c.stroke();continue;}
+    if(ch==='●'||ch==='•'||ch==='·'){var r=ch==='●'?w*0.4:(ch==='•'?w*0.26:w*0.14);c.beginPath();c.arc(cx2,cy2,r,0,7);c.fill();continue;}
+    if(ch==='○'||ch==='◉'){c.lineWidth=S*1.1;c.beginPath();c.arc(cx2,cy2,w*0.36,0,7);c.stroke();if(ch==='◉'){c.beginPath();c.arc(cx2,cy2,w*0.16,0,7);c.fill();}continue;}
+    if(ch==='◆'){c.beginPath();c.moveTo(cx2,cy2-w*0.5);c.lineTo(cx2+w*0.42,cy2);c.lineTo(cx2,cy2+w*0.5);c.lineTo(cx2-w*0.42,cy2);c.closePath();c.fill();continue;}
+    if(ch==='▲'){c.beginPath();c.moveTo(cx2,cy2-w*0.46);c.lineTo(cx2+w*0.44,cy2+w*0.4);c.lineTo(cx2-w*0.44,cy2+w*0.4);c.closePath();c.fill();continue;}
+    if(ch==='■'){c.fillRect(X+w*0.14,cy2-w*0.36,w*0.72,w*0.72);continue;}
+    if(ch==='□'){c.lineWidth=S;c.strokeRect(X+w*0.18,cy2-w*0.32,w*0.64,w*0.64);continue;}
+    c.fillText(ch,cx2,Y+h*0.76);
+  }
+};
+function keys(T,x,y,list,bg){list.forEach(function(k){x=T.text(x,y,'[',[110,124,146],bg);x=T.text(x,y,k[0],[255,206,120],bg);x=T.text(x,y,'] ',[110,124,146],bg);x=T.text(x,y,k[1],[206,214,226],bg)+2;});return x;}
+
+/* ---------- pixel buffer (half-block pixels) ---------- */
+function Pix(w,h){this.w=w;this.h=h;this.d=new Float32Array(w*h*3);}
+Pix.prototype.set=function(x,y,c){if(x<0||y<0||x>=this.w||y>=this.h)return;var i=(y*this.w+x)*3;this.d[i]=c[0];this.d[i+1]=c[1];this.d[i+2]=c[2];};
+Pix.prototype.get=function(x,y){x=clamp(x,0,this.w-1);y=clamp(y,0,this.h-1);var i=(y*this.w+x)*3;return [this.d[i],this.d[i+1],this.d[i+2]];};
+Pix.prototype.blend=function(x,y,c,a){x=Math.floor(x);y=Math.floor(y);if(x<0||y<0||x>=this.w||y>=this.h)return;var i=(y*this.w+x)*3,d=this.d;d[i]+=(c[0]-d[i])*a;d[i+1]+=(c[1]-d[i+1])*a;d[i+2]+=(c[2]-d[i+2])*a;};
+Pix.prototype.add=function(x,y,c,a){x=Math.floor(x);y=Math.floor(y);if(x<0||y<0||x>=this.w||y>=this.h)return;var i=(y*this.w+x)*3,d=this.d;d[i]+=c[0]*a;d[i+1]+=c[1]*a;d[i+2]+=c[2]*a;};
+
+/* ---------- the world: one continent, in km ---------- */
+var GY={x:1130,y:340};
+function elev(x,y){var nx=(x-760)/760,ny=(y-520)/470,d2=nx*nx+ny*ny;
+  var n=fbm(x/260,y/260,5,11),e=(n-0.5)*1.3+0.36-d2*0.75;
+  var ridge=1-Math.abs(2*fbm(x/170+40,y/170,4,29)-1),g=smooth(e,0.02,0.3);
+  e+=(ridge*ridge-0.5)*0.7*g;
+  return e+(fbm(x/42,y/42,3,97)-0.5)*0.16*g;}
+function moist(x,y){return fbm(x/300+7,y/300+3,3,53);}
+var SEA=[[58,156,164],[26,104,146],[13,56,104],[8,30,66]];
+var LE=[0.03,0.18,0.36,0.54,0.7,0.84,1.0],LC=[[92,160,82],[126,172,86],[172,164,98],[142,118,92],[126,120,124],[196,198,204],[248,250,253]];
+function landColor(e){if(e<=LE[0])return LC[0];for(var i=1;i<LE.length;i++)if(e<LE[i])return mix(LC[i-1],LC[i],(e-LE[i-1])/(LE[i]-LE[i-1]));return LC[LC.length-1];}
+function terrain(x,y,st){var e=elev(x,y),c;
+  if(e<0){c=ramp(SEA,-e/0.55);return c;}
+  if(e<0.03)c=[216,200,142];
+  else{c=landColor(e);var m=moist(x,y),lo=1-smooth(e,0.3,0.5);
+    c=mix(c,[206,160,98],smooth(0.42-m,0,0.12)*lo*0.85);c=mix(c,[50,108,70],smooth(m-0.58,0,0.12)*lo*0.8);}
+  var g=(elev(x+st,y)-elev(x-st,y))+(elev(x,y+st)-elev(x,y-st));
+  var sh=1+clamp(g*3.2,-0.42,0.34);return [c[0]*sh,c[1]*sh,c[2]*sh];}
+function findLand(ax,ay,lo,hi,rad){for(var r=0;r<=rad;r+=8)for(var a=0;a<360;a+=20){var x=ax+r*Math.cos(a*Math.PI/180),y=ay+r*Math.sin(a*Math.PI/180),e=elev(x,y);if(e>=lo&&e<=hi)return {x:x,y:y};}return {x:ax,y:ay};}
+var salt=findLand(250,590,0.02,0.12,220);
+var bal={x:salt.x+78,y:salt.y-22};
+var kettle=findLand(bal.x+112,bal.y-44,0.3,0.56,36);
+function site(k,n,p,by){return {k:k,n:n,x:p.x,y:p.y,by:by};}
+var hollow=findLand(660,650,0.12,0.4,120);
+var SITES=[site('town','Kettle Rock',kettle),site('town','Port Aster',findLand(620,880,0.02,0.12,200)),site('town','Brinewick',findLand(210,400,0.02,0.12,200)),
+  site('town','Hollow Tarn',hollow),site('town','Cinder Ford',findLand(800,790,0.08,0.35,120)),
+  site('stn','Saltmarsh Stn',salt,'Vex'),site('stn','Gap Mast',findLand(600,440,0.1,0.5,100),'Nib'),site('stn','Lee Cairn',findLand(840,610,0.1,0.5,100),'Quill'),site('stn','Dunmere Stn',findLand(430,790,0.05,0.4,120),'Mara'),
+  site('camp','Quill',{x:bal.x+60,y:bal.y-78}),site('camp','Nib',{x:hollow.x-34,y:hollow.y+26})];
+var BLOBS=[];SITES.forEach(function(s){if(s.k!=='camp')BLOBS.push({x:s.x,y:s.y,r:122});});BLOBS.push({x:bal.x,y:bal.y,r:92});
+(function(){var f=SITES.filter(function(s){return s.k!=='camp';});for(var i=0;i<f.length;i++)for(var j=i+1;j<f.length;j++){var d=Math.hypot(f[i].x-f[j].x,f[i].y-f[j].y);if(d<330)BLOBS.push({x:(f[i].x+f[j].x)/2,y:(f[i].y+f[j].y)/2,r:96});}})();
+function charted(x,y){var v=-1;for(var i=0;i<BLOBS.length;i++){var b=BLOBS[i],d=1-Math.hypot(x-b.x,y-b.y)/b.r;if(d>v)v=d;}
+  v+=(fbm(x/80,y/80,3,71)-0.5)*0.5;return smooth(v,0.0,0.2);}
+function unknown(x,y){var h=hash(Math.floor(x/2.5),Math.floor(y/2.5),7),c=[15,20,31];if(h>0.82)c=[24,30,44];if(elev(x,y)>0)c=[c[0]+5,c[1]+5,c[2]+3];return c;}
+function worldColor(x,y,st){var k=charted(x,y),u=unknown(x,y);if(k<0.01)return u;return mix(u,terrain(x,y,st),k);}
+
+var SYS=[{x:560,y:290,r:230,s:1,dp:-24},{x:250,y:880,r:300,s:-1,dp:18},{x:1290,y:850,r:260,s:-1,dp:12},{x:GY.x,y:GY.y,r:300,s:1,dp:-52,gyre:1}];
+var BASEW=[[8,-5],[20,12],[30,-12],[24,-34],[58,-9],[90,5]],LF=[0.35,0.6,0.85,1,1.15,1.3],CEIL=[0.42,0.64,0.88];
+function wind(x,y,L){var vx=BASEW[L-1][0],vy=BASEW[L-1][1],lf=LF[L-1];
+  for(var i=0;i<SYS.length;i++){var s=SYS[i],dx=x-s.x,dy=y-s.y,d=Math.hypot(dx,dy)+1e-6,q=d/s.r,V=(s.gyre?120:22)*lf*q*Math.exp((1-q*q)/2),inn=s.s>0?0.25:-0.2;
+    vx+=s.s*V*(dy/d)-inn*V*(dx/d);vy+=s.s*V*(-dx/d)-inn*V*(dy/d);}
+  var sc=150,sd=200+L*13,h=6,A=4200*Math.sqrt(lf);
+  var px=(fbm((x+h)/sc,y/sc,3,sd)-fbm((x-h)/sc,y/sc,3,sd))/(2*h),py=(fbm(x/sc,(y+h)/sc,3,sd)-fbm(x/sc,(y-h)/sc,3,sd))/(2*h);
+  vx+=py*A;vy-=px*A;
+  if(L<=3&&elev(x,y)>CEIL[L-1]){vx*=0.15;vy*=0.15;}
+  return [vx,vy];}
+function pressure(x,y){var p=1013+(fbm(x/420,y/420,2,5)-0.5)*10;for(var i=0;i<SYS.length;i++){var s=SYS[i],d=Math.hypot(x-s.x,y-s.y)/s.r;p+=s.dp*Math.exp(-d*d*1.2);}return p;}
+var N16=['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+function windInfo(v){var sp=Math.hypot(v[0],v[1]),ang=Math.atan2(-v[1],v[0])*180/Math.PI,ai=((Math.round(ang/45)%8)+8)%8;
+  var toward=((90-ang)%360+360)%360,from=(toward+180)%360;return {sp:Math.round(sp),arrow:ARR8[ai],from:N16[Math.round(from/22.5)%16],toward:Math.round(toward)};}
+function cloudA(x,y){return smooth(fbm(x/85,y/85,4,301),0.64,0.8);}
+var SQ={x:bal.x+150,y:bal.y+52};
+function squall(x,y){var d=Math.hypot(x-SQ.x,y-SQ.y)/50;return clamp(1-d,0,1)*(0.55+0.9*fbm(x/22,y/22,3,77));}
+function track(L,n){var pts=[],p={x:bal.x,y:bal.y};for(var i=0;i<n;i++){var v=wind(p.x,p.y,L);p={x:p.x+v[0]*0.25,y:p.y+v[1]*0.25,v:v};pts.push(p);}return pts;}
+var LNAME=['SURF','LOW','MID','UPPER','HIGH','JET'],LALT=['0.3','1.0','2.0','3.5','5.0','7.0'],LTEMP=['18','12','4','-6','-17','-31'];
+var TCOL={2:[120,228,255],3:[255,234,150],4:[255,150,196]};
+var DIM=[112,126,148],TXT=[206,214,226],HEAD=[20,28,44],ACC=[255,196,110],COOL=[130,214,255];
+
+/* ---------- screen 1: flight ---------- */
+function buildFlight(cv){
+  var T=new Term(cv,168,46,[9,13,21]),MW=118,MR=38,PH=MR*2,MY=1,KM=2.5,L0=3;
+  var org={x:bal.x-40*KM,y:bal.y-46*KM};
+  function toCell(wx,wy){return [Math.floor((wx-org.x)/KM),MY+Math.floor((wy-org.y)/KM/2)];}
+  function inMap(c){return c[0]>=0&&c[0]<MW&&c[1]>=MY&&c[1]<MY+MR;}
+  var base=new Pix(MW,PH),x,y;
+  for(y=0;y<PH;y++)for(x=0;x<MW;x++){var wx=org.x+(x+0.5)*KM,wy=org.y+(y+0.5)*KM,c=worldColor(wx,wy,KM*1.6);
+    c=mix(c,[10,14,30],cloudA(wx-7,wy-7)*0.3);c=mix(c,[244,247,252],cloudA(wx,wy)*0.72);
+    var sq=squall(wx,wy);c=mix(c,mix([104,108,128],[34,36,52],clamp(sq*1.3,0,1)),smooth(sq,0.04,0.42)*0.94);base.set(x,y,c);}
+  var R=rng(41),N=260,K=12,VIS=0.016,parts=[];
+  function spawn(p){p.x=R()*MW;p.y=R()*PH;p.age=0;p.life=40+R()*70;p.tr=[];return p;}
+  for(var i=0;i<N;i++)parts.push(spawn({}));
+  function step(){for(var i=0;i<N;i++){var p=parts[i],v=wind(org.x+p.x*KM,org.y+p.y*KM,L0);p.tr.push(p.x,p.y);if(p.tr.length>K*2)p.tr.splice(0,2);
+    p.x+=v[0]*VIS;p.y+=v[1]*VIS;p.age++;if(p.x<-2||p.y<-2||p.x>MW+2||p.y>PH+2||p.age>p.life)spawn(p);}}
+  for(i=0;i<60;i++)step();
+  var buf=new Pix(MW,PH),ov=[];
+  function O(c,ch,fg,dark){if(inMap(c))ov.push([c[0],c[1],ch,fg,dark===undefined?0.3:dark]);}
+  function Lb(cx,cy,s,fg,dark){var j=0;for(var c of s){if(cx+j<MW&&cx+j>=0&&cy>=MY&&cy<MY+MR)ov.push([cx+j,cy,c,fg,dark===undefined?0.68:dark]);j++;}}
+  // tracks
+  var bc=toCell(bal.x,bal.y),tr3=track(3,10),same=function(a,b){return a[0]===b[0]&&a[1]===b[1];};
+  [4,2].forEach(function(L){var t=track(L,10),last=null;t.forEach(function(p){var c=toCell(p.x,p.y);if(!same(c,bc)&&inMap(c)){O(c,'·',TCOL[L],0.3);last=c;}});
+    if(last){var tl='layer '+L+' 16:45';Lb(last[0]+2+tl.length>MW?last[0]-tl.length-1:last[0]+2,last[1],tl,TCOL[L]);}});
+  tr3.forEach(function(p,i){if(i>=4){var sp=Math.hypot(p.v[0],p.v[1])||1,nx=-p.v[1]/sp,ny=p.v[0]/sp,w=(i-3)*2.4;
+    O(toCell(p.x+nx*w,p.y+ny*w),'·',[190,176,120],0.3);O(toCell(p.x-nx*w,p.y-ny*w),'·',[190,176,120],0.3);}});
+  var last3=null;tr3.forEach(function(p){var c=toCell(p.x,p.y);if(!same(c,bc)&&inMap(c)){O(c,'•',TCOL[3],0.32);last3=c;}});
+  if(last3)Lb(last3[0]+15>MW?last3[0]-14:last3[0]+2,last3[1],'layer 3 16:45',TCOL[3]);
+  // sites
+  SITES.forEach(function(s){var c=toCell(s.x,s.y);if(!inMap(c))return;
+    if(s.k==='town'){O(c,'◆',[255,238,176],0.6);Lb(c[0]+2,c[1],s.n,[255,244,214]);}
+    else if(s.k==='stn'){O(c,'▲',COOL,0.6);Lb(c[0]+2,c[1],s.n,[206,236,255]);}
+    else{O(c,'○',[255,170,206],0.5);Lb(c[0]+2,c[1],s.n+' · layer 4',[255,206,226]);}});
+  var sc=toCell(SQ.x,SQ.y);Lb(sc[0]-3,sc[1],'SQUALL',[255,226,150],0.5);
+  [[MW-24,MY+3],[MW-24,MY+MR-5],[4,MY+3]].some(function(p){var wx=org.x+(p[0]+8)*KM,wy=org.y+(p[1]-MY)*2*KM;if(charted(wx,wy)<0.12){Lb(p[0],p[1],'U N C H A R T E D',[120,134,160],0.2);return true;}return false;});
+  O(bc,'◉',[255,255,255],0.75);Lb(bc[0]-5,bc[1],'you',[255,255,255],0.6);
+  var w3=windInfo(wind(bal.x,bal.y,3));
+  Lb(1,MY+MR-1,' Wind in layer 3 · '+w3.from+' '+w3.sp+' km/h ',[226,236,250],0.74);Lb(MW-20,MY+MR-1,' ├────────┤ 25 km ',[226,236,250],0.74);
+  var flash=0,FR=rng(9);
+  function frame(anim){
+    if(anim)step();buf.d.set(base.d);
+    for(var i=0;i<N;i++){var p=parts[i],f=Math.min(1,p.age/8,(p.life-p.age)/8),n=p.tr.length/2;for(var k=0;k<n;k++)buf.blend(p.tr[k*2],p.tr[k*2+1],[238,247,255],(0.05+0.4*(k/K))*f);}
+    if(anim&&FR()<0.07)flash=2;
+    if(flash>0){flash--;var fx=(SQ.x-org.x)/KM+(FR()-0.5)*18,fy=(SQ.y-org.y)/KM-8;for(var s=0;s<9;s++){buf.blend(fx,fy+s,[255,250,214],0.85);fx+=FR()<0.5?-1:1;}}
+    T.blit(buf,0,MY);for(i=0;i<ov.length;i++){var o=ov[i];T.over(o[0],o[1],o[2],o[3],o[4]);}
+    T.draw(0,MY,MW-1,MY+MR-1);
+  }
+  // header
+  T.fill(0,0,167,0,HEAD);T.text(0,0,' FAIR WINDS ',[14,18,26],ACC);T.text(13,0,'THE POST',DIM,HEAD);
+  T.text(24,0,'Day 41 · 14:15 · dusk 20:25',TXT,HEAD);T.text(58,0,'Saltmarsh Stn → Kettle Rock · 2 mailbags, due in 3 days',TXT,HEAD);
+  T.text(168-21,0,'Mara · Navigator II',ACC,HEAD);
+  // panel
+  var PB=[12,17,27],PX=120;T.fill(118,1,167,43,PB);for(y=1;y<=43;y++)T.put(118,y,'│',[38,50,72],PB);
+  T.text(PX,1,'SOUNDING',ACC,PB);T.text(PX+9,1,'· wind above you now',DIM,PB);
+  var sky=new Pix(13,36);for(y=0;y<36;y++)for(x=0;x<13;x++){var c2=ramp([[16,24,66],[38,86,166],[98,158,222],[170,208,240]],Math.pow(y/35,0.9));if(y%6===0)c2=mix(c2,[10,16,40],0.16);
+    if(y>=12&&y<18)c2=mix(c2,[248,250,253],smooth(fbm(x/4,y/2.2,3,5),0.45,0.66)*0.9);
+    var gh=2+5*Math.pow(fbm(x/5,0.3,3,9),1.4);if(35-y<gh)c2=(35-y<gh-1.5)?[58,104,72]:[98,150,92];sky.set(x,y,c2);}
+  var bsp=[[5,17],[6,17],[7,17],[4,18],[5,18],[6,18],[7,18],[8,18],[4,19],[5,19],[6,19],[7,19],[8,19],[4,20],[5,20],[6,20],[7,20],[8,20],[5,21],[6,21],[7,21],[6,22]];
+  bsp.forEach(function(p){sky.set(p[0],p[1],(p[0]%2===0)?[244,112,92]:[248,236,206]);});sky.set(6,23,[70,46,30]);
+  T.blit(sky,PX,3);
+  for(var L=6;L>=1;L--){var r0=3+(6-L)*3,wi=windInfo(wind(bal.x,bal.y,L)),cur=(L===L0),bgc=cur?[30,44,68]:PB,fgc=(L===6)?DIM:TXT;
+    if(cur)T.fill(133,r0,167,r0+1,bgc);
+    T.put(133,r0,TCOL[L]?'•':' ',TCOL[L]||DIM,bgc);
+    T.text(134,r0,L+' '+(LNAME[L-1]+'      ').slice(0,6)+('    '+LALT[L-1]).slice(-4)+' km',fgc,bgc);
+    T.put(151,r0,wi.arrow,cur?[255,255,255]:fgc,bgc);T.text(153,r0,(wi.from+'    ').slice(0,4),fgc,bgc);T.text(157,r0,('   '+wi.sp).slice(-3)+' km/h',fgc,bgc);
+    var nb=clamp(Math.round(wi.sp/14),1,10),bc2=ramp([[90,170,220],[120,220,170],[250,210,110],[250,130,90]],wi.sp/140);
+    for(x=0;x<10;x++)T.put(136+x,r0+1,x<nb?'█':'░',x<nb?bc2:[44,54,72],bgc);
+    T.text(147,r0+1,('     '+LTEMP[L-1]+'°C').slice(-6),DIM,bgc);
+    var tag=cur?'YOU':(L===6?'needs oxygen':(L===4?'cloud deck':(L===1&&wi.sp<6?'blocked':'')));T.text(155,r0+1,tag,cur?ACC:DIM,bgc);
+    if(L>1)for(x=134;x<=166;x++)T.put(x,r0+2,'┄',[30,40,58],PB);}
+  var ry=22;T.text(PX,ry,'ENVELOPE AND STORES',ACC,PB);
+  T.text(PX,ry+1,'FUEL',DIM,PB);for(x=0;x<20;x++)T.put(PX+10+x,ry+1,x<12?'█':'░',x<12?[255,176,84]:[70,58,48],PB);T.text(PX+32,ry+1,'61% · 19 turns',TXT,PB);
+  T.text(PX,ry+2,'BALLAST',DIM,PB);T.text(PX+10,ry+2,'■ ■ ■ □ □',[226,206,160],PB);T.text(PX+32,ry+2,'3 sacks',TXT,PB);
+  T.text(PX,ry+3,'PIBALS',DIM,PB);T.text(PX+10,ry+3,'● ● ○',COOL,PB);T.text(PX+32,ry+3,'2 left',TXT,PB);
+  T.text(PX,ry+4,'DAYLIGHT',DIM,PB);for(x=0;x<20;x++)T.put(PX+10+x,ry+4,x<12?'░':'█',x<12?[60,64,84]:ramp([[255,230,140],[255,150,96],[150,80,130]],(x-12)/7),PB);T.text(PX+32,ry+4,'6 h 10 min',TXT,PB);
+  ry=28;T.text(PX,ry,'FORECAST',ACC,PB);T.text(PX+9,ry,'· layer 3 along your track',DIM,PB);
+  for(i=0;i<6;i++){var tp=tr3[Math.min(9,i*2)],fi=windInfo([tp.v[0]*Math.cos(i*0.12)-tp.v[1]*Math.sin(i*0.12),tp.v[0]*Math.sin(i*0.12)+tp.v[1]*Math.cos(i*0.12)]),fx=PX+10+i*6;
+    T.text(fx,ry+1,(15+i)+'h',DIM,PB);T.put(fx+1,ry+2,fi.arrow,TXT,PB);T.text(fx,ry+3,(' '+fi.sp).slice(-2),TXT,PB);
+    T.text(fx,ry+4,['██','██','▓▓','▒▒','░░','░░'][i],COOL,PB);}
+  T.text(PX,ry+2,'toward',DIM,PB);T.text(PX,ry+3,'km/h',DIM,PB);T.text(PX,ry+4,'certain',DIM,PB);
+  ry=34;T.text(PX,ry,'IN THE AIR TODAY',ACC,PB);
+  T.put(PX,ry+1,'○',[255,170,206],PB);T.text(PX+2,ry+1,'Quill   layer 4, north of you',TXT,PB);
+  T.put(PX,ry+2,'○',[255,170,206],PB);T.text(PX+2,ry+2,'Nib     camped near Hollow Tarn',TXT,PB);
+  T.put(PX,ry+3,'○',[255,170,206],PB);T.text(PX+2,ry+3,'Vex     moored at Gap Mast',TXT,PB);
+  ry=39;T.text(PX,ry,'CARGO',ACC,PB);
+  T.text(PX,ry+1,'2 mailbags     Kettle Rock    due in 3 days',TXT,PB);T.text(PX,ry+2,'1 barometer    Gap Mast       due in 6 days',TXT,PB);
+  // log
+  var kd=Math.hypot(kettle.x-bal.x,kettle.y-bal.y),kb=((Math.atan2(kettle.x-bal.x,-(kettle.y-bal.y))*180/Math.PI)+360)%360;
+  for(x=0;x<118;x++)T.put(x,39,'─',[38,50,72]);T.text(2,39,' LOG ',ACC);
+  T.text(1,40,'14:00',DIM);T.text(8,40,'Drifting at '+w3.sp+' km/h. Kettle Rock bears '+('00'+Math.round(kb)).slice(-3)+'°, '+Math.round(kd)+' km.',TXT);
+  T.text(1,41,'14:00',DIM);T.text(8,41,'Saltmarsh Station reports the low deepening over the Kettle Range. Squalls to the east by 17:00.',TXT);
+  T.text(1,42,'14:15',DIM);T.text(8,42,'Three ways on from here. Climbing to layer 4 costs 3 fuel. Sinking to layer 2 is free. Holding costs 1.',[255,236,180]);
+  T.fill(0,45,167,45,HEAD);keys(T,1,45,[['W','Climb'],['S','Sink'],['Space','Hold and drift'],['J','Jettison ballast'],['P','Pibal'],['L','Land'],['F','Forecast'],['C','Chart'],['?','Help'],['Q','Quit after landing']],HEAD);
+  T.draw();frame(false);
+  return function(){frame(true);};
+}
+
+/* ---------- screen 2: station at dusk ---------- */
+function buildDusk(cv){
+  var T=new Term(cv,132,40,[10,11,22]),W=132,H=54,hz=40,P=new Pix(W,H),x,y;
+  var SKY=[[14,14,46],[40,28,92],[112,50,112],[212,96,98],[250,160,86],[255,222,144]],sx=95,sy=hz-13;
+  for(y=0;y<H;y++)for(x=0;x<W;x++){var t=Math.min(1,y/hz),c=ramp(SKY,Math.pow(t,1.15));
+    var d=Math.hypot(x-sx,(y-sy)*1.15);c=[c[0]+255*Math.exp(-d/13)*0.5,c[1]+196*Math.exp(-d/13)*0.5,c[2]+120*Math.exp(-d/13)*0.5];
+    if(y<hz*0.55&&hash(x,y,3)<0.008)c=mix(c,[255,255,255],(1-t*1.8)*0.6);
+    if(d<5)c=[255,246,206];
+    var n=fbm(x/26,y/5.5,4,7),a=smooth(n,0.56,0.72)*smooth(y,4,12)*(1-smooth(y,hz-8,hz));
+    var lit=clamp(1.15-(hz-y)/hz*1.25-Math.abs(x-sx)/160,0,1);c=mix(c,mix([66,40,92],[255,172,112],lit),a*0.86);
+    P.set(x,y,c);}
+  function ridge(sc,row,seed,top,amp,col,haze){for(var x=0;x<W;x++){var ty=top-amp*fbm(x/sc,row,4,seed);for(var y=Math.max(0,Math.ceil(ty));y<H;y++){P.set(x,y,mix(col,haze,clamp((y-ty)/26,0,1)*0.35));}}}
+  ridge(30,0.5,91,hz-3,13,[118,70,122],[230,130,112]);
+  ridge(22,1.5,47,hz+1,9,[70,44,98],[150,84,110]);
+  var g3=[];for(x=0;x<W;x++){g3[x]=hz+6-6*fbm(x/18,2.5,4,63);for(y=Math.ceil(g3[x]);y<H;y++)P.set(x,y,mix([34,26,60],[12,12,26],clamp((y-g3[x])/9,0,1)));}
+  var R=rng(5);
+  for(x=78;x<124;){var bw=3+Math.floor(R()*3),bh=3+Math.floor(R()*6),gy=Math.ceil(g3[x]);for(var bx=0;bx<bw;bx++)for(var by=1;by<=bh;by++){P.set(x+bx,gy-by,[22,18,42]);if(by>1&&by<bh&&(by&1)===0&&(bx&1)===1&&bx<bw-1&&R()<0.7)P.set(x+bx,gy-by,[255,214,124]);}x+=bw+(R()<0.35?2:1);}
+  // mast with beacon
+  var mx=66,mg=Math.ceil(g3[mx]);for(y=mg-15;y<mg;y++)P.set(mx,y,[58,50,84]);P.set(mx-1,mg-10,[58,50,84]);P.set(mx+1,mg-10,[58,50,84]);
+  P.set(mx,mg-16,[255,84,72]);[[1,0],[-1,0],[0,-1],[0,1]].forEach(function(o){P.blend(mx+o[0],mg-16+o[1],[255,84,72],0.45);});
+  // hangar
+  for(x=44;x<=58;x++){var hh=Math.round(6*Math.sqrt(Math.max(0,1-Math.pow((x-51)/7.5,2)))),hg=Math.ceil(g3[x]);for(y=1;y<=hh;y++)P.set(x,hg-y,(Math.abs(x-51)<3&&y<5)?[255,190,112]:[24,20,44]);}
+  // balloon
+  var cx=27,cy=19,rx=11,ry=11,STR=[[44,172,172],[246,232,202],[240,112,92],[246,232,202]];
+  for(y=cy-ry;y<=cy+ry+5;y++)for(x=cx-rx;x<=cx+rx;x++){var dx=x-cx,dy=y-cy,hw;
+    if(dy<=0)hw=rx*Math.sqrt(Math.max(0,1-(dy/ry)*(dy/ry)));else hw=rx*(1-Math.pow(dy/(ry+5.5),1.7));
+    if(Math.abs(dx)>hw+0.3||hw<1)continue;
+    var u=clamp(dx/Math.max(hw,1),-1,1),gi=Math.floor((Math.asin(u)/Math.PI+0.5)*7.999),col=STR[gi%4];
+    var lum=0.5+0.42*u+0.12*(dy/ry);var c3=[col[0]*lum*1.05,col[1]*lum*0.9,col[2]*lum*0.92];
+    c3=mix(c3,[60,36,90],clamp(0.5-u*0.6,0,0.6)*0.55);
+    if(dy>ry-2)c3=mix(c3,[255,196,120],clamp((dy-ry+2)/7,0,1)*0.6);
+    P.set(x,y,c3);}
+  var by0=cy+ry+6;P.set(cx,by0,[255,226,140]);P.blend(cx-1,by0,[255,190,110],0.5);P.blend(cx+1,by0,[255,190,110],0.5);
+  P.set(cx-2,by0+1,[60,48,70]);P.set(cx+2,by0+1,[60,48,70]);
+  for(x=cx-2;x<=cx+2;x++){P.set(x,by0+2,[104,70,46]);P.set(x,by0+3,[84,56,38]);}
+  function line(x0,y0,x1,y1,c,a){var n=Math.max(Math.abs(x1-x0),Math.abs(y1-y0));for(var i=0;i<=n;i++)P.blend(Math.round(x0+(x1-x0)*i/n),Math.round(y0+(y1-y0)*i/n),c,a);}
+  line(cx-2,by0+3,cx-9,Math.ceil(g3[cx-9]),[90,80,120],0.7);line(cx+2,by0+3,cx+10,Math.ceil(g3[cx+10]),[90,80,120],0.7);
+  // distant balloon
+  [[108,10],[109,10],[107,11],[108,11],[109,11],[110,11],[107,12],[108,12],[109,12],[110,12],[108,13],[109,13]].forEach(function(p){P.set(p[0],p[1],p[0]%2?[250,150,110]:[120,60,90]);});P.set(108,15,[50,34,60]);P.set(109,15,[50,34,60]);
+  T.blit(P,0,1);
+  T.label(2,2,' Saltmarsh Station · dusk ',[255,236,206],0.5);
+  T.label(100,5,' Quill, inbound ',[255,214,200],0.45);
+  T.fill(0,0,131,0,HEAD);T.text(0,0,' FAIR WINDS ',[14,18,26],ACC);T.text(13,0,'SALTMARSH STATION',TXT,HEAD);T.text(34,0,'Day 41 · 20:25',DIM,HEAD);T.text(132-40,0,'Mara · Navigator II · 1,240 postmarks',ACC,HEAD);
+  var B=[10,11,22];
+  T.text(2,29,'SALTMARSH STATION',ACC,B);T.text(2,30,'Planted by Vex on Day 9. Kept by 6 aeronauts.',TXT,B);
+  T.text(2,32,'TODAY',DIM,B);T.text(2,33,'A low is deepening over the Kettle Range.',TXT,B);T.text(2,34,'Trades steady below 2 km. Squalls east by 17:00.',TXT,B);T.text(2,35,'Sunrise 05:40. Dusk 20:25.',TXT,B);
+  T.text(2,37,'Day 41 is flown. Day 42 opens at midnight.',COOL,B);
+  var menu=[['L','Launch','Day 42 opens at midnight'],['P','Post office','3 bags waiting'],['S','Stores','fuel, ballast, pibals'],['R','Rigging loft','your balloon'],['A','Almanac','14 winds known'],['C','Chart room','37% charted'],['G','Guestbook','2 new lines'],['D','Daily Drift','not flown today'],['W','Wonders','7 of 40'],['T','Trials','always open']];
+  menu.forEach(function(m,i){var yy=29+i;T.text(52,yy,'[',DIM,B);T.text(53,yy,m[0],ACC,B);T.text(54,yy,']',DIM,B);T.text(56,yy,m[1],i===0?[255,255,255]:TXT,B);T.text(71,yy,m[2],DIM,B);});
+  T.text(96,29,'GUESTBOOK',ACC,B);
+  T.text(96,30,'Quill',[255,170,206],B);T.text(103,30,'Left two fuel cans in the',TXT,B);T.text(103,31,'lee shed. Help yourselves.',TXT,B);
+  T.text(96,32,'Nib',[255,170,206],B);T.text(103,32,'The Bora nearly had me at',TXT,B);T.text(103,33,'the Gap. Climb early.',TXT,B);
+  T.text(96,34,'Vex',[255,170,206],B);T.text(103,34,'Mast lamp is lit again.',TXT,B);
+  T.text(96,36,'MOORED HERE',DIM,B);T.text(96,37,'Mara, Vex',TXT,B);
+  T.fill(0,39,131,39,HEAD);keys(T,1,39,[['L','Launch'],['?','Help'],['Q','Quit to NetBBS']],HEAD);
+  T.draw();
+}
+
+/* ---------- screen 3: the chart ---------- */
+function buildChart(cv){
+  var T=new Term(cv,168,46,[9,13,21]),MW=128,MR=41,PH=82,KM=12.5,P=new Pix(MW,PH),x,y;
+  for(y=0;y<PH;y++)for(x=0;x<MW;x++){var wx=(x+0.5)*KM,wy=(y+0.5)*KM,k=charted(wx,wy),c=worldColor(wx,wy,14);
+    var dx=wx-GY.x,dy=wy-GY.y,r=Math.hypot(dx,dy),th=Math.atan2(dy,dx);
+    var arm=Math.cos(2*th+4.4*Math.log(r/30+1)),a=smooth(arm,0.05,0.9)*Math.exp(-r/200)*1.25*(0.5+0.7*fbm(wx/40,wy/40,3,91));
+    a*=smooth(r,14,36);a+=Math.exp(-Math.pow((r-44)/15,2))*0.75;a=clamp(a,0,0.94);
+    c=mix(c,mix([150,162,190],[232,238,248],fbm(wx/30,wy/30,2,13)),a);
+    var p0=Math.floor(pressure(wx,wy)/4),iso=(p0!==Math.floor(pressure(wx+KM,wy)/4))||(p0!==Math.floor(pressure(wx,wy+KM)/4));
+    if(iso)c=mix(c,[236,242,252],0.2+0.34*k);
+    P.set(x,y,c);}
+  T.blit(P,0,1);
+  function cell(wx,wy){return [Math.floor(wx/KM),1+Math.floor(wy/KM/2)];}
+  // route so far
+  var br=SITES[2],pts=[br,salt,bal];for(var i=0;i<2;i++){var a0=pts[i],b0=pts[i+1],n=Math.ceil(Math.hypot(b0.x-a0.x,b0.y-a0.y)/16);for(var j=1;j<n;j++){var c1=cell(a0.x+(b0.x-a0.x)*j/n,a0.y+(b0.y-a0.y)*j/n);T.over(c1[0],c1[1],'·',[255,222,134],0.25);}}
+  SYS.forEach(function(s){var c1=cell(s.x,s.y);if(s.gyre)return;T.label(c1[0],c1[1],s.s>0?'L':'H',s.s>0?[255,150,130]:[130,190,255],0.6);T.label(c1[0]+2,c1[1],String(Math.round(pressure(s.x,s.y))),[220,228,240],0.6);});
+  var gc=cell(GY.x,GY.y);T.label(gc[0]-7,gc[1]+7,'T H E   G Y R E',[255,236,180],0.55);T.label(gc[0]-3,gc[1]+8,'961 hPa',[220,228,240],0.55);
+  [[70,5],[104,30],[60,36],[10,4]].forEach(function(p){if(charted((p[0]+8)*KM,(p[1]-1)*2*KM)<0.1)T.label(p[0],p[1],'U N C H A R T E D',[112,126,152],0.15);});
+  SITES.forEach(function(s){var c1=cell(s.x,s.y),lab=s.n,lx=c1[0]+2;if(lx+lab.length>MW-1||s.n==='Saltmarsh Stn')lx=c1[0]-lab.length-1;
+    if(s.k==='town'){T.over(c1[0],c1[1],'◆',[255,238,176],0.6);T.label(lx,c1[1],lab,[255,244,214]);}
+    else if(s.k==='stn'){T.over(c1[0],c1[1],'▲',COOL,0.6);T.label(lx,c1[1],lab,[206,236,255]);}
+    else{T.over(c1[0],c1[1],'○',[255,170,206],0.5);T.label(lx,c1[1],lab,[255,206,226]);}});
+  var bc=cell(bal.x,bal.y);T.over(bc[0],bc[1],'◉',[255,255,255],0.75);T.label(bc[0]+2,bc[1],'you',[255,255,255],0.6);
+  T.fill(0,0,167,0,HEAD);T.text(0,0,' FAIR WINDS ',[14,18,26],ACC);T.text(13,0,'THE CHART',TXT,HEAD);T.text(24,0,'Day 41 · isobars every 4 hPa',DIM,HEAD);T.text(168-21,0,'Mara · Navigator II',ACC,HEAD);
+  var PB=[12,17,27],PX=131;T.fill(129,1,167,45,PB);for(y=1;y<=44;y++)T.put(129,y,'│',[38,50,72],PB);
+  T.text(PX,2,'THE CONTINENT',ACC,PB);T.text(PX,3,'Charted by 14 aeronauts',TXT,PB);
+  for(x=0;x<30;x++)T.put(PX+x,5,x<11?'█':'░',x<11?[120,214,160]:[40,52,70],PB);T.text(PX+31,5,'37%',TXT,PB);
+  T.text(PX,6,'212 features named · 9 stations',DIM,PB);
+  T.text(PX,9,'SEASON 4',ACC,PB);T.text(PX+9,9,'· 9 days left',DIM,PB);T.text(PX,10,'The Northern Passage',[255,255,255],PB);
+  T.text(PX,11,'Raise five masts across the Gap.',TXT,PB);T.text(PX,13,'▲ ▲ ▲',COOL,PB);T.text(PX+6,13,'▲ ▲',[52,64,86],PB);T.text(PX+12,13,'3 of 5 standing',TXT,PB);
+  T.text(PX,16,'GAZETTE',ACC,PB);
+  [['41','Vex resupplied Saltmarsh Stn'],['40','Quill named Mount Hollow'],['40','Nib crossed the Kettle Gap'],['39','Mara saw the Aurora at Indra'],['38','The Bora entered the almanac'],['37','Lee Cairn planted by Quill']].forEach(function(g,i){T.text(PX,17+i,'Day '+g[0],DIM,PB);T.text(PX+7,17+i,g[1],TXT,PB);});
+  T.text(PX,25,'RECORDS',ACC,PB);
+  T.text(PX,26,'Longest drift',DIM,PB);T.text(PX+17,26,'Quill   412 km',TXT,PB);
+  T.text(PX,27,'Highest',DIM,PB);T.text(PX+17,27,'Vex     7.1 km',TXT,PB);
+  T.text(PX,28,'Mail carried',DIM,PB);T.text(PX+17,28,'Mara    96 bags',TXT,PB);
+  T.text(PX,29,'Nearest the eye',DIM,PB);T.text(PX+17,29,'Nib     188 km',TXT,PB);
+  T.text(PX,32,'STRANDED',[255,150,130],PB);T.text(PX,33,'Nib is down near Hollow Tarn,',TXT,PB);T.text(PX,34,'out of fuel. 2 days to walk out.',TXT,PB);T.text(PX,35,'Fly 4 cans in for 120 postmarks.',COOL,PB);
+  T.text(PX,38,'KEY',ACC,PB);
+  T.put(PX,39,'◆',[255,238,176],PB);T.text(PX+2,39,'town',TXT,PB);T.put(PX+10,39,'▲',COOL,PB);T.text(PX+12,39,'station',TXT,PB);
+  T.put(PX,40,'○',[255,170,206],PB);T.text(PX+2,40,'camp',TXT,PB);T.put(PX+10,40,'◉',[255,255,255],PB);T.text(PX+12,40,'you',TXT,PB);
+  T.put(PX,41,'·',[255,222,134],PB);T.text(PX+2,41,'your route so far',TXT,PB);
+  for(y=42;y<=44;y++)T.fill(0,y,128,y,[9,13,21]);
+  T.text(1,43,'Coloured land has been flown over. Blank map is blank for every caller until somebody goes there.',DIM);
+  T.fill(0,45,167,45,HEAD);keys(T,1,45,[['Arrows','Pan'],['Z','Zoom'],['I','Isobars'],['W','Winds'],['N','Names'],['/','Find'],['B','Back']],HEAD);
+  T.draw();
+}
+
+/* ---------- screen 4: a wonder ---------- */
+function buildAurora(cv){
+  var T=new Term(cv,132,38,[5,8,18]),W=132,H=74,hy=50,P=new Pix(W,H),x,y,k;
+  var BANDS=[{b:37,a:5,p:23,ph:0.4,hk:15,w:1},{b:29,a:4,p:17,ph:2.1,hk:11,w:0.75},{b:43,a:3,p:29,ph:4.0,hk:9,w:0.6}];
+  var mt=[];for(x=0;x<W;x++)mt[x]=hy-2-24*Math.pow(fbm(x/18,0.5,4,33),1.3);
+  var bx=88,byy=17;
+  function frame(t){
+    for(y=0;y<hy;y++)for(x=0;x<W;x++){var c=mix([5,8,22],[10,24,44],y/hy),au=[0,0,0],tot=0;
+      for(k=0;k<3;k++){var B=BANDS[k],yk=B.b+B.a*Math.sin(x/B.p+B.ph+t*0.18)+7*(fbm(x/22+t*0.03,k*3.1,2,61)-0.5),h=yk-y,I;
+        if(h>=0)I=Math.exp(-h/B.hk);else I=Math.exp(h/1.3)*0.6;
+        var rays=0.25+0.75*Math.pow(vnoise(x/1.9+t*0.35*(k===1?-1:1),k*9.3+t*0.1,71),1.4);
+        var env=0.45+0.55*vnoise(x/34+t*0.05,k*4.7,83);I*=rays*env*B.w;
+        var col=ramp([[96,255,170],[60,226,196],[110,120,236],[170,84,226]],clamp(h/(B.hk*2.4),0,1));
+        au[0]+=col[0]*I;au[1]+=col[1]*I;au[2]+=col[2]*I;tot+=I;}
+      if(hash(x,y,19)<0.007)c=mix(c,[240,244,255],(0.3+0.5*hash(x,y,23))*clamp(1-tot*1.5,0,1));
+      c=[c[0]+au[0]*0.95,c[1]+au[1]*0.95,c[2]+au[2]*0.95];
+      if(y>=mt[x]){var dpt=y-mt[x],pk=hy-mt[x],snow=dpt<pk*0.42-1.2+1.6*hash(x,0,5),sl=mt[Math.min(W-1,x+1)]-mt[Math.max(0,x-1)];
+        c=snow?mix([64,104,116],[172,234,214],clamp(tot*0.9+0.2,0,1)):mix([13,21,38],[22,50,58],clamp(tot*0.5+dpt/40,0,1));if(sl>0.3)c=[c[0]*0.66,c[1]*0.68,c[2]*0.74];}
+      P.set(x,y,c);}
+    // balloon
+    var hwr=[1,2,3,3,3,2,1];
+    for(var q2=0;q2<7;q2++)for(var d2=-hwr[q2];d2<=hwr[q2];d2++)P.set(bx+d2,byy-4+q2,(d2===-hwr[q2]||q2===0)?[96,206,164]:(d2<0?[36,62,74]:[16,22,40]));
+    P.set(bx,byy+3,[255,206,120]);P.blend(bx-1,byy+3,[255,170,96],0.5);P.blend(bx+1,byy+3,[255,170,96],0.5);P.set(bx-1,byy+5,[40,34,44]);P.set(bx,byy+5,[40,34,44]);P.set(bx+1,byy+5,[40,34,44]);
+    for(y=hy;y<H;y++)for(x=0;x<W;x++){var sy=hy-1-Math.round((y-hy)*1.25),sxx=x+Math.round(1.6*Math.sin(y*1.1+t*0.6)+0.8*Math.sin(y*0.37+x*0.05)),s=P.get(sxx,Math.max(0,sy));
+      var rip=0.5+0.12*vnoise(x/9,y*1.7+t*0.2,91);P.set(x,y,[s[0]*rip+3,s[1]*rip+6,s[2]*rip+12]);}
+    for(x=0;x<W;x++){var sh=H-2-5*Math.pow(fbm(x/14,7.7,3,101),1.6)-(x<26?5*(1-x/26):0)-(x>108?6*((x-108)/24):0);for(y=Math.ceil(sh);y<H;y++)P.set(x,y,[4,6,12]);}
+    [[8,60],[14,58],[19,62],[116,58],[122,55],[127,60]].forEach(function(p){for(var i=0;i<9;i++)for(var j=-Math.floor(i/2.4);j<=Math.floor(i/2.4);j++)P.set(p[0]+j,p[1]+i,[4,7,13]);});
+    T.blit(P,0,0);
+    var bxx=4,byb=28,bw=60;
+    for(var r=0;r<6;r++)for(var cx=0;cx<bw;cx++)T.over(bxx+cx,byb+r,' ',[0,0,0],0.78);
+    T.over(bxx,byb,'╭',DIM,0.78);T.over(bxx+bw-1,byb,'╮',DIM,0.78);T.over(bxx,byb+5,'╰',DIM,0.78);T.over(bxx+bw-1,byb+5,'╯',DIM,0.78);
+    for(cx=1;cx<bw-1;cx++){T.over(bxx+cx,byb,'─',DIM,0.78);T.over(bxx+cx,byb+5,'─',DIM,0.78);}
+    for(r=1;r<5;r++){T.over(bxx,byb+r,'│',DIM,0.78);T.over(bxx+bw-1,byb+r,'│',DIM,0.78);}
+    T.label(bxx+2,byb,' WONDER 7 OF 40 ',ACC,0.78);
+    T.label(bxx+2,byb+1,'The Aurora at Lake Indra',[255,255,255],0.78);
+    T.label(bxx+2,byb+2,'First seen by Mara on Day 39. Seen since by 3 aeronauts.',TXT,0.78);
+    T.label(bxx+2,byb+3,'Needs a clear night north of the Gap, above 3 km.',DIM,0.78);
+    T.label(bxx+2,byb+4,'"Burner off. We just hung there."',[150,236,200],0.78);
+    T.fill(0,37,131,37,HEAD);keys(T,1,37,[['P','Post a card to the Gazette'],['A','Album'],['Any key','Carry on']],HEAD);
+    T.draw();
+  }
+  var t=3;frame(t);return function(){t+=0.12;frame(t);};
+}
+
+/* ---------- screen 5: classic 80 x 24, 16 colours ---------- */
+function buildClassic(cv){
+  var V=[[0,0,0],[0,0,170],[0,170,0],[0,170,170],[170,0,0],[170,0,170],[170,85,0],[170,170,170],[85,85,85],[85,85,255],[85,255,85],[85,255,255],[255,85,85],[255,85,255],[255,255,85],[255,255,255]];
+  var T=new Term(cv,80,24,V[0]),MW=54,MR=18,KX=295/MW,KY=190/MR,org={x:bal.x-40*2.5,y:bal.y-46*2.5},x,y;
+  function cell(wx,wy){return [Math.floor((wx-org.x)/KX),1+Math.floor((wy-org.y)/KY)];}
+  function ok(c){return c[0]>=0&&c[0]<MW&&c[1]>=1&&c[1]<=MR;}
+  for(y=0;y<MR;y++)for(x=0;x<MW;x++){var wx=org.x+(x+0.5)*KX,wy=org.y+(y+0.5)*KY,e=elev(wx,wy),m=moist(wx,wy),ch=' ',fg=7,bg=0;
+    if(charted(wx,wy)<0.5){ch='░';fg=8;bg=0;}
+    else if(e<-0.18){bg=1;}else if(e<0){bg=1;fg=3;ch='░';}else if(e<0.03){bg=6;fg=14;ch='▒';}
+    else if(e<0.36){if(m<0.4){bg=6;fg=14;ch='░';}else if(m>0.6){bg=2;fg=0;ch='▒';}else{bg=2;fg=10;ch=hash(x,y,3)<0.2?'.':' ';}}
+    else if(e<0.6){bg=6;fg=7;ch='▒';}else if(e<0.84){bg=7;fg=8;ch='▓';}else{bg=7;fg=15;ch='^';}
+    var cl=cloudA(wx,wy)>0.45,sq=squall(wx,wy)>0.3;
+    if(sq){bg=0;fg=8;ch='▓';}else if(cl){fg=15;ch='▓';}
+    else if((x+y*3)%5===0){var v=wind(wx,wy,3),a=((Math.atan2(-v[1],v[0])*180/Math.PI)%180+180)%180;ch=a<22.5||a>=157.5?'-':(a<67.5?'/':(a<112.5?'|':'\\'));fg=15;}
+    T.put(x,y+1,ch,V[fg],V[bg]);}
+  var bc=cell(bal.x,bal.y);
+  [[4,13],[2,11]].forEach(function(q){track(q[0],10).forEach(function(p){var c=cell(p.x,p.y);if(ok(c)&&!(c[0]===bc[0]&&c[1]===bc[1]))T.put(c[0],c[1],'.',V[q[1]],V[0]);});});
+  track(3,10).forEach(function(p){var c=cell(p.x,p.y);if(ok(c)&&!(c[0]===bc[0]&&c[1]===bc[1]))T.put(c[0],c[1],'o',V[14],V[0]);});
+  SITES.forEach(function(s){var c=cell(s.x,s.y);if(!ok(c)||s.k==='camp')return;T.put(c[0],c[1],s.k==='town'?'*':'+',V[15],V[4]);var lab=' '+s.n+' ';for(var i=0;i<lab.length&&c[0]+1+i<MW;i++)T.put(c[0]+1+i,c[1],lab[i],V[15],V[0]);});
+  T.put(bc[0],bc[1],'O',V[15],V[5]);
+  T.fill(0,0,79,0,V[1]);T.text(1,0,'FAIR WINDS',V[14],V[1]);T.text(12,0,'Day 41 14:15',V[15],V[1]);T.text(25,0,'Saltmarsh Stn > Kettle Rock',V[15],V[1]);T.text(80-20,0,'Mara  Navigator II',V[11],V[1]);
+  for(y=1;y<=18;y++)T.put(54,y,'│',V[8],V[0]);
+  T.text(56,1,'LYR  KM  WIND',V[14],V[0]);
+  for(var L=6;L>=1;L--){var wi=windInfo(wind(bal.x,bal.y,L)),row=2+(6-L),cur=L===3,b=cur?V[1]:V[0],f=cur?V[15]:(L===6?V[8]:V[7]);
+    if(cur)T.fill(55,row,79,row,b);
+    T.text(55,row,(cur?'>':' ')+L+'  '+('   '+LALT[L-1]).slice(-3)+'  '+(wi.from+'   ').slice(0,3)+' '+('  '+wi.sp).slice(-3)+' '+(cur?'YOU':(L===4?'cloud':(L===6?'O2':''))),f,b);
+    if(L===4)T.put(77+2,row,'.',V[13],b);if(L===2)T.put(79,row,'.',V[11],b);if(L===3)T.put(79,row,'o',V[14],b);}
+  T.text(56,9,'FUEL',V[14],V[0]);T.text(61,9,'[######....] 61%',V[7],V[0]);
+  T.text(56,10,'BALLAST 3   PIBALS 2',V[7],V[0]);
+  T.text(56,11,'DUSK 20:25  6h10m',V[7],V[0]);
+  T.text(56,13,'CARGO',V[14],V[0]);T.text(56,14,'2 bags Kettle Rock 3d',V[7],V[0]);
+  T.text(56,16,'ALOFT',V[14],V[0]);T.text(56,17,'Quill lyr 4, north',V[7],V[0]);
+  for(x=0;x<80;x++)T.put(x,19,'─',V[8],V[0]);
+  var w3=windInfo(wind(bal.x,bal.y,3));
+  T.text(1,20,'14:15',V[8],V[0]);T.text(7,20,'Drifting at '+w3.sp+' km/h. Squalls to the east by 17:00.',V[7],V[0]);
+  T.text(1,21,'14:15',V[8],V[0]);T.text(7,21,'W climbs to layer 4 for 3 fuel. S sinks to layer 2 free.',V[14],V[0]);
+  T.fill(0,23,79,23,V[1]);
+  var kx=1;[['W','Climb'],['S','Sink'],['Space','Drift'],['J','Jettison'],['P','Pibal'],['L','Land'],['C','Chart'],['?','Help']].forEach(function(k){kx=T.text(kx,23,'['+k[0]+']',V[14],V[1]);kx=T.text(kx,23,k[1],V[15],V[1])+1;});
+  T.draw();
+}
+
+/* ---------- boot ---------- */
+var started=false;
+function start(){
+  if(started)return;started=true;
+  var anims=[],reduce=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches,playing=!reduce;
+  function el(id){return document.getElementById(id);}
+  var a=buildFlight(el('scr-flight'));anims.push({cv:el('scr-flight'),f:a,vis:true,every:1});
+  buildDusk(el('scr-dusk'));buildChart(el('scr-chart'));
+  var b=buildAurora(el('scr-aurora'));anims.push({cv:el('scr-aurora'),f:b,vis:false,every:2});
+  buildClassic(el('scr-classic'));
+  var btn=el('motion-toggle');
+  function lab(){if(btn)btn.textContent=playing?'Pause motion':'Play motion';}
+  lab();if(btn)btn.addEventListener('click',function(){playing=!playing;lab();});
+  if(typeof IntersectionObserver!=='undefined'){var io=new IntersectionObserver(function(es){es.forEach(function(e){anims.forEach(function(an){if(an.cv===e.target)an.vis=e.isIntersecting;});});},{rootMargin:'80px'});anims.forEach(function(an){io.observe(an.cv);});}
+  var last=0,n=0;
+  function tick(ts){if(playing&&ts-last>82){last=ts;n++;anims.forEach(function(an){if(an.vis&&n%an.every===0)an.f();});}requestAnimationFrame(tick);}
+  requestAnimationFrame(tick);
+}
+if(document.fonts&&document.fonts.load){document.fonts.load('26px "IBM Plex Mono"').then(start,start);setTimeout(start,1800);}else start();
+})();
+</script>
