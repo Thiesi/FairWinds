@@ -1,3 +1,5 @@
+![Fair Winds: a striped balloon at dusk over layered mountains, with streaks of wind](art/banner.png)
+
 # Fair Winds
 
 *Read the wind. Carry the post. Finish the map.*
