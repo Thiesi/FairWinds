@@ -453,6 +453,10 @@ memory.
 | `DOOR_FW_MOTION` | `auto`, `burst` or `off` |
 | `DOOR_FW_PIXELS` | `auto`, `half` or `shade` |
 | `DOOR_SPLASH`, `DOOR_SCENES` | `0` switches the splash, or the scenes, off |
+| `DOOR_FW_NODE_ID` | Classic hosts: names this BBS and seeds its world (default `classic`). Keep it once set. |
+| `DOOR_FW_BBS_NAME` | Classic hosts: the name in "Return to ..." (default "BBS") |
+| `DOOR_FW_TIMEZONE` | Classic hosts: the IANA zone whose midnight opens a world day (default UTC) |
+| `DOOR_FW_JOURNAL` | `wal` (default) or `delete`, for a data directory where WAL cannot work |
 
 Tempo is a property of the world, set with the SysOp tool, not an environment
 variable, so that it cannot change by accident.
@@ -471,6 +475,20 @@ guest call. Request names are zero-padded and their identifiers are stored in
 | standings | The Daily Drift table changes | Answers `!top` |
 | board post | Once a week | The Gazette |
 | chat line | A squall line reaches a town, at most a few a day | A one-line warning |
+
+**The launch record.** Everything after start-up reads one host-neutral record:
+pilot identity, handle, node identity, node name, geometry, colour depth,
+charset, quarter blocks, glyph preference, transport, timezone, date format,
+session limit, outbound, guest. NetBBS's JSON fills it on a hosted launch, a
+drop file on a classic host, and defaults on a standalone launch. No code
+outside start-up knows which host it is on.
+
+**Classic hosts.** `fair_winds.py <drop file>` reads DOOR32.SYS or DOOR.SYS.
+The mapping, the consequences and what is not supported are in
+[design.md](design.md#classic-hosts). In short: record number is the pilot,
+80 columns with no resize, CP437 and sixteen colours unless `--encoding` and
+`--color` say otherwise, still wind unless `DOOR_FW_MOTION=burst`, the drop
+file's minutes as the session limit, and no outbound.
 
 **Session end.** If `session_limit_seconds` is present the door warns five
 minutes and one minute before it. Being cut off costs nothing: the flight
