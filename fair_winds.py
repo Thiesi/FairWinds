@@ -2166,6 +2166,7 @@ class MapView:
         self._streaks: list = []
         self._lcg = 1
         self.share = 1.0                  # the part of the streaks drawn: thinned when frames cost too much
+        self._settling = False            # the share has just changed: the next frame's cost is not a fair measure
 
     # -- the window ------------------------------------------------------------
 
@@ -2391,10 +2392,17 @@ class MapView:
         The cost of a frame depends on the colour depth, the size of the map
         and how fast the wind is, and only the bytes say what it came to.
         """
+        if self._settling:
+            # The frame after a change of share carries the change itself:
+            # streaks rubbed out or drawn whole. That is not what a frame costs.
+            self._settling = False
+            return
+        before = self.share
         if frame_bytes > FRAME_BYTES * 1.3:
             self.share = max(STREAK_SHARE_MIN, self.share * FRAME_BYTES / frame_bytes)
         elif frame_bytes < FRAME_BYTES * 0.6 and self.share < 1.0:
             self.share = min(1.0, self.share * 1.15)
+        self._settling = self.share != before
 
     def draw_wind(self, screen: Screen) -> None:
         """Lay the streaks over the ground: a bright head and a dimmer tail.
@@ -3325,7 +3333,7 @@ class Session:
         self.shown: Screen | None = None      # what the caller's terminal holds; None means unknown
         self._next_frame: float | None = None # when the next frame of moving wind is due
         self._sent: list = []                 # (when, bytes) for what was sent in the last second
-        self._wind_frame = False              # the next paint is a frame of moving wind and nothing else
+        self._wind_frames = 0                 # how many frames of moving wind the next paint carries
         self._next_poll = self.started + GEOMETRY_POLL
 
     # -- time ---------------------------------------------------------------
@@ -3382,7 +3390,8 @@ class Session:
             self.game.draw(self)
         else:
             self._front()
-        if self.shown is None:
+        whole = self.shown is None
+        if whole:
             changed = "\x1b[0m\x1b[2J" + self.frame.render(None)
         else:
             changed = self.frame.render(self.shown)
@@ -3391,9 +3400,11 @@ class Session:
             now = self.clock()
             self._sent = [(when, size) for when, size in self._sent if when > now - 1.0]
             self._sent.append((now, len(changed)))
-        if self._wind_frame and self.game is not None:
-            self.game.map.tune(len(changed))    # this paint was a frame of moving wind and nothing else
-        self._wind_frame = False
+        if self._wind_frames and self.game is not None and not whole:
+            # This paint was the wind moving, by so many frames. A whole
+            # repaint (a resize, Ctrl-L) says nothing about what wind costs.
+            self.game.map.tune(len(changed) // self._wind_frames)
+        self._wind_frames = 0
         self.shown = self.frame
         self._dirty = False
 
@@ -3551,7 +3562,7 @@ class Session:
         recent = sum(size for when, size in self._sent if when > now - 1.0)
         if recent < BURST_BYTES_PER_SECOND or self.game.frames_left == 0:
             self._dirty = True                  # the last frame is always painted: it is the one that stays
-            self._wind_frame = True
+            self._wind_frames = due
 
     def run(self) -> str:
         try:

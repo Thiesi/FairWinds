@@ -126,7 +126,7 @@ class Streaks(unittest.TestCase):
         self.assertEqual(v.share, 1.0, "on budget: nothing changes")
         v.tune(fw.FRAME_BYTES * 3)
         self.assertAlmostEqual(v.share, 1 / 3)
-        for _ in range(20):
+        for _ in range(40):
             v.tune(fw.FRAME_BYTES * 10)
         self.assertEqual(v.share, fw.STREAK_SHARE_MIN, "but some wind always shows")
         plain = fw.Screen(80, 24)
@@ -134,13 +134,27 @@ class Streaks(unittest.TestCase):
         v.draw(self.screen, 1, 1, 52, 16, 400.0, 300.0, 1, 600)
         v.draw_wind(self.screen)
         thin = sum(self.screen.fg[k] != plain.fg[k] or self.screen.bg[k] != plain.bg[k] for k in range(80 * 24))
-        for _ in range(40):
+        for _ in range(80):
             v.tune(100)
         self.assertEqual(v.share, 1.0, "and they come back when frames are cheap")
         v.draw(self.screen, 1, 1, 52, 16, 400.0, 300.0, 1, 600)
         v.draw_wind(self.screen)
         full = sum(self.screen.fg[k] != plain.fg[k] or self.screen.bg[k] != plain.bg[k] for k in range(80 * 24))
         self.assertLess(thin, full)
+
+    def test_the_frame_after_a_change_of_share_is_not_measured(self):
+        # Rubbing streaks out costs bytes once. Read as a frame's cost, it
+        # would cut the share again, and again: a cascade to the floor.
+        v = self.view()
+        v.tune(int(fw.FRAME_BYTES * 1.4))
+        once = v.share
+        self.assertLess(once, 1.0)
+        v.tune(int(fw.FRAME_BYTES * 1.9))                # this frame carries the rubbing out
+        self.assertEqual(v.share, once, "not measured: the share holds")
+        v.tune(fw.FRAME_BYTES)                           # and the frame after is a fair one, on budget
+        self.assertEqual(v.share, once)
+        v.tune(int(fw.FRAME_BYTES * 1.4))
+        self.assertLess(v.share, once, "a fair frame over budget does cut it")
 
     def test_the_first_picture_already_shows_the_flow(self):
         v = self.view()
@@ -449,6 +463,42 @@ class Budget(GameCase):
         finally:
             fw.Screen.render = real_render
         self.assertLess(game.map.share, 0.5, "dear frames thinned the streaks")
+
+    def test_a_whole_repaint_during_a_burst_does_not_thin_the_wind(self):
+        game, session, clock = self.start(keys=[b"\r"], terminal_width=168, terminal_height=46)
+        session.step()
+        session.step()
+        session.step()
+        self.assertGreater(game.frames_left, 0)
+        share = game.map.share
+        session.shown = None                             # a resize or Ctrl-L: the next paint is everything
+        session._dirty = True
+        session.step()
+        session.step()
+        self.assertGreaterEqual(game.map.share, share, "a whole screen is not what a frame of wind costs")
+
+    def test_skipped_frames_are_measured_as_the_frames_they_were(self):
+        game, session, clock = self.start(keys=[b"\r"], terminal_width=168, terminal_height=46)
+        session.step()
+        seen = []
+        real_tune = game.map.tune
+        game.map.tune = lambda size: (seen.append(size), real_tune(size))
+        real_paint = session.paint
+
+        def slow_paint():
+            real_paint()
+            clock.now += fw.FRAME_SECONDS * 2.5          # each paint costs two slots and a half
+        session.paint = slow_paint
+        sent = []
+        real_write = session.out.write
+        session.out.write = lambda text: (sent.append(len(text)), real_write(text))
+        while game.frames_left > 0:
+            session.step()
+        session.step()
+        self.assertTrue(seen)
+        divided = [size for size in seen if size not in sent]
+        self.assertTrue(divided, "a paint that carried several frames was divided among them")
+        self.assertTrue(all(any(size == whole // n for whole in sent for n in (2, 3, 4)) for size in divided))
 
     def test_bytes_while_the_wind_moves(self):
         small = self.burst()
