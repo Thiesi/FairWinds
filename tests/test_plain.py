@@ -39,13 +39,14 @@ class PlainCase(unittest.TestCase):
     def setUp(self):
         self._dir = tempfile.TemporaryDirectory(prefix="fair-winds-test-")
         self.folder = Path(self._dir.name)
+        self.clock = support.Calendar()
 
     def tearDown(self):
         fw.Store.close_all()
         self._dir.cleanup()
 
     def game(self, **changes):
-        return support.new_game(launch(**changes), self.folder)
+        return support.new_game(launch(**changes), self.folder, now=self.clock)
 
     def session(self, game, width=80, height=24, keys=()):
         session = fw.Session(dataclasses.replace(game.launch, width=width, height=height), Keys(*keys), Out(), game=game)
@@ -284,8 +285,10 @@ class GettingThere(PlainCase):
 
     def test_a_day_nothing_was_flown_on_is_not_a_flying_day(self):
         game = self.game()
+        self.clock.days(2)
         self.press(game, "n", "n")
         self.assertEqual((game.state.day, game.days_flown), (3, 0))
+        self.clock.days(1)
         self.press(game, "ENTER", "ENTER")
         game.state = dataclasses.replace(game.state, status="ground", layer=0)
         game._choose_default()
@@ -514,7 +517,8 @@ class Screens(PlainCase):
             self.assertIn(key, text)
         for glyph in ("@", "#", "o", "+", "~", "%"):
             self.assertIn(glyph, text)
-        self.assertIn("saved every turn", text)
+        self.assertIn("every turn is saved", text)
+        self.assertIn("A world day opens at the same hour for everyone", text)
         self.assertLessEqual(len(fw.PLAIN_HELP), 21, "help fits the screen above the key row")
         self.assertIn("Within 12 km of a place counts", text)
         self.assertTrue(all(len(line) <= 78 for line in fw.PLAIN_HELP))

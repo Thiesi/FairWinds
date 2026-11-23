@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import datetime
 import hashlib
 import json
 import math
@@ -28,10 +29,11 @@ import threading
 import time
 import unicodedata
 import weakref
+import zoneinfo
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "0.1.0.dev13"
+VERSION = "0.1.0.dev14"
 DOOR_API = 5
 MIN_WIDTH, MIN_HEIGHT = 80, 24
 MAX_DIMENSION = 1000
@@ -2560,6 +2562,103 @@ def bearing(dx: float, dy: float) -> str:
 
 
 # --------------------------------------------------------------------------
+# The calendar (S11): play is paced by world days, never by calls. A world
+# day opens at a fixed local time for everyone; a pilot flies the days that
+# have opened, in order, each once.
+# --------------------------------------------------------------------------
+
+TEMPOS = (1, 2, 3, 4)                # world days in a real day
+WAITING_DAYS = 3                     # opened days a pilot may have in hand, the one being flown included
+CALENDAR_CHECK_SECONDS = 20.0        # how often an idle session looks whether a day has opened
+_zones: dict = {}
+
+
+def local_time(now: float, zone: str) -> datetime.datetime:
+    """The wall-clock time in a zone, without a zone attached: dates and times of day are all the calendar needs.
+
+    An IANA name is looked up; "local", or a name this host has no data
+    for, means the host's own zone. A BBS host is nearly always in its
+    node's zone, and a wrong hour for a day to open is better than no game.
+    """
+    name = (zone or "UTC").strip()
+    if name.upper() in ("UTC", "Z", "GMT"):
+        return datetime.datetime.fromtimestamp(now, datetime.timezone.utc).replace(tzinfo=None)
+    if name != "local":
+        if name not in _zones:
+            try:
+                _zones[name] = zoneinfo.ZoneInfo(name)
+            except (zoneinfo.ZoneInfoNotFoundError, ValueError, OSError):
+                _zones[name] = None
+                diagnose(f"no time zone data for {name!r}: using this host's own zone")
+        if _zones[name] is not None:
+            return datetime.datetime.fromtimestamp(now, _zones[name]).replace(tzinfo=None)
+    return datetime.datetime.fromtimestamp(now)
+
+
+def world_day(local: datetime.datetime, epoch_date: datetime.date, epoch_day: int, tempo: int) -> int:
+    """The world day a local wall-clock time falls in.
+
+    Local dates are counted, not hours, so a day of 23 or 25 hours is one
+    day like any other. With a tempo above one each date holds that many
+    equal slots by the clock on the wall.
+    """
+    dates = (local.date() - epoch_date).days
+    slot = min(tempo - 1, (local.hour * 3600 + local.minute * 60 + local.second) * tempo // 86400)
+    return epoch_day + dates * tempo + slot
+
+
+def day_opens(day: int, epoch_date: datetime.date, epoch_day: int, tempo: int) -> datetime.datetime:
+    """The local wall-clock time at which a world day opens."""
+    n = day - epoch_day
+    return (datetime.datetime.combine(epoch_date + datetime.timedelta(days=n // tempo), datetime.time())
+            + datetime.timedelta(seconds=(n % tempo) * 86400 // tempo))
+
+
+def new_calendar(local: datetime.datetime) -> dict:
+    """A calendar that begins today: world day 1 is the local date of its making."""
+    return {"epoch_date": local.date().isoformat(), "epoch_day": 1, "tempo": 1, "high_day": 1}
+
+
+def read_calendar(values: dict) -> dict | None:
+    """A calendar from stored text, or None if it is not all there or not sound."""
+    try:
+        cal = {"epoch_date": str(values["epoch_date"]), "epoch_day": int(values["epoch_day"]),
+               "tempo": int(values["tempo"]), "high_day": int(values["high_day"])}
+        datetime.date.fromisoformat(cal["epoch_date"])
+    except (KeyError, ValueError, TypeError):
+        return None
+    return cal if cal["tempo"] in TEMPOS and cal["high_day"] >= 1 else None
+
+
+def calendar_day(cal: dict, local: datetime.datetime) -> int:
+    """Today, by a calendar: never less than the highest day it has opened, so a clock set back repeats nothing."""
+    computed = world_day(local, datetime.date.fromisoformat(cal["epoch_date"]), cal["epoch_day"], cal["tempo"])
+    return max(computed, cal["high_day"])
+
+
+def calendar_opens(cal: dict, day: int) -> datetime.datetime:
+    return day_opens(day, datetime.date.fromisoformat(cal["epoch_date"]), cal["epoch_day"], cal["tempo"])
+
+
+def retimed(cal: dict, tempo: int, local: datetime.datetime) -> dict:
+    """The calendar with another tempo from today on. Today stays today; no day is skipped or repeated."""
+    today = calendar_day(cal, local)
+    return {"epoch_date": local.date().isoformat(), "epoch_day": today, "tempo": tempo, "high_day": today}
+
+
+def when_text(opens: datetime.datetime, local: datetime.datetime, date_format: str) -> str:
+    """"at midnight", "at 12:00", or with its date when it is more than a day off."""
+    clock = "midnight" if (opens.hour, opens.minute) == (0, 0) else f"{opens.hour:02d}:{opens.minute:02d}"
+    if opens - local <= datetime.timedelta(days=1):
+        return f"at {clock}"
+    try:
+        date = opens.strftime(date_format.split(" ")[0] or "%d.%m.%Y")
+    except ValueError:
+        date = opens.strftime("%d.%m.%Y")
+    return f"on {clean_text(date, 24)} at {clock}"
+
+
+# --------------------------------------------------------------------------
 # The world's records (S10): one SQLite file for each world, shared by every
 # caller of that node. Writes are short transactions that take the write
 # lock at once; none is open while a caller thinks. A process killed at any
@@ -2767,6 +2866,41 @@ class Store:
         return self.db.execute("SELECT seq, day, turn, action FROM turns WHERE user_id=? ORDER BY seq",
                                (user_id,)).fetchall()
 
+    # -- the calendar ----------------------------------------------------------
+
+    def today(self, local: datetime.datetime, zone: str = "") -> tuple[int, dict]:
+        """The current world day and the calendar. Begins the calendar, or opens a day in it, when that is due.
+
+        Reading is the common case and takes no lock. The write happens once
+        for each day that opens, by whichever caller sees it first.
+        """
+        cal = read_calendar(dict(self.db.execute("SELECT key, value FROM meta")))
+        if cal is not None and calendar_day(cal, local) == cal["high_day"]:
+            return cal["high_day"], cal
+
+        def work():
+            now = read_calendar(dict(self.db.execute("SELECT key, value FROM meta"))) or new_calendar(local)
+            now["high_day"] = calendar_day(now, local)
+            self._put_calendar(now, zone)
+            return now
+        cal = self._write(work)
+        return cal["high_day"], cal
+
+    def _put_calendar(self, cal: dict, zone: str = "") -> None:
+        rows = [(key, str(value)) for key, value in cal.items()]
+        if zone:
+            rows.append(("timezone", zone))
+        self.db.executemany("INSERT OR REPLACE INTO meta VALUES (?, ?)", rows)
+
+    def set_tempo(self, tempo: int, local: datetime.datetime) -> dict:
+        """Change how many world days open in a real day, from today on."""
+        def work():
+            now = read_calendar(dict(self.db.execute("SELECT key, value FROM meta"))) or new_calendar(local)
+            now = retimed(now, tempo, local)
+            self._put_calendar(now)
+            return now
+        return self._write(work)
+
     def close(self) -> None:
         if self.db is not None:
             try:
@@ -2782,6 +2916,27 @@ class Store:
     def close_all(cls) -> None:
         for store in list(cls.opened):
             store.close()
+
+
+def set_tempo(folder: Path, tempo: int, now=time.time) -> list[str]:
+    """Set the tempo of every world in a data folder, from today on. Returns a line for each."""
+    lines = []
+    for path in sorted(Path(folder).glob("fair_winds-*.db")):
+        db = sqlite3.connect(str(path), timeout=BUSY_TIMEOUT_SECONDS)
+        try:
+            meta = dict(db.execute("SELECT key, value FROM meta"))
+        finally:
+            db.close()
+        store = Store(folder, int(meta["seed"]), meta.get("node", ""))
+        try:
+            local = local_time(now(), meta.get("timezone", "local"))
+            cal = store.set_tempo(tempo, local)
+        finally:
+            store.close()
+        opens = calendar_opens(cal, cal["high_day"] + 1)
+        lines.append(f"{path.name}: tempo {tempo}, day {cal['high_day']} today, "
+                     f"day {cal['high_day'] + 1} opens {opens:%Y-%m-%d %H:%M}")
+    return lines
 
 
 def backup_worlds(source: Path, target: Path) -> list[str]:
@@ -2827,8 +2982,12 @@ class PlainFlight:
     can end at any moment and resume on the same turn.
     """
 
-    def __init__(self, launch: Launch, folder: Path | None, environ=None):
+    def __init__(self, launch: Launch, folder: Path | None, environ=None, now=time.time):
         self.launch = launch
+        self.now = now                    # seconds since the epoch: what day it is hangs on this and nothing else
+        self.zone = "local" if launch.host == "standalone" else launch.timezone
+        self.today, self.calendar = 1, None
+        self._last_look: float | None = None
         node = launch.node_id or "standalone"
         self.world = World(world_seed(node), folder)
         self.weather = Weather(self.world)
@@ -2878,9 +3037,17 @@ class PlainFlight:
 
     def _begin(self) -> None:
         """Take up the pilot's game where it stands, or start one."""
+        self._look_at_the_calendar()
         loaded = self._load()
         if loaded is not True:
             self._new_game()
+        elif not self._dated:
+            # A pilot from before the calendar counted days of their own. Theirs
+            # may lie ahead of the world's: it becomes today, once.
+            if self.state.day > self.today:
+                self.state = dataclasses.replace(self.state, day=self.today)
+            self._dated = True
+        self._catch_up()
         if loaded in ("damaged", "unreachable"):
             # Saving now would destroy a record somebody might still want back.
             self.opening_notice = ("Your saved game could not be read. This game is not saved. Tell the SysOp."
@@ -2902,7 +3069,8 @@ class PlainFlight:
 
     def _new_game(self) -> None:
         start = self.world.towns[self.world.start_town]
-        self.state = FlightState(x=start["x"], y=start["y"], day=1)
+        self.state = FlightState(x=start["x"], y=start["y"], day=self.today)      # a new pilot starts on today
+        self._dated = True
         self.visited = [("town", self.world.start_town)]
         self.targets = self._next_targets()
         self.deliveries, self.days_flown, self.total_km = 0, 0, 0.0
@@ -2911,6 +3079,58 @@ class PlainFlight:
         self._say("Read the winds and fly to whichever the day favours.")
 
     _imported = False
+    _dated = False                        # the pilot's days are the world's days
+
+    # -- the calendar --------------------------------------------------------
+
+    def _local(self) -> datetime.datetime:
+        return local_time(self.now(), self.zone)
+
+    def _look_at_the_calendar(self) -> bool:
+        """Find out what day it is. True if it is a later day than was known."""
+        before, local = self.today, self._local()
+        if self.store is not None:
+            try:
+                self.today, self.calendar = self.store.today(local, self.zone)
+            except sqlite3.Error as error:
+                diagnose(f"the calendar cannot be read: {error}")
+        if self.store is None or self.calendar is None:
+            # No records: a calendar of this visit's own, beginning today.
+            self.calendar = self.calendar or new_calendar(local)
+            self.calendar["high_day"] = self.today = calendar_day(self.calendar, local)
+        return self.today > before
+
+    def _catch_up(self) -> bool:
+        """At most three opened days wait. Older ones lapse, without penalty, when no day is in progress."""
+        state = self.state
+        first = self.today - (WAITING_DAYS - 1)
+        if state.day >= first or state.turn > 0 or state.status != "ground":
+            return False                  # nothing has lapsed, or a day in progress keeps its day
+        lapsed = first - state.day
+        self.state = dataclasses.replace(state, day=first)
+        self._say(f"{lapsed} day{'s' if lapsed != 1 else ''} went by unflown. Day {first}.")
+        return True
+
+    def waiting(self) -> bool:
+        """Has the pilot flown every day that has opened?"""
+        return self.state.day > self.today
+
+    def offered(self, state: FlightState | None = None) -> dict:
+        """What the pilot may do now: nothing, on a day that has not opened."""
+        state = state or self.state
+        return {} if state.day > self.today else self.engine.actions(state)
+
+    def briefing(self) -> str:
+        """When the next day opens, and how many opened days still wait. The day being flown heads the screen."""
+        local = self._local()
+        if self.waiting():
+            opens = when_text(calendar_opens(self.calendar, self.state.day), local, self.launch.datetime_format)
+            return f"Day {self.state.day} opens {opens}."
+        more = self.today - self.state.day
+        opens = when_text(calendar_opens(self.calendar, self.today + 1), local, self.launch.datetime_format)
+        wait = "" if more == 0 else " One more day waits." if more == 1 else \
+            f" {'Two' if more == 2 else more} more days wait."
+        return f"Day {self.today + 1} opens {opens}.{wait}"
 
     def _load(self):
         """True if the pilot's game was read, False if there is none, "damaged" if
@@ -2943,6 +3163,7 @@ class PlainFlight:
         if not targets:
             raise ValueError("no post aboard")
         deliveries, days_flown, total_km = int(career["deliveries"]), int(career["days_flown"]), float(career["total_km"])
+        self._dated = bool(career.get("dated", False))
         log = [str(line) for line in career.get("log", [])][-3:]
         self.state, self.targets, self.visited = flight, targets, visited
         self.deliveries, self.days_flown, self.total_km, self.log = deliveries, days_flown, total_km, log
@@ -2976,7 +3197,7 @@ class PlainFlight:
     def _career(self) -> dict:
         return {"targets": [list(t) for t in self.targets], "visited": [list(v) for v in self.visited],
                 "deliveries": self.deliveries, "days_flown": self.days_flown, "total_km": self.total_km,
-                "log": self.log[-3:]}
+                "log": self.log[-3:], "dated": self._dated}
 
     def save(self, action: str = "") -> None:
         """Write the game as it stands; with an action, as a committed turn in the day's journal."""
@@ -2992,13 +3213,28 @@ class PlainFlight:
             self.saved_ok = False       # play on; say so on the screen
 
     def pulse(self, now: float) -> bool:
-        """Called as time passes: keep the lease alive. True if the screen has to change."""
-        if self.store is None or self.busy is not None or self.ended:
+        """Called as time passes: watch the calendar and keep the lease alive. True if the screen has to change."""
+        if self.busy is not None or self.ended:
             return False
+        changed = False
+        if self._last_look is None or now - self._last_look >= CALENDAR_CHECK_SECONDS:
+            self._last_look = now
+            changed = self._day_may_have_opened()
+        if self.store is None:
+            return changed
         if self._last_beat is not None and now - self._last_beat < HEARTBEAT_SECONDS:
-            return False
+            return changed
         self._last_beat = now
-        return not self._mine()
+        return not self._mine() or changed
+
+    def _day_may_have_opened(self) -> bool:
+        """Look at the calendar. If a day has opened, say so where it matters. True if anything changed."""
+        if not self._look_at_the_calendar():
+            return False
+        if self._catch_up():
+            self.save()
+        self._choose_default()
+        return True
 
     def _mine(self, write: bool = True) -> bool:
         """Is the pilot still this session's? If not, this session is over.
@@ -3084,11 +3320,11 @@ class PlainFlight:
 
     def choices(self) -> list[str]:
         """The layer choices on offer, lowest first."""
-        offered = self.engine.actions(self.state)
+        offered = self.offered(self.state)
         return [a for a in ("sink", "hold", "climb", "launch") if a in offered]
 
     def _choose_default(self) -> None:
-        offered = self.engine.actions(self.state)
+        offered = self.offered(self.state)
         self.choice = "hold" if "hold" in offered else next(iter(self.choices()), None)
         if self.choice is None and "land" in offered:
             self.choice = "land"
@@ -3102,7 +3338,9 @@ class PlainFlight:
             return "aloft"
         if state.status in ("stranded", "ditched"):
             return state.status
-        return "ground" if self.engine.actions(state) else "rest"
+        if self.waiting():
+            return "wait"
+        return "ground" if self.offered(state) else "rest"
 
     # -- keys ----------------------------------------------------------------
 
@@ -3120,8 +3358,10 @@ class PlainFlight:
             return None
         if k in ("?", "F1"):
             return "help"
+        if self.waiting() and self._day_may_have_opened():
+            return None                   # the day opened while the pilot waited: show it before any key means anything
         phase = self.phase()
-        offered = self.engine.actions(self.state)
+        offered = self.offered()
         if phase in ("aloft", "ground"):
             options = self.choices()
             if k in ("w", "UP") and self.choice in options:
@@ -3276,10 +3516,19 @@ class PlainFlight:
                                          x=state.x if x is None else x, y=state.y if y is None else y, **stores)
         self._choose_default()
 
+    def _dawn(self) -> str:
+        """What to say of the day the logbook has come to: it is here, or when it will be."""
+        self._look_at_the_calendar()
+        self._catch_up()                  # days that lapsed while this one was in progress
+        if not self.waiting():
+            return f"Day {self.state.day}. Dawn."
+        opens = when_text(calendar_opens(self.calendar, self.state.day), self._local(), self.launch.datetime_format)
+        return f"Day {self.state.day} opens {opens}."
+
     def _night(self) -> None:
         at_place = self.engine.place(self.state.x, self.state.y) is not None
         self._new_day(1, refill=at_place)
-        self._say(f"Day {self.state.day}. Dawn.")
+        self._say(self._dawn())
         self.save("night")                # once, with the new day and its log together
 
     def _nearest(self, towns) -> dict:
@@ -3288,7 +3537,7 @@ class PlainFlight:
     def _walk_out(self) -> None:
         town = self._nearest(self.world.towns)
         self._new_day(2, town["x"], town["y"], refill=True)
-        self._say(f"Two days on foot to {town['name']}. Day {self.state.day}.")
+        self._say(f"Two days on foot to {town['name']}. {self._dawn()}")
         self.targets = self._next_targets()
         self.save("walk")
 
@@ -3296,7 +3545,7 @@ class PlainFlight:
         ports = [t for t in self.world.towns if t["port"]] or self.world.towns
         town = self._nearest(ports)
         self._new_day(1, town["x"], town["y"], refill=True)
-        self._say(f"The packet boat lands you at {town['name']}. Day {self.state.day}.")
+        self._say(f"The packet boat lands you at {town['name']}. {self._dawn()}")
         self.targets = self._next_targets()
         self.save("boat")
 
@@ -3354,15 +3603,18 @@ class PlainFlight:
             out.append(s._line(base + 3, 1, "You are visiting: nothing is kept when you leave.", "dim"))
         sentence, role = self._sentence(phase)
         out.append(s._line(base + 4, 1, sentence[:wide], role))
-        out.append(s._line(base + 5, 1, f"{launch.handle}  {self.deliveries} delivered  {self.total_km + state.distance:.0f} km"
-                                        f"   {s.width} x {s.height} {launch.color_depth} {layout_tier(s.width, s.height)}"
-                                        f" {'standalone' if launch.host == 'standalone' else launch.transport}"[:wide], "dim"))
+        status = f"{self.briefing()}   {launch.handle}  {self.deliveries} delivered  {self.total_km + state.distance:.0f} km"
+        terminal = (f"   {s.width} x {s.height} {launch.color_depth} {layout_tier(s.width, s.height)}"
+                    f" {'standalone' if launch.host == 'standalone' else launch.transport}")
+        if len(status) + len(terminal) <= wide:
+            status += terminal            # what the door makes of this terminal, where there is room to say it
+        out.append(s._line(base + 5, 1, status[:wide], "dim"))
         out += s._keys(base + 6, self._key_help(phase))
         return out
 
     def _key_help(self, phase: str):
         leave = ("Q", f"Return to {self.launch.node_name}")
-        offered = self.engine.actions(self.state)
+        offered = self.offered(self.state)
         if phase == "aloft":
             keys = [("W/S", "Layer"), ("Enter", "Fly it")]
             if "jettison" in offered:
@@ -3378,6 +3630,8 @@ class PlainFlight:
             return [("W", "Walk out"), ("?", "Help"), leave]
         if phase == "ditched":
             return [("N", "Wait for the boat"), ("?", "Help"), leave]
+        if phase == "wait":
+            return [("?", "Help"), leave]
         return [("N", "Next day"), ("?", "Help"), leave]
 
     def _sentence(self, phase: str) -> tuple[str, str]:
@@ -3386,6 +3640,9 @@ class PlainFlight:
             return "Stranded with no fuel. Walking out to the nearest town costs two days.", "warn"
         if phase == "ditched":
             return "Adrift. The packet boat will take a day to bring you to port.", "warn"
+        if phase == "wait":
+            opens = when_text(calendar_opens(self.calendar, state.day), self._local(), self.launch.datetime_format)
+            return f"Every day that has opened is flown. Day {state.day} opens {opens}: come back then.", "accent"
         if phase == "rest":
             if state.grounded:
                 return "The balloon is too worn to fly. A night at a town mends it.", "warn"
@@ -3425,7 +3682,7 @@ class PlainFlight:
     def shown_layer(self) -> int:
         """The layer whose wind the map shows: the one the pilot is choosing, else the one they are in."""
         state = self.state
-        if self.choice in ("hold", "climb", "sink", "launch", "jettison") and self.choice in self.engine.actions(state):
+        if self.choice in ("hold", "climb", "sink", "launch", "jettison") and self.choice in self.offered(state):
             return self.engine.preview(state, self.choice, 1)["layer"]
         return state.layer or self.engine.lowest_open(state.x, state.y)
 
@@ -3470,7 +3727,7 @@ class PlainFlight:
             cells.append((cell, place))
         for place, glyph, ink in others:
             view.mark(screen, place["x"], place["y"], glyph, ink)
-        if state.status in ("aloft", "ground") and self.engine.actions(state):
+        if state.status in ("aloft", "ground") and self.offered(state):
             order = [a for a in self.choices() if a != self.choice]
             if self.choice in ("sink", "hold", "climb", "launch", "jettison"):
                 order.insert(0, self.choice)        # the chosen track first: where tracks share a cell, it shows
@@ -3505,7 +3762,7 @@ class PlainFlight:
         if self.tier != "small":
             return self._draw_sounding(s, phase)
         state, col = self.state, self.panel_col
-        offered = self.engine.actions(state)
+        offered = self.offered(state)
         frame = self.weather.frame(state.day, state.minute)
         cover = self.coverage(state.x, state.y)
         low, top = self.engine.lowest_open(state.x, state.y), self.engine.top_layer(state)
@@ -3561,7 +3818,7 @@ class PlainFlight:
     def _draw_sounding(self, s: "Session", phase: str) -> list[str]:
         """The panel from 132 x 40 up: a slice of sky with the balloon in it, and the wind in every layer."""
         state, col, screen = self.state, self.panel_col, s.frame
-        offered = self.engine.actions(state)
+        offered = self.offered(state)
         frame = self.weather.frame(state.day, state.minute)
         low, top = self.engine.lowest_open(state.x, state.y), self.engine.top_layer(state)
         here = state.layer if state.status == "aloft" else 0
@@ -3731,8 +3988,8 @@ PLAIN_HELP = (
     "is always true. Climbing costs fuel, sinking is free, holding costs 1 (0 from",
     "11:00 to 15:00, 2 after 20:00). Land in 15 km/h or less for a clean landing.",
     "Within 12 km of a place counts as being there: two or three map cells.",
-    "",
-    "Leaving never loses anything. The game is saved every turn.",
+    "A world day opens at the same hour for everyone and is flown once; up to",
+    "three wait for you. Leaving never loses anything: every turn is saved.",
 )
 
 
@@ -4420,9 +4677,19 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="fair_winds.py", description="Fair Winds, a door game for NetBBS.")
     parser.add_argument("--version", action="version", version=VERSION)
     parser.add_argument("--world-map", metavar="NODE_ID", help="print the continent of a node id and exit")
+    parser.add_argument("--tempo", metavar="N", type=int, choices=TEMPOS,
+                        help="open N world days in each real day, from today on, in every world; and exit")
     parser.add_argument("--backup", metavar="FOLDER",
                         help="copy every world's records to FOLDER and exit; safe while callers are playing")
     args = parser.parse_args(argv)
+    if args.tempo is not None:
+        try:
+            lines = set_tempo(data_dir(os.environ), args.tempo)
+        except (OSError, sqlite3.Error, StoreError) as error:
+            print(f"tempo not changed: {error}", file=sys.stderr)
+            return 1
+        print("\n".join(lines) if lines else "no world to change")
+        return 0
     if args.backup is not None:
         try:
             names = backup_worlds(data_dir(os.environ), Path(args.backup))
