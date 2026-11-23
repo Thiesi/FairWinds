@@ -292,6 +292,18 @@ class Landing(unittest.TestCase):
         _, again = self.land(wind=(45.0, 0.0), state={"cargo": cargo, "fuel": 0, "ballast": 0})
         self.assertEqual(again.state.cargo, result.state.cargo, "which half is fixed, not rolled")
 
+    def test_a_landing_is_judged_when_it_is_chosen(self):
+        # 19:45 is the last daylight turn: landing then is a day landing.
+        last_light = (19 * 60 + 45 - fw.DAWN_MINUTE) // 15
+        engine = flight(wind=(5.0, 0.0))
+        state = aloft(self.x, self.y, turn=last_light)
+        self.assertEqual(engine.landing_class(state), "clean")
+        result = engine.step(state, "land")
+        self.assertEqual(result.events[0], ("land", "clean", None), "it lands as it was promised")
+        self.assertEqual(result.state.turn, last_light + 1)
+        after_dark = engine.step(aloft(self.x, self.y, turn=last_light + 1), "land")
+        self.assertEqual(after_dark.events[0], ("land", "rough", None))
+
     def test_wear_stops_at_grounded(self):
         _, result = self.land(wind=(20.0, 0.0), state={"wear": 95})
         self.assertEqual(result.state.wear, 100)
@@ -544,24 +556,36 @@ class Preview(unittest.TestCase):
                 self.assertEqual(got[2], want[2])
             self.assertFalse(look["blocked"])
 
-    def test_only_what_the_pilot_can_see_is_shown_as_true(self):
+    def test_only_what_the_pilot_has_read_is_shown_as_true(self):
         engine = fw.Flight(WORLD, WEATHER, "flight-node/12")
-        found = False
-        for day in range(1, 40):
+        guessed = far_differs = 0
+        days = range(1, 40)
+        for day in days:
             state = aloft(self.x, self.y, layer=2, day=day)
             truth = WEATHER.frame(day, state.minute)
             hold = engine.preview(state, "hold", 4)["points"][0]
             vx, vy = truth.wind(state.x, state.y, 2)
             self.assertAlmostEqual(hold[0], state.x + vx * 0.25, msg="your own layer is known")
+            self.assertAlmostEqual(hold[1], state.y + vy * 0.25)
+            ux, uy = truth.wind(state.x, state.y, 3)
+            true_first = (state.x + ux * 0.25, state.y + uy * 0.25)
             blind = engine.preview(state, "climb", 4)["points"]
             sure = engine.preview(dataclasses.replace(state, pibal_until=state.turn + 3), "climb", 4)["points"]
-            ux, uy = truth.wind(state.x, state.y, 3)
-            self.assertAlmostEqual(sure[0][0], state.x + ux * 0.25, msg="a pibal reads the layer above")
-            self.assertEqual(blind[0], sure[0], "with no lead the first step is the truth either way")
+            self.assertAlmostEqual(sure[0][0], true_first[0], msg="a pibal reads the layer above")
+            self.assertAlmostEqual(sure[0][1], true_first[1])
+            guessed += math.hypot(blind[0][0] - true_first[0], blind[0][1] - true_first[1]) > 0.05
             far = engine.preview(state, "hold", 12, coverage=0.0)["points"]
             near = engine.preview(state, "hold", 12, coverage=1.0)["points"]
-            found = found or far[-1] != near[-1]
-        self.assertTrue(found, "without a station the far end of a track is a guess")
+            far_differs += far[-1] != near[-1]
+        self.assertGreater(guessed, len(days) * 0.8, "an unread layer is a forecast from its first turn")
+        self.assertGreater(far_differs, len(days) * 0.8, "without a station the far end of a track is a guess")
+
+    def test_at_a_station_even_an_unread_layer_is_forecast_exactly(self):
+        engine = fw.Flight(WORLD, WEATHER, "flight-node/12")
+        state = aloft(self.x, self.y, layer=2, day=9)
+        ux, uy = WEATHER.frame(9, state.minute).wind(state.x, state.y, 3)
+        first = engine.preview(state, "climb", 4, coverage=1.0)["points"][0]
+        self.assertAlmostEqual(first[0], state.x + ux * 0.25)
 
     def test_what_cannot_be_done_has_no_track(self):
         engine = flight(wind=(1.0, 0.0))
@@ -569,7 +593,7 @@ class Preview(unittest.TestCase):
         self.assertEqual(engine.preview(state, "climb", 6)["points"], [])
         self.assertEqual(engine.preview(state, "land", 6)["cost"], None)
 
-    def test_a_track_stops_at_ground_it_cannot_cross_and_at_midnight(self):
+    def test_a_track_ends_where_the_flight_would(self):
         engine = flight(wind=(0.0, 0.0))
         def test(k):
             x = k % fw.CHART_W
@@ -579,13 +603,31 @@ class Preview(unittest.TestCase):
             return engine.lowest_open(px, py) == 1 and engine.lowest_open(px + 10.0, py) == 2
         x, y = find_cell(test)
         east = flight(wind=(40.0, 0.0))
-        over = east.preview(aloft(x, y), "hold", 3)
-        self.assertTrue(over["blocked"])
-        self.assertEqual(over["points"][0][2], 2, "the track shows the climb it would force")
-        stopped = east.preview(aloft(x, y, ceiling=1), "hold", 3)
-        self.assertEqual((stopped["points"], stopped["blocked"]), ([], True))
-        late = flight(wind=(1.0, 0.0)).preview(aloft(self.x, self.y, turn=fw.DAY_TURNS - 2, night_gear=True), "hold", 8)
-        self.assertEqual(len(late["points"]), 2)
+        over = east.preview(aloft(x, y), "hold", 1)
+        self.assertEqual((over["blocked"], over["forced"], over["stop"]), (True, 6, None))
+        self.assertEqual(over["layer"], 1, "the first turn is flown in the layer chosen")
+        self.assertEqual(over["points"][0][2], 2, "and the track shows the climb it would force")
+        flown = east.step(aloft(x, y), "hold").state
+        self.assertEqual((flown.layer, 60 - 1 - flown.fuel), (2, over["forced"]), "the preview charges what the turn does")
+        on_ballast = east.preview(aloft(x, y, fuel=4), "hold", 1)
+        self.assertEqual((on_ballast["forced"], on_ballast["stop"], on_ballast["points"][0][2]), (0, None, 2))
+        down = east.preview(aloft(x, y, fuel=1, ballast=0), "hold", 3)
+        self.assertEqual(down["stop"], "high_ground", "a climb that cannot be paid for ends the track")
+        self.assertEqual(len(down["points"]), 1)
+        self.assertEqual(east.step(aloft(x, y, fuel=1, ballast=0), "hold").state.status, "stranded")
+        held = east.preview(aloft(x, y, ceiling=1), "hold", 3)
+        self.assertEqual((held["points"], held["blocked"], held["stop"]), ([], True, "ridge"))
+
+    def test_a_track_ends_when_the_fuel_does_and_at_midnight(self):
+        calm = flight(wind=(1.0, 0.0))
+        short = calm.preview(aloft(self.x, self.y, fuel=3), "hold", 10)
+        self.assertEqual((len(short["points"]), short["stop"]), (3, "fuel"), "three turns of holding on three fuel")
+        sunny = calm.preview(aloft(self.x, self.y, fuel=0, turn=20), "hold", 10)
+        self.assertEqual(len(sunny["points"]), 10, "midday holds are free")
+        late = calm.preview(aloft(self.x, self.y, turn=fw.DAY_TURNS - 2, night_gear=True), "hold", 8)
+        self.assertEqual((len(late["points"]), late["stop"]), (2, None))
+        lifted = calm.preview(aloft(self.x, self.y, fuel=0), "jettison", 4)
+        self.assertEqual((lifted["cost"], lifted["layer"], lifted["stop"]), (0, 2, "fuel"))
 
 
 if __name__ == "__main__":

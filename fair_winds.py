@@ -7,9 +7,8 @@ standalone in a terminal for development.
 
 This build reaches slice S04 of docs/design.md: the host adapter and terminal
 lifecycle, the world generator with its terrain cache, the weather, and the
-turn engine. The door opens,
-shows what the host told it, and closes cleanly. The game arrives in the
-slices that follow.
+turn engine. The door opens, shows what the host told it, and closes cleanly.
+The game arrives in the slices that follow.
 """
 from __future__ import annotations
 
@@ -1155,6 +1154,7 @@ COST_HOLD_DAY, COST_HOLD_NIGHT = 1, 2
 COST_CLIMB = 3
 COST_CLIMB_EXTRA = {5: 1, 6: 2}             # on top, for climbing into these layers
 PIBAL_TURNS = 4
+UNREAD_LEAD = 120.0                         # minutes: how stale the forecast of an unread layer is
 TURN_HOURS = TURN_MINUTES / 60.0
 
 LANDING_CLASSES = ("clean", "rough", "hard")
@@ -1343,7 +1343,9 @@ class Flight:
             return TurnResult(dataclasses.replace(state, pibals=state.pibals - 1,
                                                   pibal_until=state.turn + PIBAL_TURNS - 1), (("pibal",),))
         if action == "land":
-            return TurnResult(self._land(dataclasses.replace(state, turn=state.turn + 1), events), tuple(events))
+            # Judged by the weather at the moment it is chosen; then it takes the turn.
+            landed = self._land(state, events)
+            return TurnResult(dataclasses.replace(landed, turn=state.turn + 1), tuple(events))
 
         cost, layer, ballast = offered[action], state.layer, state.ballast
         if action == "launch":
@@ -1446,14 +1448,27 @@ class Flight:
     def preview(self, state: FlightState, action: str, horizon: int, coverage: float = 0.0) -> dict:
         """Where the forecast says this choice leads: the action, then holding.
 
-        Returns the layer flown, the action's cost, the points turn by turn,
-        and whether high ground stops the track. The first turn uses the true
-        wind when the pilot can see it: in the layer they are in, or anywhere
-        above them while a pibal's reading lasts.
+        The pilot knows the true wind only where they have read it: in their
+        own layer, and in every layer while a pibal's reading lasts. There the
+        track starts from the truth and looks ahead turn by turn. Any other
+        layer is forecast from a bulletin `UNREAD_LEAD` minutes old, so it is
+        never the truth, not even for the first turn.
+
+        The track follows the fuel and ballast too, so it ends where the
+        flight would. Returns:
+
+          layer    the layer the first turn is flown in
+          cost     the action's cost, or None if it is not on offer
+          points   (x, y, layer) after each turn
+          blocked  True if high ground forces a climb along the way
+          forced   fuel the forced climbs would cost
+          stop     why the track ends early: "ridge" (ground above the
+                   ceiling), "high_ground" (a forced climb that cannot be
+                   paid for), "fuel" (nothing left to hold with), or None
         """
         offered = self.actions(state)
         if action not in offered or action in ("land", "pibal"):
-            return {"layer": state.layer, "cost": None, "points": [], "blocked": False}
+            return {"layer": state.layer, "cost": None, "points": [], "blocked": False, "forced": 0, "stop": None}
         layer = state.layer
         if action == "launch":
             layer = self.lowest_open(state.x, state.y)
@@ -1461,27 +1476,49 @@ class Flight:
             layer += 1
         elif action == "sink":
             layer -= 1
-        known = layer == state.layer or state.pibal_until >= state.turn
-        x, y, points, blocked = state.x, state.y, [], False
+        first = layer
+        read = layer == state.layer or state.pibal_until >= state.turn
+        stale = 0.0 if read else UNREAD_LEAD
+        fuel = state.fuel - offered[action]
+        ballast = state.ballast - (1 if action == "jettison" else 0)
+        x, y, points, blocked, forced, stop = state.x, state.y, [], False, 0, None
         top = self.top_layer(state)
         for i in range(horizon):
             turn = state.turn + i
             if turn >= DAY_TURNS:
                 break
+            if i:
+                hold = self.hold_cost(dataclasses.replace(state, turn=turn), layer)
+                if hold > fuel:
+                    stop = "fuel"
+                    break
+                fuel -= hold
             minute = DAWN_MINUTE + turn * TURN_MINUTES
-            lead = 0.0 if (i == 0 and known) else i * TURN_MINUTES
-            vx, vy = self.weather.frame(state.day, minute, lead, coverage).wind(x, y, layer)
+            vx, vy = self.weather.frame(state.day, minute, stale + i * TURN_MINUTES, coverage).wind(x, y, layer)
             nx, ny = x + vx * TURN_HOURS, y + vy * TURN_HOURS
             need = self.lowest_open(nx, ny)
             if need > layer:
                 blocked = True
                 if need > top:
+                    stop = "ridge"
                     break
-                layer = need
+                while layer < need:
+                    price = self.climb_cost(state, layer + 1) * 2
+                    if fuel >= price:
+                        fuel -= price
+                        forced += price
+                    elif ballast > 0:
+                        ballast -= 1
+                    else:
+                        stop = "high_ground"
+                        break
+                    layer += 1
             x, y = nx, ny
             points.append((x, y, layer))
-        return {"layer": points[0][2] if points else layer, "cost": offered[action], "points": points,
-                "blocked": blocked}
+            if stop:
+                break
+        return {"layer": first, "cost": offered[action], "points": points, "blocked": blocked,
+                "forced": forced, "stop": stop}
 
 
 # --------------------------------------------------------------------------

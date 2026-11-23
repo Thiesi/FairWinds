@@ -244,7 +244,7 @@ caller to commit before anything is shown. Turns are numbered from dawn at
 | Sink | 0 | Down one layer |
 | Jettison | 0, one ballast sack | Up one layer, no fuel |
 | Pibal | 0, one pibal, no turn | True wind in every layer here, four turns |
-| Land | 0 | From the lowest open layer to the ground; takes the turn, no drift |
+| Land | 0 | From the lowest open layer to the ground; judged by the weather at the moment it is chosen; takes the turn, no drift |
 
 Starting stores: 60 fuel, 5 sacks, 3 pibals. The first envelope reaches layer
 3. Fuel, sacks and pibals are bought at towns and masts.
@@ -255,9 +255,20 @@ balloon launches into it, lands from it and cannot sink below it.
 
 **Preview.** Before committing, the pilot steps through the layers within one
 step. For each, `preview` returns the forecast track for the instrument's
-horizon (the action, then holding) and the cost. The first step is the true
-wind in the pilot's own layer, and in any layer while a pibal's reading lasts.
-This is the core of the interface.
+horizon (the action, then holding) and the cost. This is the core of the
+interface.
+
+The pilot knows the true wind only where they have read it: in their own
+layer, and in every layer while a pibal's reading lasts. There a track starts
+from the truth and looks ahead turn by turn. Any other layer is forecast from a
+bulletin two hours old, so it is a guess from its first turn. That gap is what
+a pibal is for. At a station the forecast is exact either way.
+
+A track follows fuel and ballast as the flight would, so it never shows
+somewhere the balloon cannot get to. It reports the fuel that forced climbs
+would cost, and it ends early where the flight would: at ground above the
+ceiling, at a forced climb that cannot be paid for, or where the fuel for
+holding runs out.
 
 **Terrain.** If the drift carries the balloon to ground that fills its layer,
 it climbs over at double the climb cost per layer, spending a ballast sack for
