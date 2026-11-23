@@ -21,7 +21,7 @@ class Lifecycle(unittest.TestCase):
 
     def test_quit(self):
         with Door() as door:
-            self.assertTrue(door.wait_for("Return to Test Node"))
+            self.assertTrue(door.wait_for("Nearest post"))
             screen = door.screen()
             self.assertIn("Mara", screen.text())
             self.assertIn("opens at midnight", screen.text())
@@ -33,13 +33,13 @@ class Lifecycle(unittest.TestCase):
     def test_capital_q_and_ctrl_c_quit_too(self):
         for key in ("Q", b"\x03"):
             with self.subTest(key=key), Door() as door:
-                self.assertTrue(door.wait_for("Return to"))
+                self.assertTrue(door.wait_for("Nearest post"))
                 door.send(key)
                 self.assert_clean_exit(door)
 
     def test_end_of_input(self):
         with Door() as door:
-            self.assertTrue(door.wait_for("Return to"))
+            self.assertTrue(door.wait_for("Nearest post"))
             started = time.monotonic()
             door.proc.stdin.close()
             self.assert_clean_exit(door)
@@ -58,7 +58,7 @@ class Lifecycle(unittest.TestCase):
                                     stderr=subprocess.PIPE, env=env)
             try:
                 seen = b""
-                while b"Return to" not in seen:
+                while b"Nearest post" not in seen:
                     chunk = os.read(proc.stdout.fileno(), 4096)
                     self.assertTrue(chunk, "the door closed before drawing")
                     seen += chunk
@@ -77,13 +77,13 @@ class Lifecycle(unittest.TestCase):
     @unittest.skipIf(os.name == "nt", "Windows cannot deliver SIGTERM to a child")
     def test_sigterm(self):
         with Door() as door:
-            self.assertTrue(door.wait_for("Return to"))
+            self.assertTrue(door.wait_for("Nearest post"))
             door.proc.send_signal(signal.SIGTERM)
             self.assert_clean_exit(door)
 
     def test_session_limit(self):
         with Door(door_info(session_limit_seconds=4)) as door:
-            self.assertTrue(door.wait_for("Return to"))
+            self.assertTrue(door.wait_for("Nearest post"))
             started = time.monotonic()
             self.assertEqual(door.wait_exit(timeout=8), 0)
             self.assertLess(time.monotonic() - started, 4, "leaves before the host's limit")
@@ -98,7 +98,7 @@ class Lifecycle(unittest.TestCase):
 
     def test_help_and_back(self):
         with Door() as door:
-            self.assertTrue(door.wait_for("Return to"))
+            self.assertTrue(door.wait_for("Nearest post"))
             door.send("?")
             self.assertTrue(door.wait_for("A balloon cannot steer"))
             door.send("b")
@@ -110,7 +110,7 @@ class Lifecycle(unittest.TestCase):
 
     def test_split_arrow_is_not_a_quit_or_a_stray_key(self):
         with Door() as door:
-            self.assertTrue(door.wait_for("Return to"))
+            self.assertTrue(door.wait_for("Nearest post"))
             door.send(b"\x1b")
             time.sleep(0.01)
             door.send(b"[A")
@@ -163,7 +163,7 @@ class Lifecycle(unittest.TestCase):
 
     def test_sixteen_colours_use_only_plain_ansi(self):
         with Door(door_info(color_depth="16", charset="ascii")) as door:
-            self.assertTrue(door.wait_for("Return to"))
+            self.assertTrue(door.wait_for("Nearest post"))
             door.send("q")
             self.assert_clean_exit(door)
             self.assertNotIn("38;2;", door.output)
