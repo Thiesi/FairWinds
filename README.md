@@ -20,7 +20,8 @@ supplies to the stranded.
 
 ## Status
 
-**Planning is complete. Nothing is implemented yet.**
+**In development. Not playable yet.** The plan is complete and the first slice
+is built: the door launches under NetBBS or standalone, and leaves cleanly.
 
 - [Build plan](docs/design.md): scope, phases and slices with acceptance
   criteria.
