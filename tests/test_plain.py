@@ -91,7 +91,8 @@ class NewGame(PlainCase):
         self.assertGreaterEqual(text.count("#"), 3 + 1, "three in the list, and at least one on the map")
         self.assertIn("Launch into layer 1 Surface: 2 fuel.", text)
         self.assertIn("[Enter] Launch", text)
-        self.assertIn("Return to Test Node", text)
+        self.assertIn("[Q] Leave", text, "at 80 columns the short word")
+        self.assertIn("Return to Test Node", self.screen(game, 132, 40), "and the node by name where there is room")
         for name in (game.place_of(t)["name"][:14] for t in game.targets):
             self.assertIn(name, text)
 

@@ -33,7 +33,7 @@ import zoneinfo
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "0.1.0.dev16"
+VERSION = "0.1.0.dev17"
 DOOR_API = 5
 MIN_WIDTH, MIN_HEIGHT = 80, 24
 MAX_DIMENSION = 1000
@@ -1176,9 +1176,19 @@ ROTOR_CHANCE = 0.35
 ROTOR_WEAR = 2
 ROTOR_REACH_KM = 15.0
 RIDGE_WEAR = 2
+# The trail rope: in the lowest layer a rope dragged over the ground (and a scrap of sail) bends the course.
+ROPE_COS, ROPE_SIN = 0.8660254037844387, 0.5      # thirty degrees either side of the wind
+ROPE_SPEED = 0.75                                 # of the wind's speed: the rope is a brake
+ROPE_WEAR = 1                                     # a turn on the rope, on the balloon
+
+
+def roped(vx: float, vy: float, side: str) -> tuple[float, float]:
+    """The drift on the trail rope: the wind's, turned thirty degrees to the left or the right, and slower."""
+    turn = ROPE_SIN if side == "left" else -ROPE_SIN
+    return ((vx * ROPE_COS + vy * turn) * ROPE_SPEED, (-vx * turn + vy * ROPE_COS) * ROPE_SPEED)
 PLACE_RADIUS_KM = 12.5                      # this close to a town or station is at it
 
-ACTIONS = ("launch", "hold", "climb", "sink", "jettison", "land", "pibal")
+ACTIONS = ("launch", "hold", "climb", "sink", "jettison", "left", "right", "land", "pibal")
 
 
 @dataclass(frozen=True)
@@ -1343,6 +1353,8 @@ class Flight:
             out["sink"] = 0
         if state.pibals > 0 and state.pibal_until < state.turn:
             out["pibal"] = 0
+        if state.layer <= low and "hold" in out:
+            out["left"] = out["right"] = out["hold"]    # the rope reaches the ground from the lowest layer only
         if state.layer <= low:
             # Too much wind to land in is refused while there is any other way to stay up.
             stay_up = any(a in out for a in ("hold", "climb", "jettison"))
@@ -1385,6 +1397,9 @@ class Flight:
         # Drift on the true wind of the layer the balloon is now in.
         frame = self.weather.frame(state.day, state.minute)
         vx, vy = frame.wind(state.x, state.y, layer)
+        if action in ("left", "right"):
+            vx, vy = roped(vx, vy, action)
+            wear += ROPE_WEAR
         x, y = state.x + vx * TURN_HOURS, state.y + vy * TURN_HOURS
         stranded = False
         need = self.lowest_open(x, y)
@@ -1521,6 +1536,8 @@ class Flight:
                 fuel -= hold
             minute = DAWN_MINUTE + turn * TURN_MINUTES
             vx, vy = self.weather.frame(state.day, minute, stale + i * TURN_MINUTES, coverage).wind(x, y, layer)
+            if action in ("left", "right") and layer == first:
+                vx, vy = roped(vx, vy, action)          # the track of staying on the rope, while it still reaches
             nx, ny = x + vx * TURN_HOURS, y + vy * TURN_HOURS
             need = self.lowest_open(nx, ny)
             if need > layer:
@@ -2533,7 +2550,13 @@ _SKY_RAMP = ((18, 28, 74), (40, 88, 168), (100, 160, 224), (172, 210, 242))
 _BAR_RAMP = ((90, 170, 220), (120, 220, 170), (250, 210, 110), (250, 130, 90))
 POST_CHOICES = 3                     # destinations on offer at once
 STATION_REACH_KM = 150.0             # a town or station sharpens the forecast this far out
-_TRACK_ROLES = {"sink": "cool", "hold": "accent", "climb": "warm", "launch": "accent", "jettison": "warm"}
+_TRACK_ROLES = {"sink": "cool", "hold": "accent", "climb": "warm", "launch": "accent", "jettison": "warm",
+                "left": "accent", "right": "accent"}
+DROP_KM = 30.0                       # mail can be dropped this close to where it is bound
+DROP_SHARE = 0.6                     # of the payout: a bag thrown down is not a bag handed over
+DROP_ABOVE = 1                       # and from no more than this many layers above the lowest
+WAIT_TURNS = 4                       # an hour on the ground, waiting for the wind
+FORWARD_SHARE = 0.5                  # of the payout, times the part of the way it was carried: cargo sent on by road
 
 
 def data_dir(environ) -> Path:
@@ -3413,9 +3436,13 @@ class PlainFlight:
         """One line of the manifest, checked. Raises ValueError, KeyError or TypeError if it is not one."""
         if item["kind"] not in CARGO_KINDS:
             raise ValueError("no such cargo")
+        km = item.get("km")
+        if km is not None and not (math.isfinite(float(km)) and float(km) >= 0):
+            raise ValueError("cargo from nowhere")
         return {"id": int(item["id"]), "contract": item.get("contract"), "kind": item["kind"],
                 "dest": list(self._ref(item["dest"])), "origin": item.get("origin"),
-                "weight": int(item["weight"]), "payout": int(item["payout"]), "due": int(item["due"])}
+                "weight": int(item["weight"]), "payout": int(item["payout"]), "due": int(item["due"]),
+                "km": None if km is None else float(km)}
 
     def _import(self):
         """A pilot the database has never seen may have a save file from before it. Take that over, once."""
@@ -3561,6 +3588,12 @@ class PlainFlight:
 
     def _load_cargo(self, offer: dict) -> dict:
         item = dict(offer, id=self.next_id)
+        there = self.place_of(tuple(item["dest"]))
+        # How far it has to go from where it comes aboard: what "part of the way" is measured against. From
+        # the office itself, not from wherever in its field the balloon stands, so a hop across town is no way.
+        ref = self.here()
+        start = self.place_of(ref) if ref is not None else {"x": self.state.x, "y": self.state.y}
+        item["km"] = round(math.sqrt((there["x"] - start["x"]) ** 2 + (there["y"] - start["y"]) ** 2), 1)
         self.next_id += 1
         self.manifest.append(item)
         self.state = dataclasses.replace(
@@ -3860,12 +3893,22 @@ class PlainFlight:
         offered = self.offered()
         if phase in ("aloft", "ground"):
             options = self.choices()
+            if k in ("w", "s", "UP", "DOWN") and self.choice in ("left", "right") and "hold" in options:
+                self.choice = "hold"          # the rope is a kind of hold: the layers are counted from there
             if k in ("w", "UP") and self.choice in options:
                 self.choice = options[min(len(options) - 1, options.index(self.choice) + 1)]
             elif k in ("s", "DOWN") and self.choice in options:
                 self.choice = options[max(0, options.index(self.choice) - 1)]
             elif k in ("w", "s", "UP", "DOWN") and options:
                 self.choice = options[0]
+            elif k in ("a", "LEFT") and "left" in offered:
+                self.choice = "left"
+            elif k in ("d", "RIGHT") and "right" in offered:
+                self.choice = "right"
+            elif k == "m" and self.droppable():
+                self._drop()
+            elif k == "h" and phase == "ground":
+                self._wait()
             elif k == "j" and "jettison" in offered:
                 self.choice = "jettison"
             elif k == "l" and "land" in offered:
@@ -3909,6 +3952,8 @@ class PlainFlight:
             self.hub_note = self.mend()
         elif k == "r" and self.relief_due():
             self.hub_note = self.relief()
+        elif k == "w":
+            self.hub_note = self.forward()
         self._choose_default()
 
     def _say(self, line: str) -> None:
@@ -3987,6 +4032,8 @@ class PlainFlight:
             return f"Up and away into layer {event[1]}, {LAYER_NAMES[event[1] - 1]}."
         if code in ("hold", "climb", "sink", "jettison"):
             return ""                      # the drift line says it
+        if code in ("left", "right"):
+            return f"The rope is out: bearing {code} of the wind."
         if code == "drift":
             return f"Layer {self.state.layer if self.state.layer else '-'}: {event[1]:g} km, wind {event[2]}."
         if code == "forced_climb":
@@ -4017,6 +4064,99 @@ class PlainFlight:
         if code == "stranded":
             return "No fuel, and nobody near. You are stranded."
         return ""
+
+    def forwardable(self) -> list[tuple[dict, int]]:
+        """Cargo bound elsewhere that this post office would send on by road, and what it would pay for each.
+
+        The road pays for the part of the way the balloon carried it: nothing
+        at the counter it was taken from, half its payout at the door of
+        where it was going.
+        """
+        if not self.at_office():
+            return []
+        state, here, out = self.state, self.here(), []
+        office = self.place_of(here)
+        condition = {item[0]: item[2] for item in state.cargo}
+        for item in self.manifest:
+            if tuple(item["dest"]) == here or not item.get("km") or item.get("origin") == list(here):
+                continue
+            there = self.place_of(tuple(item["dest"]))
+            left = math.sqrt((there["x"] - office["x"]) ** 2 + (there["y"] - office["y"]) ** 2)
+            pay = item["payout"] * FORWARD_SHARE * max(0.0, 1.0 - left / item["km"])
+            if state.day > item["due"]:
+                pay *= LATE_SHARE
+            if condition.get(item["id"]) == "damaged":
+                pay *= DAMAGED_SHARE
+            if int(pay) > 0:
+                out.append((item, int(pay)))
+        return out
+
+    def forward(self) -> str:
+        """Hand over everything the road will take. Returns what to tell the pilot."""
+        if self.store is not None and not self._mine(write=False):
+            return ""
+        going = self.forwardable()
+        if not going:
+            return "The road pays nothing for what is aboard: it has come no nearer to where it is going."
+        paid = sum(pay for _, pay in going)
+        for item, _ in going:
+            self._unload(item)
+        self.postmarks += paid
+        self.save("forward")
+        what = self.cargo_text(going[0][0], long=False) if len(going) == 1 else f"{len(going)} pieces"
+        return f"Sent on by road: {what}, {paid} postmarks for the part of the way you carried it."
+
+    def droppable(self) -> list[dict]:
+        """The mailbags that could be dropped now: flying low, close to where they are bound."""
+        state = self.state
+        if state.status != "aloft" or state.layer > self.engine.lowest_open(state.x, state.y) + DROP_ABOVE:
+            return []
+        out = []
+        for item in self.manifest:
+            there = self.place_of(tuple(item["dest"]))
+            left = math.sqrt((there["x"] - state.x) ** 2 + (there["y"] - state.y) ** 2)
+            # Close enough to throw, and carried at least half its way: a bag for the next village is flown there.
+            if item["kind"] == "mail" and left <= DROP_KM and (not item.get("km") or left <= item["km"] / 2):
+                out.append(item)
+        return out
+
+    def _drop(self) -> None:
+        """Throw the mail down to the place below. It takes no turn, and pays less than handing it over."""
+        if self.store is not None and not self._mine(write=False):
+            return
+        mine = self.droppable()
+        paid = 0
+        for item in mine:
+            pay = int(item["payout"] * DROP_SHARE)
+            if self.state.day > item["due"]:
+                pay = int(pay * LATE_SHARE)
+            paid += pay
+            self._unload(item)
+        self.deliveries += len(mine)
+        self.postmarks += paid
+        self.points += POINTS["mail"] * len(mine)
+        names = sorted({self.place_of(tuple(item["dest"]))["name"] for item in mine})
+        what = "a mailbag" if len(mine) == 1 else f"{len(mine)} mailbags"
+        self.heard = []
+        self._say(f"{clock_text(self.state.minute)}  Dropped over {' and '.join(names)}: {what}, {paid} postmarks.")
+        self._promote()
+        self.save("drop")
+        self._choose_default()
+
+    def _wait(self) -> None:
+        """Sit on the ground for an hour and let the wind change. It costs nothing but the hour."""
+        state = self.state
+        if state.turn >= DAY_TURNS or state.status != "ground":
+            return
+        if self.store is not None and not self._mine(write=False):
+            return
+        self.state = dataclasses.replace(state, turn=min(DAY_TURNS, state.turn + WAIT_TURNS))
+        self.heard = []
+        self._say(f"{clock_text(self.state.minute)}  An hour on the ground.")
+        self.save("wait")
+        if self.motion:
+            self.frames_left = BURST_FRAMES
+        self._choose_default()
 
     def _lost_cargo(self) -> None:
         """Cargo the turn threw overboard or sank: struck from the manifest, and what the table says is forfeit."""
@@ -4065,8 +4205,8 @@ class PlainFlight:
         self.hub = self.loft = False
         self.taken = [t for t in self.taken if t[2] >= state.day + days]
         self.total_km += state.distance        # today's distance joins the total as the day ends
-        if state.turn > 0:
-            self.days_flown += 1              # a day nothing was flown on is not a flying day
+        if state.distance > 0 or state.status != "ground":
+            self.days_flown += 1              # a day nothing was flown on, or only waited out, is not a flying day
         self.state = dataclasses.replace(state, day=state.day + days, turn=0, layer=0, status="ground",
                                          distance=0.0, pibal_until=-1,
                                          x=state.x if x is None else x, y=state.y if y is None else y)
@@ -4240,6 +4380,10 @@ class PlainFlight:
                                "warn"))
             row += 1
         out.append(s._line(row + 1, 1, "ABOARD", "accent"))
+        going = self.forwardable()
+        if going:
+            out.append(s._line(row + 1, 9, f"W sends on by road what is bound elsewhere: "
+                                           f"{sum(pay for _, pay in going)} postmarks"[:wide - 8], "cool"))
         lines = [self.cargo_text(item) + ("" if state.day <= item["due"] else " (late)") for item in self.manifest]
         shown = lines[:3] if len(lines) <= 3 else lines[:2] + [f"and {len(lines) - 2} more"]
         for i, line in enumerate(shown or ["Nothing."]):
@@ -4298,24 +4442,57 @@ class PlainFlight:
         sentence, role = self._sentence(phase)
         out.append(s._line(base + 4, 1, sentence[:wide], role))
         out.append(s._line(base + 5, 1, self._status(s, wide), "dim"))
-        out += s._keys(base + 6, self._key_help(phase))
+        keys, gap = self._fit_keys(self._key_help(phase), wide)
+        out += s._keys(base + 6, keys, gap)
         return out
+
+    @staticmethod
+    def _fit_keys(keys: list, wide: int) -> tuple[list, int]:
+        """The key line, made to fit, and the spaces between its keys.
+
+        In order: a shorter word for leaving; shorter labels; two spaces
+        between keys for three; then keys go, the ones the help names and a
+        pilot can best do without first. Jettison goes last of those: it is
+        the way up when the fuel is gone. Enter and Q never go.
+        """
+        def width(row, gap):
+            return sum(len(key) + len(label) + 3 + gap for key, label in row) - gap
+        keys, gap = list(keys), 3
+        if width(keys, gap) > wide:
+            keys = [(key, "Leave" if key == "Q" and label.startswith("Return to") else label) for key, label in keys]
+        if width(keys, gap) > wide:
+            short = {"Fly it": "Fly", "Drop mail": "Drop", "Jettison": "Sack"}
+            keys = [(key, short.get(label, label)) for key, label in keys]
+        if width(keys, gap) > wide:
+            gap = 2
+        # N is only ever on the ground's line and J only on the air's, so each is the last to go where it is.
+        for spare in ("?", "P", "H", "O", "L", "A/D", "W/S", "M", "N", "J"):
+            if width(keys, gap) <= wide:
+                break
+            keys = [(key, label) for key, label in keys if key != spare]
+        return keys, gap
 
     def _key_help(self, phase: str):
         leave = ("Q", f"Return to {self.launch.node_name}")
         offered = self.offered(self.state)
         if phase == "aloft":
-            keys = [("W/S", "Layer"), ("Enter", "Fly it")]
+            keys = [("W/S", "Layer")]
+            if "left" in offered:
+                keys.append(("A/D", "Rope"))
+            keys.append(("Enter", "Fly it"))
+            if self.droppable():
+                keys.append(("M", "Drop mail"))
+            if "land" in offered:
+                keys.append(("L", "Land"))
             if "jettison" in offered:
                 keys.append(("J", "Jettison"))
             if "pibal" in offered:
                 keys.append(("P", "Pibal"))
-            if "land" in offered:
-                keys.append(("L", "Land"))
             return keys + [("?", "Help"), ("Q", "Quit")]
         office = [("O", "Post")] if self.at_office() else []      # the loft is a door inside it, and G from here
         if phase == "ground":
-            return [("Enter", "Launch")] + office + [("N", "Night"), ("?", "Help"), leave]
+            wait = [("H", "Wait")] if self.state.turn < DAY_TURNS else []
+            return [("Enter", "Launch")] + office + wait + [("N", "Night"), ("?", "Help"), leave]
         if phase == "stranded":
             return [("W", "Walk out"), ("?", "Help"), leave]
         if phase == "ditched":
@@ -4353,7 +4530,7 @@ class PlainFlight:
         look = self.preview(choice)
         layer = look["layer"]
         verb = {"hold": "Hold in", "climb": "Climb to", "sink": "Sink to", "launch": "Launch into",
-                "jettison": "Drop a sack for"}[choice]
+                "jettison": "Drop a sack for", "left": "Rope out, bear left in", "right": "Rope out, bear right in"}[choice]
         text = f"{verb} layer {layer} {LAYER_NAMES[layer - 1]}: {look['cost']} fuel."
         if look["points"]:
             ex, ey, _ = look["points"][-1]
@@ -4424,7 +4601,7 @@ class PlainFlight:
             view.mark(screen, ox, oy, "Q", colour)      # another pilot's balloon, in the first colour of its envelope
         if state.status in ("aloft", "ground") and self.offered(state):
             order = [a for a in self.choices() if a != self.choice]
-            if self.choice in ("sink", "hold", "climb", "launch", "jettison"):
+            if self.choice in ("sink", "hold", "climb", "launch", "jettison", "left", "right"):
                 order.insert(0, self.choice)        # the chosen track first: where tracks share a cell, it shows
             for action in order:
                 look = self.preview(action)
@@ -4669,11 +4846,11 @@ PLAIN_HELP = (
     "blows a different way. Each turn is fifteen minutes. Pick the layer whose",
     "wind takes you to a place marked #: there is post aboard for it, and pay.",
     "  W / S or arrows   look at the layer above or below; its track is drawn",
-    "  Enter or Space    fly the chosen layer for one turn",
-    "  J  drop a sack of ballast: up one layer for no fuel",
-    "  P  release a pibal: true winds in every layer for four turns",
-    "  L  land (from the lowest layer the ground leaves open)",
-    "  N  night   O  post office and stores; from there G, the rigging loft",
+    "  A / D             in the lowest layer: trail the rope, bear left or right",
+    "  Enter or Space    fly the choice for one turn",
+    "  J  drop a sack: up a layer for no fuel   P  pibal: true winds, four turns",
+    "  L  land (lowest layer)   M  drop mail within 30 km of where it is bound",
+    "  N  night   H  wait an hour on the ground   O  post office; there G, loft",
     "  ?  this help   Ctrl-L  redraw   Q  leave (saved)",
     "",
     "The map: @ you, # places with post waiting, o towns, + weather stations,",
@@ -5156,14 +5333,14 @@ class Session:
         out += self._keys(self.height - 1, [("B", "Back"), ("Q", "Back")])
         return out
 
-    def _keys(self, row: int, keys) -> list[str]:
+    def _keys(self, row: int, keys, gap: int = 3) -> list[str]:
         out, col = [], 1
         for key, label in keys:
             out.append(self._line(row, col, "[", "dim"))
             out.append(self._line(row, col + 1, key, "accent"))
             out.append(self._line(row, col + 1 + len(key), "]", "dim"))
             out.append(self._line(row, col + 3 + len(key), label))
-            col += len(key) + len(label) + 6
+            col += len(key) + len(label) + 3 + gap
         return out
 
     # -- input --------------------------------------------------------------

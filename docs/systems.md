@@ -462,6 +462,34 @@ much as the postmarks pay for, R asks for the relief run when it is due. From
 the counter (the station vista of S09). The map marks with `#` the places
 there is cargo aboard for; with nothing aboard it names the nearest offices.
 
+**The last stretch.** From the owner's play-test: whole flights being in the
+wind's hands is the game, but being 16 km from a destination and carried past
+it with no layer going the right way was only frustrating. Four moves answer
+that, and none of them steers a flight.
+
+| Move | Key | Where | What it does | What it costs |
+| --- | --- | --- | --- | --- |
+| Trail rope | A / D | aloft, in the lowest layer | bears 30 degrees left or right of the wind for the turn, at three quarters of its speed | a hold's fuel and 1 wear |
+| Mail drop | M | aloft, no more than one layer above the lowest, within 30 km of where a mailbag is bound | delivers the mailbags for that place without landing; it takes no turn | pays 60% |
+| Send on by road | W at the post office | at any town or station | hands over cargo bound elsewhere | pays half its payout times the part of the way it was carried: nothing at the counter it came from |
+| Wait | H | on the ground | an hour passes and the wind changes | nothing but the hour |
+
+A landing pays in full, a drop 60%, the road at most 50%: nearly making it is
+worth something, and making it is worth more. Parcels and instruments are not
+dropped. A mailbag is dropped only once it has come at least half its way, so
+one for the next village is flown there. The road's "part of the way" is
+measured from the office the cargo came from to the office handing it on, not
+from where the balloon stood, and an office never sends on what it gave out. A
+day only waited out is not a flying day. A drop earns the mailbag's licence
+points; the road earns postmarks only. The tracks on the map show where each
+side of the rope would lead. Waiting is a small move: nobody should be asked
+to sit out more than an hour or so now and then, and nothing in the game needs
+it.
+
+Measured with the scripted pilot over eight worlds and ten days each
+(deliveries for each flying day): 0.36 before, 0.45 with the rope, 0.82 with
+the rope and the mail drop.
+
 **Not yet tuned.** The amounts are a first table. Measured with a scripted
 pilot that steers by the forecast track and takes the nearest contracts: about
 one delivery in four flying days, and it lives on the relief run. A person
