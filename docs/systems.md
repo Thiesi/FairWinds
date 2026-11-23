@@ -614,7 +614,8 @@ five. And the map is told what each frame of moving wind came to and draws
 fewer streaks, down to a fifth of them, when frames run over 5.5 KB. Three
 things are not counted as a frame's cost: the frame after the number of
 streaks changed, which carries the change itself; a whole repaint; and a
-paint that carried several skipped frames is divided among them. Measured
+paint that carried several frames, skipped or held back by the cap, is divided
+among them. A paint a key caused is the key's and is not measured. Measured
 over SSH on ReLink before these, a burst on a 23 km/h layer cost two to three
 times one on a 6 km/h layer, up to 99 KB at 168 by 46, and there it arrived as
 a stall and then a lump: the cap below was holding frames back. The streaks are seeded from the window, so the

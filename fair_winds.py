@@ -2404,6 +2404,10 @@ class MapView:
             self.share = min(1.0, self.share * 1.15)
         self._settling = self.share != before
 
+    def settled(self) -> None:
+        """A paint that was not a wind frame has gone out: a change of share is paid for."""
+        self._settling = False
+
     def draw_wind(self, screen: Screen) -> None:
         """Lay the streaks over the ground: a bright head and a dimmer tail.
 
@@ -3404,6 +3408,8 @@ class Session:
             # This paint was the wind moving, by so many frames. A whole
             # repaint (a resize, Ctrl-L) says nothing about what wind costs.
             self.game.map.tune(len(changed) // self._wind_frames)
+        elif self.game is not None:
+            self.game.map.settled()             # any other paint has taken up whatever a change of share cost
         self._wind_frames = 0
         self.shown = self.frame
         self._dirty = False
@@ -3533,6 +3539,7 @@ class Session:
             self._frames_due()
         if keys:
             self._next_frame = None             # a key starts whatever moves next afresh
+            self._wind_frames = 0               # and the paint it causes is the key's, not the wind's
         for key in keys:
             if self.stop:
                 break
@@ -3559,10 +3566,10 @@ class Session:
         for _ in range(due):
             self.game.tick()
         self._next_frame += due * FRAME_SECONDS
+        self._wind_frames += due                # every frame the next paint will carry, held ones too
         recent = sum(size for when, size in self._sent if when > now - 1.0)
         if recent < BURST_BYTES_PER_SECOND or self.game.frames_left == 0:
             self._dirty = True                  # the last frame is always painted: it is the one that stays
-            self._wind_frames = due
 
     def run(self) -> str:
         try:

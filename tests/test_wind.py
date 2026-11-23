@@ -498,7 +498,50 @@ class Budget(GameCase):
         self.assertTrue(seen)
         divided = [size for size in seen if size not in sent]
         self.assertTrue(divided, "a paint that carried several frames was divided among them")
-        self.assertTrue(all(any(size == whole // n for whole in sent for n in (2, 3, 4)) for size in divided))
+        self.assertTrue(all(any(size == whole // n for whole in sent for n in range(2, 9)) for size in divided))
+
+    def test_held_frames_are_counted_in_the_paint_that_carries_them(self):
+        # This was the lump on ReLink: the cap held frames back, and the frame
+        # that followed carried all their movement and was read as one frame.
+        game, session, clock = self.start(keys=[b"\r"], terminal_width=168, terminal_height=46)
+        session.step()
+        seen = []
+        real_tune = game.map.tune
+        game.map.tune = lambda size: (seen.append(size), real_tune(size))
+        sent = []
+        real_write = session.out.write
+        session.out.write = lambda text: (sent.append(len(text)), real_write(text))
+        session._sent.clear()                            # forget the launch's whole first frame
+        session.step()                                   # paints the turn; a frame of wind falls due
+        session.step()                                   # paints it: one ordinary frame
+        ordinary = sent[-1]
+        session.step()                                   # paints the next, and another falls due
+        session._sent.append((clock.now, fw.BURST_BYTES_PER_SECOND * 2))     # now the line is busy: the cap is reached
+        writes = len(sent)
+        session.step()                                   # paints what was already due; the next frame is held
+        self.assertEqual(len(sent), writes + 1)
+        session.step()
+        session.step()
+        self.assertEqual(len(sent), writes + 1, "frames are being held back")
+        self.assertEqual(session._wind_frames, 3, "and counted")
+        session._sent.clear()
+        session.step()                                   # the cap lifts: a fourth frame falls due, and a paint with it
+        session.step()
+        self.assertEqual(len(sent), writes + 2)
+        self.assertEqual(seen[-1], sent[-1] // 4, "the paint that carried four frames is measured as four")
+        self.assertGreater(sent[-1], ordinary, "it was a bigger paint")
+
+    def test_a_keys_paint_is_not_measured_as_wind(self):
+        game, session, clock = self.start(keys=[b"\r", None, b"w"], terminal_width=168, terminal_height=46)
+        session.step()
+        session.step()
+        seen = []
+        game.map.tune = lambda size: seen.append(size)
+        game.map._settling = True
+        session.step()                                   # reads w
+        session.step()                                   # paints what w changed
+        self.assertEqual(seen, [], "the paint a key caused is the key's")
+        self.assertFalse(game.map._settling, "and it has paid for any change of share")
 
     def test_bytes_while_the_wind_moves(self):
         small = self.burst()
