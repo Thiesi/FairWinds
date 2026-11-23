@@ -1188,7 +1188,7 @@ def roped(vx: float, vy: float, side: str) -> tuple[float, float]:
     return ((vx * ROPE_COS + vy * turn) * ROPE_SPEED, (-vx * turn + vy * ROPE_COS) * ROPE_SPEED)
 PLACE_RADIUS_KM = 12.5                      # this close to a town or station is at it
 
-ACTIONS = ("launch", "hold", "climb", "sink", "jettison", "land", "pibal")
+ACTIONS = ("launch", "hold", "climb", "sink", "jettison", "left", "right", "land", "pibal")
 
 
 @dataclass(frozen=True)
@@ -3589,8 +3589,11 @@ class PlainFlight:
     def _load_cargo(self, offer: dict) -> dict:
         item = dict(offer, id=self.next_id)
         there = self.place_of(tuple(item["dest"]))
-        # How far it has to go from where it comes aboard: what "part of the way" is measured against.
-        item["km"] = round(math.sqrt((there["x"] - self.state.x) ** 2 + (there["y"] - self.state.y) ** 2), 1)
+        # How far it has to go from where it comes aboard: what "part of the way" is measured against. From
+        # the office itself, not from wherever in its field the balloon stands, so a hop across town is no way.
+        ref = self.here()
+        start = self.place_of(ref) if ref is not None else {"x": self.state.x, "y": self.state.y}
+        item["km"] = round(math.sqrt((there["x"] - start["x"]) ** 2 + (there["y"] - start["y"]) ** 2), 1)
         self.next_id += 1
         self.manifest.append(item)
         self.state = dataclasses.replace(
@@ -3890,6 +3893,8 @@ class PlainFlight:
         offered = self.offered()
         if phase in ("aloft", "ground"):
             options = self.choices()
+            if k in ("w", "s", "UP", "DOWN") and self.choice in ("left", "right") and "hold" in options:
+                self.choice = "hold"          # the rope is a kind of hold: the layers are counted from there
             if k in ("w", "UP") and self.choice in options:
                 self.choice = options[min(len(options) - 1, options.index(self.choice) + 1)]
             elif k in ("s", "DOWN") and self.choice in options:
@@ -4070,12 +4075,13 @@ class PlainFlight:
         if not self.at_office():
             return []
         state, here, out = self.state, self.here(), []
+        office = self.place_of(here)
         condition = {item[0]: item[2] for item in state.cargo}
         for item in self.manifest:
-            if tuple(item["dest"]) == here or not item.get("km"):
+            if tuple(item["dest"]) == here or not item.get("km") or item.get("origin") == list(here):
                 continue
             there = self.place_of(tuple(item["dest"]))
-            left = math.sqrt((there["x"] - state.x) ** 2 + (there["y"] - state.y) ** 2)
+            left = math.sqrt((there["x"] - office["x"]) ** 2 + (there["y"] - office["y"]) ** 2)
             pay = item["payout"] * FORWARD_SHARE * max(0.0, 1.0 - left / item["km"])
             if state.day > item["due"]:
                 pay *= LATE_SHARE
@@ -4087,6 +4093,8 @@ class PlainFlight:
 
     def forward(self) -> str:
         """Hand over everything the road will take. Returns what to tell the pilot."""
+        if self.store is not None and not self._mine(write=False):
+            return ""
         going = self.forwardable()
         if not going:
             return "The road pays nothing for what is aboard: it has come no nearer to where it is going."
@@ -4106,12 +4114,16 @@ class PlainFlight:
         out = []
         for item in self.manifest:
             there = self.place_of(tuple(item["dest"]))
-            if item["kind"] == "mail" and (there["x"] - state.x) ** 2 + (there["y"] - state.y) ** 2 <= DROP_KM ** 2:
+            left = math.sqrt((there["x"] - state.x) ** 2 + (there["y"] - state.y) ** 2)
+            # Close enough to throw, and carried at least half its way: a bag for the next village is flown there.
+            if item["kind"] == "mail" and left <= DROP_KM and (not item.get("km") or left <= item["km"] / 2):
                 out.append(item)
         return out
 
     def _drop(self) -> None:
         """Throw the mail down to the place below. It takes no turn, and pays less than handing it over."""
+        if self.store is not None and not self._mine(write=False):
+            return
         mine = self.droppable()
         paid = 0
         for item in mine:
@@ -4134,7 +4146,9 @@ class PlainFlight:
     def _wait(self) -> None:
         """Sit on the ground for an hour and let the wind change. It costs nothing but the hour."""
         state = self.state
-        if state.turn >= DAY_TURNS:
+        if state.turn >= DAY_TURNS or state.status != "ground":
+            return
+        if self.store is not None and not self._mine(write=False):
             return
         self.state = dataclasses.replace(state, turn=min(DAY_TURNS, state.turn + WAIT_TURNS))
         self.heard = []
@@ -4191,8 +4205,8 @@ class PlainFlight:
         self.hub = self.loft = False
         self.taken = [t for t in self.taken if t[2] >= state.day + days]
         self.total_km += state.distance        # today's distance joins the total as the day ends
-        if state.turn > 0:
-            self.days_flown += 1              # a day nothing was flown on is not a flying day
+        if state.distance > 0 or state.status != "ground":
+            self.days_flown += 1              # a day nothing was flown on, or only waited out, is not a flying day
         self.state = dataclasses.replace(state, day=state.day + days, turn=0, layer=0, status="ground",
                                          distance=0.0, pibal_until=-1,
                                          x=state.x if x is None else x, y=state.y if y is None else y)
@@ -4428,25 +4442,34 @@ class PlainFlight:
         sentence, role = self._sentence(phase)
         out.append(s._line(base + 4, 1, sentence[:wide], role))
         out.append(s._line(base + 5, 1, self._status(s, wide), "dim"))
-        out += s._keys(base + 6, self._fit_keys(self._key_help(phase), wide))
+        keys, gap = self._fit_keys(self._key_help(phase), wide)
+        out += s._keys(base + 6, keys, gap)
         return out
 
     @staticmethod
-    def _fit_keys(keys: list, wide: int) -> list:
-        """The key line, made to fit: first a shorter word for leaving, then the keys the help also names go."""
-        def width(row):
-            return sum(len(key) + len(label) + 6 for key, label in row) - 3
-        keys = list(keys)
-        if width(keys) > wide:
+    def _fit_keys(keys: list, wide: int) -> tuple[list, int]:
+        """The key line, made to fit, and the spaces between its keys.
+
+        In order: a shorter word for leaving; shorter labels; two spaces
+        between keys for three; then keys go, the ones the help names and a
+        pilot can best do without first. Jettison goes last of those: it is
+        the way up when the fuel is gone. Enter and Q never go.
+        """
+        def width(row, gap):
+            return sum(len(key) + len(label) + 3 + gap for key, label in row) - gap
+        keys, gap = list(keys), 3
+        if width(keys, gap) > wide:
             keys = [(key, "Leave" if key == "Q" and label.startswith("Return to") else label) for key, label in keys]
-        if width(keys) > wide:
+        if width(keys, gap) > wide:
             short = {"Fly it": "Fly", "Drop mail": "Drop", "Jettison": "Sack"}
             keys = [(key, short.get(label, label)) for key, label in keys]
-        for spare in ("?", "P", "J", "N"):
-            if width(keys) <= wide:
+        if width(keys, gap) > wide:
+            gap = 2
+        for spare in ("?", "P", "H", "O", "L", "A/D", "W/S", "M", "N", "J"):
+            if width(keys, gap) <= wide:
                 break
             keys = [(key, label) for key, label in keys if key != spare]
-        return keys
+        return keys, gap
 
     def _key_help(self, phase: str):
         leave = ("Q", f"Return to {self.launch.node_name}")
@@ -5309,14 +5332,14 @@ class Session:
         out += self._keys(self.height - 1, [("B", "Back"), ("Q", "Back")])
         return out
 
-    def _keys(self, row: int, keys) -> list[str]:
+    def _keys(self, row: int, keys, gap: int = 3) -> list[str]:
         out, col = [], 1
         for key, label in keys:
             out.append(self._line(row, col, "[", "dim"))
             out.append(self._line(row, col + 1, key, "accent"))
             out.append(self._line(row, col + 1 + len(key), "]", "dim"))
             out.append(self._line(row, col + 3 + len(key), label))
-            col += len(key) + len(label) + 6
+            col += len(key) + len(label) + 3 + gap
         return out
 
     # -- input --------------------------------------------------------------

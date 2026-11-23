@@ -97,6 +97,8 @@ class Rope(Case):
         self.assertEqual(game.choice, "left")
         game.key("w")
         self.assertNotIn(game.choice, ("left", "right"), "W and S go back to the layers")
+        if "climb" in game.offered():
+            self.assertEqual(game.choice, "climb", "and W from the rope is one press to the layer above")
         for size in ((80, 24), (132, 40), (168, 46)):
             self.screen(game, *size)
 
@@ -177,6 +179,19 @@ class Drop(Case):
         game.key("m")
         self.assertEqual(game.postmarks, before + int(int(50 * fw.DROP_SHARE) * fw.LATE_SHARE))
 
+    def test_a_bag_for_the_next_village_is_flown_there_not_thrown(self):
+        game = self.game()
+        self.empty(game)
+        home = game.place_of(game.here())
+        item = self.bag(game, ("town", 2))
+        item["km"] = 24.0                                # as if its destination were 24 km from where it came aboard
+        place = game.place_of(("town", 2))
+        self.aloft(game, x=place["x"] + 20.0, y=place["y"])
+        self.assertEqual(game.droppable(), [], "within thirty km, but not yet half its way")
+        self.aloft(game, x=place["x"] + 11.0, y=place["y"])
+        self.assertEqual(len(game.droppable()), 1)
+        del home
+
     def test_landing_still_pays_more_than_dropping(self):
         self.assertLess(fw.DROP_SHARE, 1.0)
         self.assertGreater(fw.DROP_SHARE, fw.FORWARD_SHARE)
@@ -204,6 +219,21 @@ class Wait(Case):
             seen.add(tuple(round(v, 3) for wind in winds.values() if wind for v in wind[:2]))
             game.key("h")
         self.assertGreater(len(seen), 4)
+
+    def test_a_day_only_waited_out_is_not_a_flying_day(self):
+        game = self.game()
+        game.key("h")
+        game.key("h")
+        game.key("n")
+        self.assertEqual(game.days_flown, 0)
+        self.clock.days(2)
+        game._day_may_have_opened()
+        game.key("ENTER")
+        game.key("ENTER")
+        game.state = dataclasses.replace(game.state, status="ground", layer=0)
+        game._choose_default()
+        game.key("n")
+        self.assertEqual(game.days_flown, 1)
 
     def test_waiting_stops_at_midnight_and_not_aloft(self):
         game = self.game()
@@ -264,6 +294,31 @@ class Forward(Case):
             if math.hypot(there["x"] - place["x"], there["y"] - place["y"]) >= item["km"]:
                 self.assertEqual(game.forwardable(), [], "further off than it started earns nothing")
 
+    def test_a_hop_across_town_is_no_part_of_the_way(self):
+        game = self.game()
+        self.empty(game)
+        home = game.here()
+        town = game.place_of(home)
+        far = fw.places_near(game.world, town["x"], town["y"], skip=home)[2]
+        there = game.place_of(far)
+        away = math.hypot(there["x"] - town["x"], there["y"] - town["y"])
+        ux, uy = (there["x"] - town["x"]) / away, (there["y"] - town["y"]) / away
+        # Taken at the far edge of the town's field, sent on from the near edge: twenty kilometres "nearer".
+        game.state = dataclasses.replace(game.state, x=town["x"] - ux * 10.0, y=town["y"] - uy * 10.0)
+        self.assertEqual(game.here(), home)
+        game.key("o")
+        game.key("1")
+        item = game.manifest[0]
+        dest = game.place_of(tuple(item["dest"]))
+        self.assertAlmostEqual(item["km"], math.hypot(dest["x"] - town["x"], dest["y"] - town["y"]), places=1,
+                               msg="measured from the office, not from the balloon")
+        game.state = dataclasses.replace(game.state, x=town["x"] + ux * 10.0, y=town["y"] + uy * 10.0)
+        self.assertEqual(game.here(), home)
+        self.assertEqual(game.forwardable(), [])
+        before = game.postmarks
+        game.key("w")
+        self.assertEqual((game.postmarks, len(game.manifest)), (before, 1))
+
     def test_cargo_for_here_is_delivered_not_sent_on(self):
         game = self.game()
         self.empty(game)
@@ -314,14 +369,56 @@ class Keys(Case):
     def test_fitting_drops_the_least_needed_first(self):
         keys = [("Enter", "Launch"), ("O", "Post"), ("H", "Wait"), ("N", "Night"), ("?", "Help"),
                 ("Q", "Return to A Node With A Long Name")]
-        fit = fw.PlainFlight._fit_keys(keys, 78)
+        fit, gap = fw.PlainFlight._fit_keys(keys, 78)
         self.assertIn(("Q", "Leave"), fit)
         self.assertIn(("?", "Help"), fit)
-        self.assertEqual(fw.PlainFlight._fit_keys(keys, 200), keys)
-        tight = fw.PlainFlight._fit_keys(keys, 40)
+        self.assertEqual(fw.PlainFlight._fit_keys(keys, 200), (keys, 3))
+        tight, gap = fw.PlainFlight._fit_keys(keys, 40)
         self.assertNotIn(("?", "Help"), tight)
         self.assertIn(("Enter", "Launch"), tight)
+
+    def test_with_everything_on_offer_at_eighty_columns_jettison_stays(self):
+        full = [("W/S", "Layer"), ("A/D", "Rope"), ("Enter", "Fly it"), ("M", "Drop mail"), ("L", "Land"),
+                ("J", "Jettison"), ("P", "Pibal"), ("?", "Help"), ("Q", "Quit")]
+        fit, gap = fw.PlainFlight._fit_keys(full, 78)
+        names = [key for key, _ in fit]
+        self.assertIn("J", names, "the way up when the fuel is gone")
+        for must in ("W/S", "A/D", "Enter", "M", "L", "Q"):
+            self.assertIn(must, names)
+        self.assertLessEqual(sum(len(k) + len(v) + 3 + gap for k, v in fit) - gap, 78)
+        for wide in range(20, 120):
+            fit, gap = fw.PlainFlight._fit_keys(full, wide)
+            names = [key for key, _ in fit]
+            self.assertIn("Enter", names)
+            self.assertIn("Q", names)
+            if wide >= 30:
+                self.assertLessEqual(sum(len(k) + len(v) + 3 + gap for k, v in fit) - gap, wide, wide)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TakenOver(Case):
+    def test_a_session_that_was_taken_over_drops_sends_and_waits_nothing(self):
+        first = self.game()
+        self.empty(first)
+        ref = ("town", 2)
+        self.bag(first, ref, payout=50)
+        first.save()
+        second = fw.PlainFlight(first.launch, self.folder, now=self.clock)
+        second.key("t")
+        self.assertIsNone(second.busy)
+        place = first.place_of(ref)
+        self.aloft(first, x=place["x"] + 5.0, y=place["y"])
+        before = first.postmarks
+        first.key("m")
+        self.assertEqual((first.postmarks, first.ended), (before, "taken"))
+        third = self.game(user_id=90)
+        third.store.claim(90, "ssh")
+        other = fw.PlainFlight(third.launch, self.folder, now=self.clock)
+        other.key("t")
+        turn = third.state.turn
+        third.key("h")
+        self.assertEqual((third.state.turn, third.ended), (turn, "taken"))
+        self.assertEqual(third.forward(), "")

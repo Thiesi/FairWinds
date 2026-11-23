@@ -476,7 +476,11 @@ that, and none of them steers a flight.
 
 A landing pays in full, a drop 60%, the road at most 50%: nearly making it is
 worth something, and making it is worth more. Parcels and instruments are not
-dropped. A drop earns the mailbag's licence points; the road earns postmarks
+dropped. A mailbag is dropped only once it has come at least half its way, so
+one for the next village is flown there. The road's "part of the way" is
+measured from the office the cargo came from to the office handing it on, not
+from where the balloon stood, and an office never sends on what it gave out.
+A day only waited out is not a flying day. A drop earns the mailbag's licence points; the road earns postmarks
 only. The tracks on the map show where each side of the rope would lead.
 Waiting is a small move: nobody should be asked to sit out more than an hour
 or so now and then, and nothing in the game needs it.

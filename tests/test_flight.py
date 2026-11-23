@@ -148,7 +148,7 @@ class Costs(unittest.TestCase):
         for action in ("climb", "launch", "fly", ""):
             with self.assertRaises(ValueError):
                 self.flight.step(state, action)
-        self.assertEqual(set(fw.ACTIONS), {"launch", "hold", "climb", "sink", "jettison", "land", "pibal"})
+        self.assertEqual(set(fw.ACTIONS), {"launch", "hold", "climb", "sink", "jettison", "left", "right", "land", "pibal"})
 
     def test_wear_grounds_the_balloon(self):
         worn = fw.FlightState(x=self.x, y=self.y, wear=100)
