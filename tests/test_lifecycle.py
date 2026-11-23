@@ -228,7 +228,11 @@ class Profile(unittest.TestCase):
             from netbbs.doors.profiles import DoorProfile
         except ImportError:
             self.skipTest("NetBBS is not installed here; CI installs a pinned copy")
-        profile = DoorProfile.from_json(json.dumps(self.value["profile"]))
+        # The shipped paths are a POSIX install; give the parser paths that
+        # are absolute on whatever platform runs this test.
+        value = dict(self.value["profile"], install_dir=str(ROOT),
+                     environment={"DOOR_FW_DATA_DIR": str(ROOT / "data")})
+        profile = DoorProfile.from_json(json.dumps(value))
         self.assertTrue(profile.resize_signal)
 
 
