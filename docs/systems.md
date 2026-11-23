@@ -353,8 +353,11 @@ up and mends it for nothing, and so does a night at a town or station; landing
 where there is no post changes nothing (S12). A new day starts when the pilot
 asks, with no calendar (S11). Walking out and the packet boat happen at a key
 press (S16). The save is one JSON file per pilot, written whole and synced
-after every turn; a save that cannot be read is moved aside, never overwritten,
-and the pilot is told (S10). Forecast coverage counts towns and the three
+after every turn. A save that cannot be read is moved aside to `<save>.bad`,
+never overwritten, and the pilot is told on the first screen; there is one such
+file per pilot, so a SysOp who wants one should collect it before it happens
+again. If it cannot even be moved aside, the game is played unsaved and the
+file is left alone (S10). Forecast coverage counts towns and the three
 starting stations (S15).
 
 ## 6. Economy and progress

@@ -393,10 +393,30 @@ class Saving(PlainCase):
             self.assertEqual((fresh.state.turn, fresh.state.status), (0, "ground"))
             self.assertEqual(len(fresh.targets), 3)
             self.assertEqual(aside.read_text(encoding="utf-8"), bad, "the unreadable file is kept, whole")
-            self.assertIn("could not be read", self.screen(fresh), "and the pilot is told")
+            self.assertIn("could not be read. This is a new one; the old file is kept.", self.screen(fresh),
+                          "and the pilot is told on the first screen")
             self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["state"]["turn"], 0)
         self.assertEqual(sorted(p.name for p in self.folder.glob("pilot-*")), [path.name, aside.name],
                          "one file set aside per pilot, however often it happens")
+
+    def test_a_save_that_cannot_even_be_set_aside_is_left_alone(self):
+        game = self.game()
+        self.press(game, "ENTER")
+        path = next(self.folder.glob("pilot-*.json"))
+        path.write_text("{ not a save", encoding="utf-8")
+        # Something already sits where the file would be set aside, and cannot be replaced.
+        aside = path.with_name(path.name + ".bad")
+        aside.mkdir()
+        (aside / "keep").write_text("x", encoding="utf-8")
+        fresh = self.game()
+        self.assertEqual(path.read_text(encoding="utf-8"), "{ not a save", "the unreadable file is still there")
+        text = self.screen(fresh)
+        self.assertIn("This game is not saved. Tell the SysOp.", text)
+        self.assertNotIn("the old file is kept", text, "nothing false is claimed")
+        self.press(fresh, "ENTER", "ENTER")
+        self.assertEqual(fresh.state.turn, 2, "the game plays on")
+        self.assertEqual(path.read_text(encoding="utf-8"), "{ not a save", "and it is never overwritten")
+        self.assertIn("cannot be saved here", self.screen(fresh))
 
     def test_a_missing_save_is_simply_a_new_pilot(self):
         game = self.game()

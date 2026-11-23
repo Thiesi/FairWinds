@@ -1805,11 +1805,18 @@ class PlainFlight:
         self.saved_ok = True
         self.log: list[str] = []
         self.typed_ahead = False          # set when a turn was committed: later keys in the same read are dropped
+        self.opening_notice = ""          # shown on the first screen, where it cannot scroll away
         loaded = self._load()
         if loaded is not True:
             self._new_game()
-            if loaded == "damaged":
-                self._say("Your saved game could not be read, so this is a new one. The old file was kept for the SysOp.")
+        if loaded == "damaged":
+            self.opening_notice = "Your saved game could not be read. This is a new one; the old file is kept."
+        elif loaded == "unkept":
+            # The unreadable file could not be moved aside. Saving now would
+            # destroy it, so this game is played unsaved and the file stays.
+            self.opening_notice = "Your saved game could not be read. This game is not saved. Tell the SysOp."
+            self.path = None
+            self.saved_ok = False
         self.save()                       # so a game that cannot be saved says so before the first turn
         self._choose_default()
 
@@ -1826,7 +1833,8 @@ class PlainFlight:
         self._say("Read the winds and fly to whichever the day favours.")
 
     def _load(self):
-        """True if a saved game was read, False if there is none, "damaged" if one was set aside.
+        """True if a saved game was read, False if there is none, "damaged" if one
+        was set aside, "unkept" if it could not even be set aside.
 
         Only a missing file means a new pilot. A file that is there but
         cannot be used is moved aside under one fixed name, so the next save
@@ -1860,7 +1868,7 @@ class PlainFlight:
         try:
             self.path.replace(self.path.with_name(self.path.name + ".bad"))
         except OSError:
-            pass
+            return "unkept"
         return "damaged"
 
     def save(self) -> None:
@@ -2327,7 +2335,6 @@ PLAIN_HELP = (
     "",
     "Leaving never loses anything. The game is saved every turn.",
 )
-assert len(PLAIN_HELP) <= 21
 
 
 # --------------------------------------------------------------------------
@@ -2368,7 +2375,7 @@ class Session:
         self.resized = False                  # set from a signal handler
         self.terminated = False               # set from a signal handler
         self.view = "front"
-        self.notice = ""
+        self.notice = getattr(game, "opening_notice", "")
         self._warned: set[float] = set()
         self._dirty = True
         self._next_poll = self.started + GEOMETRY_POLL
