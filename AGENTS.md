@@ -15,9 +15,10 @@ what the door is. This file says how to work here.
    constants.
 4. Check the phase trackers on GitHub (issues #1 to #7) for what is done.
 
-**Status:** P0 is complete. S01 (host adapter and terminal lifecycle) is built:
-the door opens, shows what the host told it and closes cleanly. The next slices
-are S02 to S04. There is no game yet.
+**Status:** P0 is complete. S01 (host adapter and terminal lifecycle) and S02
+(world generator and terrain cache) are built. The door opens, shows what the
+host told it and closes cleanly, and `--world-map <node id>` prints a continent.
+The next slice is S03, the weather. There is no game yet.
 
 P1 ends in a playtest by the owner (S05). Do not start P2 until the owner has
 said the turn is fun.
@@ -68,7 +69,7 @@ development host and took it down. These rules keep it bounded.
 
 ## Git
 
-- Branch from `origin/main`. Merge through a PR, and only when the owner asks.
+- Branch from `origin/main`. Merge through a PR, after the review cycle below.
 - Never force-push, `--force-with-lease` included. Reconcile with a merge. If a
   pushed branch must be redone, use a new branch name.
 - Never use a bare `git stash`: the stash is shared by every worktree.
@@ -79,9 +80,20 @@ development host and took it down. These rules keep it bounded.
 
 ## Review
 
-Open a PR and wait for Claude's completed written review. Fix what matters,
-explain what you dismiss, and ask for `@claude review` again after fixes. A
-failed or skipped reviewer run is not approval.
+The owner's standing instruction (2026-11-23):
+
+1. Open the PR ready for review, not as a draft. That starts Claude's automated
+   review. If none arrives, or to ask again, comment on the PR tagging `@claude`
+   with the word "review".
+2. Triage the findings. Fix what a player, or a SysOp deploying the game, would
+   actually notice: anything that makes the game worse to play or to run. A
+   point of pure code correctness with no real-world effect may be declined;
+   reply on the PR saying why.
+3. Push the fixes, ask for a re-review, and triage again the same way.
+4. When the review is settled and every check is green, merge the PR and move
+   on to the next slice. No further go-ahead is needed.
+
+A failed or skipped reviewer run is not approval.
 
 The review workflows (`claude.yml`, `claude-code-review.yml`) are installed.
 `acceptance.yml` runs the suite on Linux and Windows against a pinned NetBBS.
