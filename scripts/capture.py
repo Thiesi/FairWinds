@@ -101,6 +101,29 @@ def fly(width: int, height: int, depth: str, charset: str = "utf-8", turns=("ENT
         return session.frame
 
 
+SCENES = {
+    "splash": dict(kind="splash", hour=6.6, seed=7, steps=99),
+    "launch-noon": dict(kind="launch", hour=12.5, cloud=0.3, biome=fw.GRASS, seed=11, place=True, steps=5,
+                        caption="Day 3, 12:30. Up and away from Gull Post.", sub=""),
+    "landing-dusk": dict(kind="landing", hour=19.7, cloud=0.55, biome=fw.FOREST, seed=23, place=True, steps=99,
+                         caption="Down at Thistle Cairn: a clean landing.", sub="The post for Thistle Cairn is delivered. That makes 4."),
+    "landing-night": dict(kind="landing", hour=22.5, cloud=0.1, biome=fw.DRY, seed=31, place=False, steps=99,
+                          caption="Down in the wild: a rough landing.", sub=""),
+}
+
+
+def scene(name: str, width: int, height: int, depth: str):
+    """A scene at one of its frames, as the frame it shows."""
+    spec = dict(SCENES[name])
+    steps = spec.pop("steps")
+    pixels = depth != "16"
+    playing = fw.Scene(spec.pop("kind"), width, height, pixels, True, flat=depth != "truecolor", **spec)
+    playing.advance(steps)
+    screen = fw.Screen(width, height, depth)
+    playing.draw(screen)
+    return screen
+
+
 def main(argv) -> int:
     sizes = [tuple(int(v) for v in a.split("x")) for a in argv if "x" in a] or SIZES
     depths = [a for a in argv if a in DEPTHS] or DEPTHS
@@ -111,6 +134,9 @@ def main(argv) -> int:
             name = f"flight-{width}x{height}-{depth}.html"
             (OUT / name).write_text(page(fly(width, height, depth), name), encoding="utf-8")
             print(name, f"{width * CELL_W}x{height * CELL_H} px")
+            for which in SCENES:
+                name = f"scene-{which}-{width}x{height}-{depth}.html"
+                (OUT / name).write_text(page(scene(which, width, height, depth), name), encoding="utf-8")
     return 0
 
 

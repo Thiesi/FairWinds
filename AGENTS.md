@@ -17,11 +17,12 @@ what the door is. This file says how to work here.
 
 **Status:** P0 and P1 are built: S01 (host adapter and terminal lifecycle), S02
 (world generator and terrain cache), S03 (weather), S04 (turn engine) and S05
-(the plain flight). Of P2, S06 (the cell buffer, the colour and charset
-readings, layouts that fill the terminal), S07 (the relief map) and S08 (wind
-on the map, moving in bursts, and the sounding panel) are built. The game can
-be played: `python fair_winds.py` in a terminal, or as a door under NetBBS. The
-next slice is S09, the scenes, which completes P2.
+(the plain flight). P2 is built too: S06 (the cell buffer, the colour and
+charset readings, layouts that fill the terminal), S07 (the relief map), S08
+(wind on the map, moving in bursts, and the sounding panel) and S09 (the
+splash, and the launch and landing scenes). The game can be played:
+`python fair_winds.py` in a terminal, or as a door under NetBBS. The next slice
+is S10, the first of P3.
 
 To look at a screen, run `python scripts/capture.py`: it writes each size and
 colour depth as an HTML page under `.test-tmp/captures`, which headless Edge

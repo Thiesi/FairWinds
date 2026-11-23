@@ -92,6 +92,7 @@ class Door:
         env["PYTHONIOENCODING"] = "utf-8"
         env["DOOR_FW_DATA_DIR"] = str(Path(self._dir.name) / "data")
         env["DOOR_SPLASH"] = "0"            # straight to the game, unless a test asks for the splash
+        env["DOOR_SCENES"] = "0"            # and no scenes to wait out
         env["DOOR_FW_MOTION"] = "off"       # and no moving wind to race against
         if hosted:
             self.write_info(info if info is not None else door_info(), raw)

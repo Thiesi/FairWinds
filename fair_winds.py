@@ -29,7 +29,7 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "0.1.0.dev11"
+VERSION = "0.1.0.dev12"
 DOOR_API = 5
 MIN_WIDTH, MIN_HEIGHT = 80, 24
 MAX_DIMENSION = 1000
@@ -3334,6 +3334,8 @@ PLAIN_HELP = (
 # --------------------------------------------------------------------------
 
 SCENE_FRAME_SECONDS = 1 / 7
+SCENE_FRAME_BYTES = 6000             # a scene's frame that costs more than this is shown less often
+SCENE_STRIDE_MAX = 4
 _TITLE_FONT = {
     "F": "11111 10000 10000 11110 10000 10000 10000", "A": "01110 10001 10001 11111 10001 10001 10001",
     "I": "11111 00100 00100 00100 00100 00100 11111", "R": "11110 10001 10001 11110 10100 10010 10001",
@@ -3369,7 +3371,9 @@ class Backdrop:
     """A sky and the land under it, painted once for a scene and kept."""
 
     def __init__(self, width: int, height: int, hour: float, cloud: float = 0.0, biome: int = GRASS,
-                 seed: int = 1, place: bool = False):
+                 seed: int = 1, place: bool = False, flat: bool = False):
+        # flat: the ground in one tone. In 256 colours a fade to dark has no
+        # greens to pass through, only greys and then black.
         self.w, self.h = width, height * 2            # in pixels: two to a cell
         self.horizon = int(self.h * 0.72)
         self.hour = hour % 24.0
@@ -3426,11 +3430,11 @@ class Backdrop:
             gy = hz + h * 0.1 - h * 0.05 * _noise(seed32, 17, x / (w * 0.2), 9.3)
             self.ground_y.append(gy)
             for y in range(max(0, int(gy)), h):
-                fade = min(1.0, (y - gy) / (h * 0.18))
+                fade = 0.0 if flat else min(1.0, (y - gy) / (h * 0.18))
                 rows[y][x] = (ground[0] * dim * (1 - 0.45 * fade), ground[1] * dim * (1 - 0.45 * fade),
                               ground[2] * dim * (1 - 0.4 * fade))
         if place:
-            self._town(rows, seed32, night or not up)
+            self._town(rows, seed32, night or not up or day < 0.06 or day > 0.9)
         self.tops = [[(int(c[0]), int(c[1]), int(c[2])) for c in rows[y]] for y in range(0, h, 2)]
         self.bottoms = [[(int(c[0]), int(c[1]), int(c[2])) for c in rows[y]] for y in range(1, h, 2)]
 
@@ -3508,22 +3512,28 @@ class Scene:
 
     def __init__(self, kind: str, width: int, height: int, pixels: bool, motion: bool, hour: float = 6.6,
                  cloud: float = 0.0, biome: int = GRASS, seed: int = 1, place: bool = False,
-                 caption: str = "", sub: str = ""):
+                 caption: str = "", sub: str = "", flat: bool = False):
         self.kind, self.width, self.height = kind, width, height
         self.pixels, self.caption, self.sub = pixels, caption, sub
         self.hold = kind == "splash"
-        self.frames = {"splash": 16, "launch": 11, "landing": 14}[kind] if pixels and motion else 1
-        self.linger = 0 if (pixels and motion) or self.hold else 8      # a still picture stays a moment
+        moving = pixels and motion
+        self.frames = {"splash": 16, "launch": 11, "landing": 14}[kind] if moving else 1
+        # A still picture stays a moment, and so does a landing once it is down.
+        self.linger = 0 if self.hold else 8 if not moving else 4 if kind == "landing" else 0
         self.index = 0
-        self.backdrop = Backdrop(width, height, hour, cloud, biome, seed, place) if pixels else None
+        self.backdrop = Backdrop(width, height, hour, cloud, biome, seed, place, flat) if pixels else None
 
     @property
     def over(self) -> bool:
         return not self.hold and self.index >= self.frames + self.linger
 
     def advance(self, frames: int = 1) -> None:
-        last = self.frames - 1 if self.hold else self.frames + self.linger
-        self.index = min(last, self.index + frames)
+        """Move on by so many frames. However many are skipped, the last pose is always shown."""
+        pose = self.frames - 1
+        if self.index < pose:
+            self.index = min(pose, self.index + frames)
+        elif not self.hold:
+            self.index = min(self.frames + self.linger, self.index + frames)
 
     def _eased(self) -> float:
         """How far through its move the balloon is, from 0 to 1, slowing as it arrives."""
@@ -3542,8 +3552,11 @@ class Scene:
         r = max(3.0, back.h / 7.0)
         ground = back.ground_y[int(w * 0.34)] - r * 1.75
         t = self._eased()
+        scale = max(1, (w - 8) // 60)
+        title_y = max(2, int(back.h * 0.14))
         if self.kind == "splash":
-            cx, cy = w * 0.74, back.h + r + (back.h * 0.4 - back.h - r) * t
+            rest = title_y + 7 * scale + 3 + r          # it comes to rest under the title, clear of it
+            cx, cy = w * 0.74, back.h + r + (rest - back.h - r) * t
         elif self.kind == "launch":
             cx, cy = w * 0.34 + w * 0.1 * t, ground + (-r * 2.5 - ground) * (t * t)
         else:
@@ -3552,9 +3565,8 @@ class Scene:
         draw_balloon(screen, cx, cy, r, (0.5, 0.52, 0.66) if night else (1.0, 1.0, 1.0),
                      flame=self.kind != "landing" or t < 0.9)
         if self.kind == "splash":
-            scale = max(1, (w - 8) // 60)
-            self._title(screen, max(2, int(w * 0.06)), max(2, int(back.h * 0.14)), "FAIR WINDS", scale)
-            row = (int(back.h * 0.14) + 7 * scale) // 2 + 2
+            self._title(screen, max(2, int(w * 0.06)), title_y, "FAIR WINDS", scale)
+            row = (title_y + 7 * scale) // 2 + 2
             self._over(screen, max(2, int(w * 0.06)), row, "Read the wind. Carry the post. Finish the map.", "bright")
             if self.index >= self.frames - 1:
                 self._over(screen, max(2, int(w * 0.06)), h - 2, "Press any key", "accent")
@@ -3626,6 +3638,9 @@ class Session:
         self.scenes_on = False                # launch and landing scenes; main() switches them on
         self._sent: list = []                 # (when, bytes) for what was sent in the last second
         self._wind_frames = 0                 # how many frames of moving wind the next paint carries
+        self._painted = 0                     # bytes the last paint sent
+        self._scene_at: float | None = None   # the moment the scene's shown frame belongs to
+        self._scene_due = 1                   # frames the scene moves on by at its next paint
         self._next_poll = self.started + GEOMETRY_POLL
 
     # -- time ---------------------------------------------------------------
@@ -3695,6 +3710,7 @@ class Session:
             now = self.clock()
             self._sent = [(when, size) for when, size in self._sent if when > now - 1.0]
             self._sent.append((now, len(changed)))
+        self._painted = len(changed)
         if self._wind_frames and self.game is not None and not whole:
             # This paint was the wind moving, by so many frames. A whole
             # repaint (a resize, Ctrl-L) says nothing about what wind costs.
@@ -3855,8 +3871,9 @@ class Session:
             return
         pixels = self.game.map.pixels if self.game is not None else want_pixels(self.launch, {})
         motion = self.game.motion if self.game is not None else True
-        self.scene = Scene("splash", self.width, self.height, pixels, motion, seed=self.width * 31 + self.height)
-        self._next_frame = None
+        self.scene = Scene("splash", self.width, self.height, pixels, motion, seed=self.width * 31 + self.height,
+                           flat=self.launch.color_depth != "truecolor")
+        self._next_frame = self._scene_at = None
         self._dirty = True
 
     def _take_scene(self) -> None:
@@ -3868,18 +3885,29 @@ class Session:
             return
         self.scene = Scene(asked["kind"], self.width, self.height, True, self.game.motion, hour=asked["hour"],
                            cloud=asked["cloud"], biome=asked["biome"], seed=asked["seed"], place=asked["place"],
-                           caption=asked["caption"], sub=asked["sub"])
-        self._next_frame = None
+                           caption=asked["caption"], sub=asked["sub"],
+                           flat=self.launch.color_depth != "truecolor")
+        self._next_frame = self._scene_at = None
         self._dirty = True
 
     def _end_scene(self) -> None:
-        self.scene, self._next_frame, self._dirty = None, None, True
+        self.scene, self._next_frame, self._scene_at, self._dirty = None, None, None, True
 
     def _scene_step(self) -> None:
         """One step while a scene plays: paint, wait for its next frame, and end it on any key."""
         scene = self.scene
         if self._dirty:
+            whole = self.shown is None
             self.paint()
+            # A frame that costs more than a line should carry seven times a
+            # second is shown less often, evenly, and moves further each time.
+            stride = 1
+            if not whole and self._painted > SCENE_FRAME_BYTES:
+                stride = min(SCENE_STRIDE_MAX, -(-self._painted // SCENE_FRAME_BYTES))
+            if self._scene_at is None:
+                self._scene_at = self.clock()
+            self._scene_due = stride
+            self._next_frame = self._scene_at + stride * SCENE_FRAME_SECONDS
         resting = scene.hold and scene.index >= scene.frames - 1
         if resting:
             wait = IDLE_TIMEOUT
@@ -3908,9 +3936,11 @@ class Session:
         now = self.clock()
         if now < self._next_frame - 1e-6:
             return
-        due = 1 + int((now - self._next_frame) / SCENE_FRAME_SECONDS)
-        self._next_frame += due * SCENE_FRAME_SECONDS
-        scene.advance(due)
+        late = int((now - self._next_frame) / SCENE_FRAME_SECONDS)
+        self._scene_at = self._next_frame + late * SCENE_FRAME_SECONDS
+        self._next_frame = self._scene_at + SCENE_FRAME_SECONDS
+        scene.advance(self._scene_due + late)
+        self._scene_due = 1
         self._dirty = True
         if scene.over:
             self._end_scene()
@@ -3998,8 +4028,8 @@ def main(argv=None) -> int:
         if hasattr(signal, name):
             signal.signal(getattr(signal, name), on_resize)
     session.scenes_on = os.environ.get("DOOR_SCENES", "").strip() != "0"
-    if session.scenes_on and os.environ.get("DOOR_SPLASH", "").strip() != "0":
-        session.start_splash()
+    if os.environ.get("DOOR_SPLASH", "").strip() != "0":
+        session.start_splash()              # with the scenes off it is still there, and holds still
     try:
         session.run()
     finally:
