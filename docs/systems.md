@@ -491,6 +491,68 @@ upgrade tiers.
 chevrons, rings). It shows in scenes and as the pilot's marker on other
 callers' maps. Each design has a sixteen-colour reading.
 
+**As built (S13).** The tables are `GRADES`, `POINTS`, `CARGO_GRADE`,
+`UPGRADES`, `PATTERNS` and `ENVELOPE_COLOURS`.
+
+| Grade | Points | Entrusted with | Sold |
+| --- | --- | --- | --- |
+| Fledgling | 0 | mailbags | |
+| Aeronaut | 60 | parcels | Envelope II, Burner II, Tanks II |
+| Pilot | 160 | instruments | Instruments II, Wireless, Night gear |
+| Navigator | 360 | | Envelope III, Burner III, Tanks III |
+| Wind-reader | 700 | | Instruments III, Oxygen |
+| Master | 1200 | | |
+| Commodore of the Post | 2000 | | |
+
+Points: 8 for a mailbag delivered, 14 for a parcel, 20 for instruments, 3 for
+a clean landing that ends a flight at least 25 km from where it launched, and
+one for every ten km flown. A flight already in the air when this rule
+arrived has no launch point on record, and its landing earns no landing
+points. Charting will add to them
+(S14). A town's first offer of the day is always a mailbag, so there is
+something for a pilot of any grade; an offer above the pilot's grade is shown
+and refused with the grade it wants.
+
+| Gear | I | II | III |
+| --- | --- | --- | --- |
+| Envelope | lifts 8, layer 3 | 150: lifts 11, layer 4 | 450: lifts 14, layer 5 |
+| Burner | a climb costs 3 | 120: costs 2 | 380: costs 1 |
+| Tanks | 60 fuel | 100: 90 fuel | 320: 130 fuel |
+| Instruments | tracks 6 turns, reads its own layer | 140: 10 turns, and the layers next to it | 420: 16 turns, every layer |
+
+| Gear | Price | Effect |
+| --- | --- | --- |
+| Wireless | 200 | Forecasts sharpened by places up to 300 km off, not 150 |
+| Night gear | 180 | Night landings a class better; no night fuel penalty |
+| Oxygen | 300, and Envelope III | Layer 6 |
+
+"Preview reach" in the table above this section is built as what the
+instruments read: a layer read is known true, and its track starts from the
+truth; any other layer is a forecast. The camera waits for wonders (S19) and
+the engine for its own slice; neither is sold yet, because neither would do
+anything.
+
+The gear a pilot owns is in their record as a tier for each track. The
+figures the engine flies by (ceiling, climb cost, night gear, oxygen, layers
+read) are set from it whenever it changes and whenever the pilot is loaded, so
+a change to the table reaches every balloon.
+
+**The rigging loft** is in towns: G from the ground or from the post office.
+It shows the licence, each track with what is fitted and what the next tier
+would cost and do, or why it cannot be bought (the grade it is sold to, other
+gear it needs, not enough postmarks), and the envelope: P steps through the
+patterns, Z, X, C and V through the eight colours for each of the four places.
+From 100 columns the balloon is drawn as designed. The design is in the launch
+and landing scenes. Every colour has a different reading in sixteen colours,
+and the design is always named in words.
+
+**Other pilots on the map.** Each other pilot of the world is drawn where
+their last committed turn left them, as `Q` in the first colour of their
+envelope, at most 24 of them: the latest to have flown. A session looks again every 20 seconds and at
+each turn. Names, and who is flying today, come with the shared world (S14).
+
+**Not yet tuned.** Thresholds and prices are a first table, as in S12.
+
 ## 7. The shared world
 
 **Charting.** The chart grid is 10 km cells, 160 by 100. Each turn the balloon
