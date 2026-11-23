@@ -553,7 +553,8 @@ The relief is composed in order: terrain from the tiles, coloured by biome and
 height and lit from the north-west; the veil over what nobody has charted;
 cloud and squall, sampled every fourth pixel and blended between; and night,
 which darkens it in three steps (a third at 19:30, two thirds at 20:00, full at
-20:45), because every change of light re-sends the whole map. The lit colours of a tile are worked out once and kept. A
+20:45), because every change of light re-sends the whole map. The lit colours
+of a tile are worked out once and kept. A
 moment's map is composed once and reused while the pilot looks at other
 layers. Then, on top: the balloon, places, tracks and names. A marker takes
 its cell on the darkened mean of the two pixels beneath. A name goes to the
@@ -578,20 +579,46 @@ and deep blues grey, because each axis of the colour cube rounds to the same
 step. The match looks at the cube entries around a colour and counts a loss of
 saturation against them, and it uses the grey ramp only for greys.
 
-**Wind.** A few hundred particles advected on the interpolated wind of the
-viewed layer, drawn as short fading streaks. Animation runs for a burst after
-each turn and then holds still. With motion off, with `DOOR_SCENES=0`, or with
-keys typed ahead, a still streak pattern is drawn instead. If output backs up,
-frames are dropped, never queued.
+**Wind.** The map shows the wind of the layer the pilot is choosing, as far as
+they know it: the truth where they have read it, the forecast otherwise. It is
+sampled every 20 km over the window and blended between. One streak for every
+fifty map cells is carried along it, a head and a fading tail of five pixels
+that lighten the ground beneath; a streak that leaves the map, or grows old,
+starts again somewhere else. The streaks are seeded from the window, so the
+same window always starts with the same picture.
+
+The wind moves at seven frames a second in short bursts: ten frames after a
+turn and six after looking at another layer. Then it holds still, and a still
+frame sends nothing. Any key ends a burst at once. With `DOOR_FW_MOTION=off` or
+`DOOR_SCENES=0` nothing moves: each new wind is drawn as a new still pattern.
+The character map shows wind as short lines along it (`-`, `|`, `/`, `\`),
+which always hold still.
+
+If a frame takes longer to send than its slot, the line is behind: the next
+frames are skipped, never queued, and the burst still ends on time.
 
 **Scenes.** Splash, launch, landing, station vista, wonders. A scene plays only
 after what it shows has been saved, never waits for a key, ends on any key and
 consumes it. `DOOR_SPLASH=0` removes the splash. `DOOR_SCENES=0` removes the
 rest.
 
-**Budgets.** S08 measures and fixes these. Targets: under 40 KB a second while
-animating, under a quarter of one core, and a one-hour session inside the
-shipped profile's CPU limit with margin.
+**Budgets.** Targets: under 40 KB a second while the wind moves, under a
+quarter of one core, and a one-hour session inside the shipped profile's CPU
+limit with margin. Measured in process on the development host, in truecolor:
+
+| | 80 by 24 | 132 by 40 | 168 by 46 |
+| --- | --- | --- | --- |
+| Streaks | 16 | 66 | 106 |
+| A frame | 0.9 KB | 3.9 KB | 5.6 KB |
+| While moving | 6 KB/s | 27 KB/s | 38 KB/s |
+| CPU while moving | 4% of a core | 9% | 15% |
+| A whole burst | 8 KB | 38 KB | 54 KB |
+
+In 256 colours a frame is less than half as large. A burst lasts about a
+second and a half, so a turn with its burst costs about 0.25 s of CPU at the
+widest layout: two hundred turns an hour is under a minute, against a profile
+limit of 900 s. These are the door's own figures. What each transport adds,
+and how a real line behaves, is S26's to measure on a live node.
 
 ## 11. Input
 
@@ -654,7 +681,7 @@ memory.
 | `DOOR_FW_DATA_DIR` | Where the world lives |
 | `DOOR_FW_GUEST_IDS` | Comma-separated `user_id`s to treat as guest calls |
 | `DOOR_FW_GUESTBOOK` | `on`, `canned` or `off` |
-| `DOOR_FW_MOTION` | `auto`, `burst` or `off` |
+| `DOOR_FW_MOTION` | `auto` or `burst` (the wind moves in short bursts) or `off` (it holds still) |
 | `DOOR_FW_PIXELS` | `auto` (relief in pixels where the terminal can show it), `half` (always pixels) or `shade` (always the character map) |
 | `DOOR_SPLASH`, `DOOR_SCENES` | `0` switches the splash, or the scenes, off |
 | `DOOR_FW_NODE_ID` | Classic hosts: names this BBS and seeds its world (default `classic`). Keep it once set. |
