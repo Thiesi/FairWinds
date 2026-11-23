@@ -168,6 +168,7 @@ class Cache(unittest.TestCase):
         self.fresh = fw.World(self.seed)
 
     def tearDown(self):
+        fw.Store.close_all()
         self._dir.cleanup()
 
     def world(self):

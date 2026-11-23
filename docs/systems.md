@@ -353,13 +353,10 @@ day, and the wind picks.
 up and mends it for nothing, and so does a night at a town or station; landing
 where there is no post changes nothing (S12). A new day starts when the pilot
 asks, with no calendar (S11). Walking out and the packet boat happen at a key
-press (S16). The save is one JSON file per pilot, written whole and synced
-after every turn. A save that cannot be read is moved aside to `<save>.bad`,
-never overwritten, and the pilot is told on the first screen; there is one such
-file per pilot, so a SysOp who wants one should collect it before it happens
-again. If it cannot even be moved aside, the game is played unsaved and the
-file is left alone (S10). Forecast coverage counts towns and the three
-starting stations (S15).
+press (S16). Forecast coverage counts towns and the three starting stations
+(S15). The pilot's record holds the plain flight's own fields (the post
+aboard, the last places delivered to, deliveries, days flown, distance, the
+log) as one JSON text; S11 to S13 give them columns and tables of their own.
 
 ## 6. Economy and progress
 
@@ -708,39 +705,89 @@ Esc go back, `<` and `>` page, `/` finds, `?` shows help.
 
 ## 12. Storage
 
-One SQLite file, `fair_winds.db`, under `DOOR_FW_DATA_DIR` or the
-installation's `data` directory, with an `application_id` of its own and a
-`user_version` for the schema. WAL mode. Writes use short immediate
-transactions. No transaction is open while a caller thinks.
+One SQLite file for each world, `fair_winds-<seed>.db`, under
+`DOOR_FW_DATA_DIR` or the installation's `data` directory. The seed in the
+name is the world's, as in the terrain cache beside it, so two nodes that
+share a data directory, or a SysOp trying the door from a shell, never meet in
+one file. The file carries an `application_id` of its own (`FWDB`) and a
+`user_version` for the schema, now 1. WAL mode, or a rollback journal with
+`DOOR_FW_JOURNAL=delete`; `synchronous=FULL`, so a turn is on disk before its
+result is shown. Every write is one short transaction that takes the write
+lock with its first statement and waits up to five seconds for another
+caller's. No transaction is open while a caller thinks.
 
-| Table | Holds |
-| --- | --- |
-| `meta` | Node id, seed, generation, epoch date, tempo, high day, maintenance flag |
-| `pilots` | Identity, logbook day, licence, postmarks, upgrades, envelope design, home |
-| `sessions` | One lease per pilot with a heartbeat |
-| `flights` | The flight in progress: state after the last committed turn |
-| `turns` | The journal of committed turns for the current flying day |
-| `cargo`, `contracts` | What is carried and what is on offer |
-| `charted` | Chart cells: first pilot and day |
-| `features` | Discovery, chosen name, pilot, day |
-| `stations`, `contributions` | Stations, stock, mast progress, who gave what |
-| `strandings` | Who is down, where, what they need |
-| `guestbook` | Lines per station |
-| `almanac`, `wonders` | Entries and first sightings |
-| `drift`, `trials` | Scores |
-| `seasons`, `hall` | Season state, medals, firsts |
-| `outbox` | Outbound request identifiers and receipts |
+| Table | Holds | Built |
+| --- | --- | --- |
+| `meta` | Node id, seed, generation, epoch date, tempo, high day, maintenance flag | S10: seed, node, created |
+| `pilots` | Identity, logbook day, licence, postmarks, upgrades, envelope design, home | S10: handle, career |
+| `sessions` | One lease per pilot with a heartbeat | S10 |
+| `flights` | The flight in progress: state after the last committed turn | S10 |
+| `turns` | The journal of committed turns for the current flying day | S10 |
+| `cargo`, `contracts` | What is carried and what is on offer | |
+| `charted` | Chart cells: first pilot and day | |
+| `features` | Discovery, chosen name, pilot, day | |
+| `stations`, `contributions` | Stations, stock, mast progress, who gave what | |
+| `strandings` | Who is down, where, what they need | |
+| `guestbook` | Lines per station | |
+| `almanac`, `wonders` | Entries and first sightings | |
+| `drift`, `trials` | Scores | |
+| `seasons`, `hall` | Season state, medals, firsts | |
+| `outbox` | Outbound request identifiers and receipts | |
 
 The terrain tile cache is separate files beside the database. It can always be
 rebuilt and need not be backed up.
 
+**Opening.** A file that is new and empty is given the schema. An older schema
+is brought forward one version at a time inside one transaction; two callers
+arriving at once do it once. A file that is damaged, is not a database, is
+some other program's, holds another world, or was written by a newer Fair
+Winds is refused: the door says so to the caller, writes the reason to
+standard error, exits with status 3 and changes nothing. Nothing is ever moved
+aside or replaced. A data directory that cannot be written is different: the
+caller plays, is told on the first screen that the game cannot be saved, and
+nothing is kept. Records that are only out of reach when the pilot is read
+(locked by another caller past the five seconds) are treated the same way and
+said to be busy, not damaged.
+
 **The turn commit.** One transaction writes the new flight state, the journal
 row, any chart cells, and any world change the turn caused. A process killed at
-any instant leaves either the turn before or the turn after.
+any instant leaves either the turn before or the turn after. The journal holds
+the current flying day: a commit on a later day removes the days before it. A
+commit that fails (a full disk, a directory gone read-only) does not stop the
+game: the screen says the game cannot be saved, and the next commit that
+succeeds saves it again.
 
-**The lease.** A pilot has one live session. A second launch finds the lease:
-if its heartbeat is stale it is taken over; if it is live the caller is told
-and may take over, which ends the other session at its next turn.
+**The lease.** A pilot has one live session. Opening the door claims the
+pilot. A session says it is alive every 20 seconds and with every commit. A
+second session finds the lease: if it has not been heard from for 90 seconds
+it is replaced without asking; if it is live the caller is told who holds the
+pilot (the transport and how long ago it opened) and may press T to take over
+or Q to leave. Taking over ends the other session at its next turn or its next
+heartbeat, whichever comes first: its commit is refused, having written
+nothing, and it shows that the pilot is now flying elsewhere. Leaving the door
+gives the pilot up, and so does a line that drops (`SIGHUP`, `SIGTERM`, end
+of input). A session that is killed outright does not, so a caller who comes
+straight back after one is asked, and takes over. Before a turn is worked out
+the lease is read; the commit checks it again inside its transaction, so a
+turn costs one synced write.
+
+**Backup.** `python fair_winds.py --backup FOLDER` copies every world in the
+data directory to FOLDER through SQLite's online backup, checks each copy and
+removes the leases from it. It is safe while callers are playing. It refuses
+to copy into the data directory itself, or onto a database in use. A refusal
+comes before the first copy, so a refused backup has copied nothing. To restore,
+stop the door, put the copies in the data directory and remove any `-wal` and
+`-shm` files left beside the old ones.
+
+**Save files from before the database.** The plain flight kept one JSON file
+per pilot, `pilot-<seed>-<user>.json`. A pilot the database has never seen who
+has one is taken over from it, once, and the file is renamed with `.imported`
+added, unless a file of that name is already there. One that cannot be read
+is left where it is: the pilot starts anew and is told, and the reason goes to
+standard error.
+One that is there and cannot be opened is waited for: the pilot plays
+that call unsaved, so that no new career shuts the old one out, and the file is
+taken over once the SysOp has put it right.
 
 **Guests.** A guest call opens the world read-only and keeps its own state in
 memory.

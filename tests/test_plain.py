@@ -1,11 +1,13 @@
 """S05: the plain flight, the whole turn on an 80 x 24 text screen."""
 import dataclasses
 import json
+import sqlite3
 import tempfile
 import time
 import unittest
 from pathlib import Path
 
+import support                                             # noqa: E402
 from support import Door, Terminal, door_info
 
 import fair_winds as fw
@@ -39,10 +41,11 @@ class PlainCase(unittest.TestCase):
         self.folder = Path(self._dir.name)
 
     def tearDown(self):
+        fw.Store.close_all()
         self._dir.cleanup()
 
     def game(self, **changes):
-        return fw.PlainFlight(launch(**changes), self.folder)
+        return support.new_game(launch(**changes), self.folder)
 
     def session(self, game, width=80, height=24, keys=()):
         session = fw.Session(dataclasses.replace(game.launch, width=width, height=height), Keys(*keys), Out(), game=game)
@@ -62,10 +65,8 @@ class PlainCase(unittest.TestCase):
         for key in keys:
             game.key(key)
 
-    def save_file(self):
-        files = [p for p in self.folder.glob("pilot-*.json")]
-        self.assertEqual(len(files), 1)
-        return json.loads(files[0].read_text(encoding="utf-8"))
+    def save_file(self, user_id=12):
+        return support.stored(self.folder, user_id)
 
 
 class NewGame(PlainCase):
@@ -100,7 +101,8 @@ class NewGame(PlainCase):
         self.assertEqual(b.state.turn, 0, "another pilot starts their own game")
         c = self.game(node_id="other-node")
         self.assertNotEqual(c.world.seed, a.world.seed)
-        self.assertEqual(len(list(self.folder.glob("pilot-*.json"))), 3, "one save per pilot per world")
+        self.assertEqual(len(list(self.folder.glob("fair_winds-*.db"))), 2, "one set of records per world")
+        self.assertEqual(self.save_file(13)["state"]["turn"], 0, "and in it a record per pilot")
 
 
 class Flying(PlainCase):
@@ -363,7 +365,7 @@ class Saving(PlainCase):
         game = self.game(user_id=2 ** 62 + 5)
         self.press(game, "ENTER", "ENTER")
         self.assertEqual(game.state.turn, 2)
-        self.assertEqual(list(self.folder.glob("pilot-*")), [])
+        self.assertEqual(list(self.folder.glob("pilot-*")) + list(self.folder.glob("*.db")), [])
         self.assertIn("You are visiting: nothing is kept", self.screen(game))
         self.assertEqual(self.game(user_id=2 ** 62 + 5).state.turn, 0)
 
@@ -380,44 +382,103 @@ class Saving(PlainCase):
         session.paint()
         self.assertIn("of session time left", session.out.text, "a session notice is not hidden by the save warning")
 
-    def test_a_save_that_cannot_be_read_is_set_aside_never_overwritten(self):
+    def test_a_record_that_cannot_be_read_is_never_written_over(self):
         game = self.game()
         self.press(game, "ENTER")
-        path = next(self.folder.glob("pilot-*.json"))
-        aside = path.with_name(path.name + ".bad")
-        good = path.read_text(encoding="utf-8")
-        for bad in ("", "{", "[]", good[:40], good.replace('"version": 1', '"version": 99'),
-                    good.replace(f'"seed": {game.world.seed}', '"seed": 1'),
-                    good.replace('"targets": [[', '"targets": [["nowhere", 99], [')):
-            path.write_text(bad, encoding="utf-8")
+        game.close()
+        path = next(self.folder.glob("fair_winds-*.db"))
+        for bad in ("", "{", "[]", '{"targets": [["nowhere", 99]], "visited": []}'):
+            db = sqlite3.connect(str(path))
+            db.execute("UPDATE pilots SET career=? WHERE user_id=12", (bad,))
+            db.commit()
+            db.close()
             fresh = self.game()
-            self.assertEqual((fresh.state.turn, fresh.state.status), (0, "ground"))
-            self.assertEqual(len(fresh.targets), 3)
-            self.assertEqual(aside.read_text(encoding="utf-8"), bad, "the unreadable file is kept, whole")
-            self.assertIn("could not be read. This is a new one; the old file is kept.", self.screen(fresh),
-                          "and the pilot is told on the first screen")
-            self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["state"]["turn"], 0)
-        self.assertEqual(sorted(p.name for p in self.folder.glob("pilot-*")), [path.name, aside.name],
-                         "one file set aside per pilot, however often it happens")
+            text = self.screen(fresh)
+            self.assertIn("could not be read. This game is not saved. Tell the SysOp.", text)
+            self.press(fresh, "ENTER", "ENTER")
+            self.assertEqual(fresh.state.turn, 2, "the game plays on")
+            self.assertIn("cannot be saved here", self.screen(fresh))
+            fresh.close()
+            db = sqlite3.connect(str(path))
+            self.assertEqual(db.execute("SELECT career FROM pilots WHERE user_id=12").fetchone()[0], bad,
+                             "the record is exactly as it was")
+            db.close()
 
-    def test_a_save_that_cannot_even_be_set_aside_is_left_alone(self):
+    def test_a_save_file_from_before_the_database_is_taken_over_once(self):
+        game = self.game()
+        self.press(game, "ENTER", "ENTER", "ENTER")
+        state, targets = game.state, list(game.targets)
+        old = self.folder / f"pilot-{game.world.seed:016x}-12.json"
+        old.write_text(json.dumps(dict(game._career(), version=1, seed=game.world.seed, state=game.state.to_dict())),
+                       encoding="utf-8")
+        game.close()
+        for path in self.folder.glob("fair_winds-*"):
+            path.unlink()                                # the installation as it was before the database
+        again = self.game()
+        self.assertEqual((again.state, again.targets), (state, targets), "the pilot flies on where they were")
+        self.assertFalse(old.exists())
+        self.assertTrue(old.with_name(old.name + ".imported").exists(), "the old file is kept under another name")
+        self.assertEqual(self.save_file()["state"]["turn"], 3, "and the database has the pilot now")
+        self.press(again, "ENTER")
+        third = self.game()
+        self.assertEqual(third.state.turn, 4, "the database is what is read from then on")
+
+    def test_an_old_save_file_that_cannot_be_opened_is_waited_for(self):
+        game = self.game()
+        self.press(game, "ENTER", "ENTER")
+        seed, text = game.world.seed, json.dumps(dict(game._career(), version=1, seed=game.world.seed,
+                                                      state=game.state.to_dict()))
+        game.close()
+        for path in self.folder.glob("fair_winds-*"):
+            path.unlink()
+        old = self.folder / f"pilot-{seed:016x}-12.json"
+        old.mkdir()                                      # there, and not a file that opens
+        fresh = self.game()
+        self.assertIn("This game is not saved", self.screen(fresh))
+        self.press(fresh, "ENTER")
+        fresh.close()
+        db = sqlite3.connect(str(next(self.folder.glob("fair_winds-*.db"))))
+        self.assertEqual(db.execute("SELECT count(*) FROM pilots").fetchone()[0], 0, "no new career shuts the old one out")
+        db.close()
+        old.rmdir()
+        old.write_text(text, encoding="utf-8")           # the SysOp has put it right
+        again = self.game()
+        self.assertEqual(again.state.turn, 2, "and the pilot flies on where they were")
+
+    def test_an_earlier_imported_file_is_never_written_over(self):
         game = self.game()
         self.press(game, "ENTER")
-        path = next(self.folder.glob("pilot-*.json"))
-        path.write_text("{ not a save", encoding="utf-8")
-        # Something already sits where the file would be set aside, and cannot be replaced.
-        aside = path.with_name(path.name + ".bad")
-        aside.mkdir()
-        (aside / "keep").write_text("x", encoding="utf-8")
-        fresh = self.game()
-        self.assertEqual(path.read_text(encoding="utf-8"), "{ not a save", "the unreadable file is still there")
-        text = self.screen(fresh)
-        self.assertIn("This game is not saved. Tell the SysOp.", text)
-        self.assertNotIn("the old file is kept", text, "nothing false is claimed")
-        self.press(fresh, "ENTER", "ENTER")
-        self.assertEqual(fresh.state.turn, 2, "the game plays on")
-        self.assertEqual(path.read_text(encoding="utf-8"), "{ not a save", "and it is never overwritten")
-        self.assertIn("cannot be saved here", self.screen(fresh))
+        old = self.folder / f"pilot-{game.world.seed:016x}-12.json"
+        old.write_text(json.dumps(dict(game._career(), version=1, seed=game.world.seed, state=game.state.to_dict())),
+                       encoding="utf-8")
+        aside = old.with_name(old.name + ".imported")
+        aside.write_text("an earlier one", encoding="utf-8")
+        game.close()
+        for path in self.folder.glob("fair_winds-*"):
+            path.unlink()
+        again = self.game()
+        self.assertEqual(again.state.turn, 1)
+        self.assertEqual(aside.read_text(encoding="utf-8"), "an earlier one")
+        self.assertTrue(old.exists(), "the newer file stays where it is")
+
+    def test_an_old_save_file_that_cannot_be_used_is_left_alone(self):
+        seed = fw.world_seed("relink-test")
+        probe = self.game()
+        seed = probe.world.seed
+        probe.close()
+        for path in self.folder.glob("fair_winds-*"):
+            path.unlink()
+        old = self.folder / f"pilot-{seed:016x}-12.json"
+        for bad in ("{ not a save", "[]", json.dumps({"version": 99, "seed": seed})):
+            old.write_text(bad, encoding="utf-8")
+            fresh = self.game()
+            self.assertEqual((fresh.state.turn, fresh.saved_ok), (0, True), "a new pilot, and saved")
+            self.assertEqual(old.read_text(encoding="utf-8"), bad)
+            self.assertIn("An older saved game could not be read. This is a new one; the file is kept.", self.screen(fresh))
+            self.assertFalse(old.with_name(old.name + ".imported").exists())
+            fresh.close()
+            for path in self.folder.glob("fair_winds-*"):
+                path.unlink()
 
     def test_a_missing_save_is_simply_a_new_pilot(self):
         game = self.game()
@@ -482,6 +543,7 @@ class RealDoor(unittest.TestCase):
         self.env = {"DOOR_FW_DATA_DIR": self._dir.name}
 
     def tearDown(self):
+        fw.Store.close_all()
         self._dir.cleanup()
 
     def test_launch_preview_commit_quit_and_resume(self):
@@ -511,6 +573,9 @@ class RealDoor(unittest.TestCase):
             door.proc.kill()            # no goodbye: the session limit's CPU ceiling does exactly this
             door.proc.wait()
         with Door(environ=self.env) as door:
+            # The killed session never gave the pilot up, and is not yet long enough gone to be sure of.
+            self.assertTrue(door.wait_for("is already flying"))
+            door.send("t")
             self.assertTrue(door.wait_for("Day 1  06:45"))
             door.send("\r")
             self.assertTrue(door.wait_for("Day 1  07:00"), "and it flies on")

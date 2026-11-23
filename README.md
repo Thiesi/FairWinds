@@ -25,7 +25,9 @@ and a plain text screen to fly it on. There is no art yet, and most of the game
 (the career, the shared world, the seasons) is still to come.
 
 To try the plain flight, run `python fair_winds.py` in a terminal of at least
-80 x 24. The game is saved every turn under `data/` beside the file.
+80 x 24. The game is saved every turn under `data/` beside the file, in one
+SQLite file for each world. `python fair_winds.py --backup FOLDER` copies them
+safely while callers are playing.
 
 - [Build plan](docs/design.md): scope, phases and slices with acceptance
   criteria.

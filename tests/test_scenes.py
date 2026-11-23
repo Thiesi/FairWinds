@@ -9,7 +9,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import fair_winds as fw                                   # noqa: E402
-from support import Door, door_info                       # noqa: E402
+from support import Door, door_info, stored  # noqa: E402
+#                       # noqa: E402
 from test_wind import GameCase                            # noqa: E402
 
 
@@ -154,7 +155,7 @@ class InSession(GameCase):
         self.assertIsNotNone(session.scene)
         self.assertEqual(session.scene.kind, "launch")
         self.assertIn("Up and away", session.scene.caption)
-        saved = json.loads(next(Path(self._dir.name).glob("pilot-*.json")).read_text(encoding="utf-8"))
+        saved = stored(self._dir.name)
         self.assertEqual(saved["state"]["status"], "aloft", "saved before the scene began")
         self.play(session, clock)
         self.assertIsNone(session.scene)
@@ -190,7 +191,7 @@ class InSession(GameCase):
     def test_no_scene_of_a_turn_that_was_not_saved(self):
         game, session, clock = self.start(keys=[b"\r"])
         session.scenes_on = True
-        game.save = lambda: setattr(game, "saved_ok", False)
+        game.save = lambda action="": setattr(game, "saved_ok", False)
         session.step()
         self.assertIsNone(session.scene)
         self.assertIsNone(game.pending_scene)

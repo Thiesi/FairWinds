@@ -21,15 +21,17 @@ import os
 import queue
 import shutil
 import signal
+import sqlite3
 import struct
 import sys
 import threading
 import time
 import unicodedata
+import weakref
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "0.1.0.dev12"
+VERSION = "0.1.0.dev13"
 DOOR_API = 5
 MIN_WIDTH, MIN_HEIGHT = 80, 24
 MAX_DIMENSION = 1000
@@ -2557,6 +2559,267 @@ def bearing(dx: float, dy: float) -> str:
     return compass(-dx, -dy)
 
 
+# --------------------------------------------------------------------------
+# The world's records (S10): one SQLite file for each world, shared by every
+# caller of that node. Writes are short transactions that take the write
+# lock at once; none is open while a caller thinks. A process killed at any
+# instant leaves the turn before or the turn after, never half of one.
+# --------------------------------------------------------------------------
+
+APPLICATION_ID = 0x46574442          # "FWDB": says the file is a Fair Winds world
+SCHEMA_VERSION = 1
+LEASE_STALE_SECONDS = 90.0           # a session not heard from for this long may be replaced without asking
+HEARTBEAT_SECONDS = 20.0
+BUSY_TIMEOUT_SECONDS = 5.0           # how long a write waits for another caller's write
+
+# Each entry brings the schema from the version before it to its own.
+MIGRATIONS = {
+    1: (
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID",
+        "CREATE TABLE pilots (user_id INTEGER PRIMARY KEY, handle TEXT NOT NULL, created REAL NOT NULL,"
+        " career TEXT NOT NULL)",
+        "CREATE TABLE sessions (user_id INTEGER PRIMARY KEY, token TEXT NOT NULL, started REAL NOT NULL,"
+        " heartbeat REAL NOT NULL, transport TEXT NOT NULL)",
+        "CREATE TABLE flights (user_id INTEGER PRIMARY KEY, seq INTEGER NOT NULL, state TEXT NOT NULL)",
+        "CREATE TABLE turns (user_id INTEGER NOT NULL, seq INTEGER NOT NULL, day INTEGER NOT NULL,"
+        " turn INTEGER NOT NULL, action TEXT NOT NULL, state TEXT NOT NULL, at REAL NOT NULL,"
+        " PRIMARY KEY (user_id, seq)) WITHOUT ROWID",
+    ),
+}
+_NO_PLACE_TO_WRITE = ("readonly", "read-only", "unable to open", "locked", "disk i/o", "full", "busy")
+_NO_PLACE_CODES = (5, 6, 8, 10, 13, 14)     # SQLITE_BUSY, LOCKED, READONLY, IOERR, FULL, CANTOPEN
+
+
+def unreachable(error: sqlite3.Error) -> bool:
+    """Is this the records being out of reach (busy, read-only, full), as against being damaged?"""
+    code = getattr(error, "sqlite_errorcode", None)
+    if code is not None:
+        return code & 0xFF in _NO_PLACE_CODES
+    text = str(error).lower()
+    return isinstance(error, sqlite3.OperationalError) and any(word in text for word in _NO_PLACE_TO_WRITE)
+
+
+class StoreError(Exception):
+    """The world's records are there and cannot be used. They are left exactly as they are."""
+
+
+class StoreUnavailable(Exception):
+    """Records cannot be kept here at all: no folder, or nothing may be written."""
+
+
+class LeaseLost(Exception):
+    """Another session has taken this pilot over."""
+
+
+def db_name(seed: int) -> str:
+    return f"fair_winds-{seed:016x}.db"
+
+
+class Store:
+    """One world's records."""
+
+    opened: "weakref.WeakSet[Store]" = weakref.WeakSet()
+
+    def __init__(self, folder: Path, seed: int, node: str, clock=time.time, journal: str = "wal"):
+        self.path = Path(folder) / db_name(seed)
+        self.journal_mode = "DELETE" if journal.strip().lower() == "delete" else "WAL"
+        self.token = os.urandom(8).hex()
+        self.clock = clock
+        self.db = None
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.db = sqlite3.connect(str(self.path), timeout=BUSY_TIMEOUT_SECONDS, isolation_level=None)
+        except (OSError, sqlite3.Error) as error:
+            raise StoreUnavailable(str(error)) from None
+        try:
+            self._prepare(seed, node)
+        except sqlite3.DatabaseError as error:
+            self.close()
+            if unreachable(error):
+                raise StoreUnavailable(str(error)) from None
+            raise StoreError(f"{self.path.name} is damaged or is not a database ({error})") from None
+        except StoreError:
+            self.close()
+            raise
+        Store.opened.add(self)
+
+    def _prepare(self, seed: int, node: str) -> None:
+        db = self.db
+        app = db.execute("PRAGMA application_id").fetchone()[0]
+        version = db.execute("PRAGMA user_version").fetchone()[0]
+        tables = db.execute("SELECT count(*) FROM sqlite_master").fetchone()[0]
+        if (app, version, tables) != (0, 0, 0):
+            if app != APPLICATION_ID:
+                raise StoreError(f"{self.path.name} is not a Fair Winds world")
+            if version > SCHEMA_VERSION:
+                raise StoreError(f"{self.path.name} was written by a newer Fair Winds (schema {version}, "
+                                 f"this one knows {SCHEMA_VERSION})")
+        try:
+            db.execute(f"PRAGMA journal_mode={self.journal_mode}")
+        except sqlite3.OperationalError:
+            pass                                # a filesystem without it: the rollback journal is as safe
+        db.execute("PRAGMA synchronous=FULL")   # a turn is on disk before its result is shown
+        if version < SCHEMA_VERSION:
+            def migrate():
+                # Read again inside the write lock: another caller may have just done it.
+                current = db.execute("PRAGMA user_version").fetchone()[0]
+                for step in range(current + 1, SCHEMA_VERSION + 1):
+                    for statement in MIGRATIONS[step]:
+                        db.execute(statement)
+                if current == 0:
+                    db.execute(f"PRAGMA application_id={APPLICATION_ID}")
+                    db.executemany("INSERT INTO meta VALUES (?, ?)",
+                                   (("seed", str(seed)), ("node", node), ("created", str(self.clock()))))
+                db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+            self._write(migrate)
+        row = db.execute("SELECT value FROM meta WHERE key='seed'").fetchone()
+        if row is None or row[0] != str(seed):
+            raise StoreError(f"{self.path.name} holds another world's records")
+
+    def _write(self, work):
+        """Run work() as one transaction that holds the write lock from its first statement."""
+        if self.db is None:
+            raise sqlite3.ProgrammingError("the records are closed")
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            result = work()
+            self.db.execute("COMMIT")
+        except BaseException:
+            # Whatever failed, the commit itself included, nothing stays open:
+            # an open transaction would hold the write lock against every caller.
+            if self.db.in_transaction:
+                try:
+                    self.db.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass                        # the first error is the one worth hearing
+            raise
+        return result
+
+    # -- the lease -----------------------------------------------------------
+
+    def claim(self, user_id: int, transport: str, force: bool = False) -> dict | None:
+        """Make this the pilot's one live session. Returns None, or who holds the pilot if someone does."""
+        def work():
+            now = self.clock()
+            row = self.db.execute("SELECT token, started, heartbeat, transport FROM sessions WHERE user_id=?",
+                                  (user_id,)).fetchone()
+            if row is not None and row[0] != self.token and not force and now - row[2] < LEASE_STALE_SECONDS:
+                return {"started": row[1], "heartbeat": row[2], "transport": row[3], "now": now}
+            self.db.execute("INSERT OR REPLACE INTO sessions VALUES (?, ?, ?, ?, ?)",
+                            (user_id, self.token, now, now, transport))
+            return None
+        return self._write(work)
+
+    def beat(self, user_id: int) -> bool:
+        """Say this session is alive. False if the pilot is no longer this session's."""
+        return self._write(lambda: self.db.execute(
+            "UPDATE sessions SET heartbeat=? WHERE user_id=? AND token=?",
+            (self.clock(), user_id, self.token)).rowcount == 1)
+
+    def holds(self, user_id: int) -> bool:
+        """Is the pilot this session's? A read: it costs no write."""
+        row = self.db.execute("SELECT token FROM sessions WHERE user_id=?", (user_id,)).fetchone()
+        return row is not None and row[0] == self.token
+
+    def release(self, user_id: int) -> None:
+        self._write(lambda: self.db.execute("DELETE FROM sessions WHERE user_id=? AND token=?",
+                                            (user_id, self.token)))
+
+    # -- the pilot and the flight ---------------------------------------------
+
+    def pilot(self, user_id: int) -> tuple[str, str] | None:
+        """The pilot's career and flight as stored text, or None for a pilot never seen."""
+        row = self.db.execute("SELECT p.career, f.state FROM pilots p JOIN flights f USING (user_id)"
+                              " WHERE p.user_id=?", (user_id,)).fetchone()
+        return (row[0], row[1]) if row else None
+
+    def commit(self, user_id: int, handle: str, career: dict, state: dict, action: str = "") -> int:
+        """Write the pilot as they now stand, and with an action a line in the day's journal.
+
+        One transaction: the flight, the journal row and the career go
+        together or not at all. Raises LeaseLost, having written nothing, if
+        the pilot is no longer this session's.
+        """
+        def work():
+            db, now = self.db, self.clock()
+            row = db.execute("SELECT token FROM sessions WHERE user_id=?", (user_id,)).fetchone()
+            if row is None or row[0] != self.token:
+                raise LeaseLost()
+            row = db.execute("SELECT seq FROM flights WHERE user_id=?", (user_id,)).fetchone()
+            seq = row[0] if row else 0
+            text = json.dumps(state)
+            db.execute("INSERT INTO pilots VALUES (?, ?, ?, ?) ON CONFLICT (user_id) DO UPDATE SET"
+                       " handle=excluded.handle, career=excluded.career",
+                       (user_id, handle, now, json.dumps(career)))
+            if action:
+                seq += 1
+                db.execute("INSERT INTO turns VALUES (?, ?, ?, ?, ?, ?, ?)",
+                           (user_id, seq, state["day"], state["turn"], action, text, now))
+                db.execute("DELETE FROM turns WHERE user_id=? AND day<?", (user_id, state["day"]))
+            db.execute("INSERT INTO flights VALUES (?, ?, ?) ON CONFLICT (user_id) DO UPDATE SET"
+                       " seq=excluded.seq, state=excluded.state", (user_id, seq, text))
+            db.execute("UPDATE sessions SET heartbeat=? WHERE user_id=?", (now, user_id))
+            return seq
+        return self._write(work)
+
+    def journal(self, user_id: int) -> list[tuple]:
+        """The committed turns of the pilot's current flying day: (seq, day, turn, action)."""
+        return self.db.execute("SELECT seq, day, turn, action FROM turns WHERE user_id=? ORDER BY seq",
+                               (user_id,)).fetchall()
+
+    def close(self) -> None:
+        if self.db is not None:
+            try:
+                self.db.close()
+            except sqlite3.Error:
+                pass
+            self.db = None
+
+    def __del__(self):
+        self.close()                      # the file is let go when the store is, not whenever memory is tidied
+
+    @classmethod
+    def close_all(cls) -> None:
+        for store in list(cls.opened):
+            store.close()
+
+
+def backup_worlds(source: Path, target: Path) -> list[str]:
+    """Copy every world's records in a data folder to another folder. Safe while callers are playing."""
+    source, target = Path(source), Path(target)
+    target.mkdir(parents=True, exist_ok=True)
+    if source.exists() and target.resolve() == source.resolve():
+        raise OSError("the backup folder is the data folder: a copy there would replace the live records")
+    done = []
+    worlds = sorted(source.glob("fair_winds-*.db"))
+    for path in worlds:                         # every refusal comes before the first copy
+        if any((target / (path.name + suffix)).exists() for suffix in ("-wal", "-shm", "-journal")):
+            raise OSError(f"{target} holds a database in use under the name {path.name}")
+    for path in worlds:
+        temp = target / (path.name + ".tmp")
+        temp.unlink(missing_ok=True)
+        src = dst = None
+        try:
+            src = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=BUSY_TIMEOUT_SECONDS)
+            dst = sqlite3.connect(str(temp))
+            src.backup(dst)
+            dst.execute("DELETE FROM sessions")     # nobody is flying in a copy: a restore keeps no caller out
+            dst.commit()
+            if dst.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise sqlite3.DatabaseError(f"the copy of {path.name} did not pass its check")
+        except BaseException:
+            for db in (src, dst):
+                if db is not None:
+                    db.close()
+            temp.unlink(missing_ok=True)        # no half copy is left behind
+            raise
+        src.close()
+        dst.close()
+        temp.replace(target / path.name)
+        done.append(path.name)
+    return done
+
+
 class PlainFlight:
     """One pilot's game on the plain screen.
 
@@ -2571,9 +2834,6 @@ class PlainFlight:
         self.weather = Weather(self.world)
         self.map = MapView(self.world, self.weather, want_pixels(launch, environ or {}))
         self.engine = Flight(self.world, self.weather, f"{node}/{launch.user_id}")
-        self.path = None
-        if folder is not None and not launch.guest:
-            self.path = Path(folder) / f"pilot-{self.world.seed:016x}-{launch.user_id}.json"
         self.saved_ok = True
         self.log: list[str] = []
         self.typed_ahead = False          # set when a turn was committed: later keys in the same read are dropped
@@ -2584,18 +2844,58 @@ class PlainFlight:
         # A turn empties it first; lines said between turns sit here unread.
         self.heard: list = []
         self.opening_notice = ""          # shown on the first screen, where it cannot scroll away
+        self.busy: dict | None = None     # another live session holds this pilot: who, until the caller decides
+        self.ended = ""                   # "taken": another session took this pilot over, and this one is done
+        self._last_beat: float | None = None
+        self.store: Store | None = None
+        # The save file of the plain flight before there was a database: read once, then left behind.
+        self.legacy = None
+        if folder is not None and not launch.guest:
+            self.legacy = Path(folder) / f"pilot-{self.world.seed:016x}-{launch.user_id}.json"
+            try:
+                self.store = Store(folder, self.world.seed, node,
+                                   journal=(environ or {}).get("DOOR_FW_JOURNAL", "wal"))
+                self.busy = self.store.claim(launch.user_id, self._transport())
+            except (StoreUnavailable, sqlite3.Error) as error:
+                # Nothing can be kept here. The caller plays on and is told; the SysOp is told why.
+                diagnose(f"records cannot be kept: {error}")
+                self._drop_store()
+        if self.busy is None:
+            self._begin()
+
+    def _transport(self) -> str:
+        return "a local terminal" if self.launch.host == "standalone" else (self.launch.transport or "the BBS")
+
+    def _drop_store(self) -> None:
+        """Play on without records: give the pilot up first, so nobody is kept out by a session that keeps nothing."""
+        if self.store is not None:
+            try:
+                self.store.release(self.launch.user_id)
+            except sqlite3.Error:
+                pass
+            self.store.close()
+        self.store, self.saved_ok = None, False
+
+    def _begin(self) -> None:
+        """Take up the pilot's game where it stands, or start one."""
         loaded = self._load()
         if loaded is not True:
             self._new_game()
-        if loaded == "damaged":
-            self.opening_notice = "Your saved game could not be read. This is a new one; the old file is kept."
-        elif loaded == "unkept":
-            # The unreadable file could not be moved aside. Saving now would
-            # destroy it, so this game is played unsaved and the file stays.
-            self.opening_notice = "Your saved game could not be read. This game is not saved. Tell the SysOp."
-            self.path = None
-            self.saved_ok = False
+        if loaded in ("damaged", "unreachable"):
+            # Saving now would destroy a record somebody might still want back.
+            self.opening_notice = ("Your saved game could not be read. This game is not saved. Tell the SysOp."
+                                   if loaded == "damaged" else
+                                   "The records are busy. This game is not saved; yours is safe. Try again soon.")
+            self._drop_store()
         self.save()                       # so a game that cannot be saved says so before the first turn
+        if self._imported and self.saved_ok and self.store is not None and not self.ended:
+            # Only once the database has the pilot. And never over an earlier file of that name.
+            aside = self.legacy.with_name(self.legacy.name + ".imported")
+            try:
+                if not aside.exists():
+                    self.legacy.replace(aside)
+            except OSError:
+                pass                      # it stays; the database has the pilot now and is read first
         self._choose_default()
 
     # -- the save ------------------------------------------------------------
@@ -2610,63 +2910,130 @@ class PlainFlight:
         self._say(f"You are at {start['name']}. There is post for {self._names()}.")
         self._say("Read the winds and fly to whichever the day favours.")
 
-    def _load(self):
-        """True if a saved game was read, False if there is none, "damaged" if one
-        was set aside, "unkept" if it could not even be set aside.
+    _imported = False
 
-        Only a missing file means a new pilot. A file that is there but
-        cannot be used is moved aside under one fixed name, so the next save
-        never overwrites a game somebody might still want back.
+    def _load(self):
+        """True if the pilot's game was read, False if there is none, "damaged" if
+        there is one that cannot be used.
+
+        Only a pilot never seen gets a new game that is saved. A record that
+        is there but cannot be read is never written over.
         """
-        if self.path is None:
+        if self.store is None:
             return False
         try:
-            text = self.path.read_text(encoding="utf-8")
+            row = self.store.pilot(self.launch.user_id)
+        except sqlite3.Error as error:
+            diagnose(f"the pilot's record cannot be read: {error}")
+            return "unreachable" if unreachable(error) else "damaged"
+        if row is None:
+            return self._import()
+        try:
+            self._take(json.loads(row[0]), json.loads(row[1]))
+            return True
+        except (ValueError, KeyError, TypeError):
+            diagnose(f"the record of pilot {self.launch.user_id} cannot be used")
+            return "damaged"
+
+    def _take(self, career: dict, state: dict):
+        """Set the game from stored data. Raises ValueError, KeyError or TypeError if it is not a game."""
+        flight = FlightState.from_dict(state)
+        targets = [self._ref(t) for t in career["targets"]][:POST_CHOICES]
+        visited = [self._ref(v) for v in career["visited"]][-4:]
+        if not targets:
+            raise ValueError("no post aboard")
+        deliveries, days_flown, total_km = int(career["deliveries"]), int(career["days_flown"]), float(career["total_km"])
+        log = [str(line) for line in career.get("log", [])][-3:]
+        self.state, self.targets, self.visited = flight, targets, visited
+        self.deliveries, self.days_flown, self.total_km, self.log = deliveries, days_flown, total_km, log
+
+    def _import(self):
+        """A pilot the database has never seen may have a save file from before it. Take that over, once."""
+        try:
+            text = self.legacy.read_text(encoding="utf-8")
         except (FileNotFoundError, NotADirectoryError):
-            return False                  # no file there, or no folder for one to be in
-        except (OSError, UnicodeDecodeError):
-            return self._set_aside()
+            return False                  # a new pilot
+        except UnicodeDecodeError:
+            text = ""
+        except OSError as error:
+            # It is there and cannot be opened: a matter of minutes for the SysOp.
+            # A new game saved now would shut the old one out for good, so nothing is saved this call.
+            diagnose(f"the old save file {self.legacy.name} cannot be opened: {error}")
+            return "unreachable"
         try:
             data = json.loads(text)
             if data["version"] != PLAIN_SAVE_VERSION or data["seed"] != self.world.seed:
-                return self._set_aside()
-            self.state = FlightState.from_dict(data["state"])
-            self.targets = [self._ref(t) for t in data["targets"]][:POST_CHOICES]
-            self.visited = [self._ref(v) for v in data["visited"]][-4:]
-            if not self.targets:
-                return False
-            self.deliveries, self.days_flown = int(data["deliveries"]), int(data["days_flown"])
-            self.total_km = float(data["total_km"])
-            self.log = [str(line) for line in data.get("log", [])][-3:]
-            return True
+                raise ValueError("not this world's save")
+            self._take(data, data["state"])
         except (ValueError, KeyError, TypeError):
-            return self._set_aside()
+            # It is left where it is, and both the pilot and the SysOp are told.
+            diagnose(f"the old save file {self.legacy.name} cannot be used; it is left in place")
+            self.opening_notice = "An older saved game could not be read. This is a new one; the file is kept."
+            return False
+        self._imported = True
+        return True
 
-    def _set_aside(self) -> str:
-        try:
-            self.path.replace(self.path.with_name(self.path.name + ".bad"))
-        except OSError:
-            return "unkept"
-        return "damaged"
+    def _career(self) -> dict:
+        return {"targets": [list(t) for t in self.targets], "visited": [list(v) for v in self.visited],
+                "deliveries": self.deliveries, "days_flown": self.days_flown, "total_km": self.total_km,
+                "log": self.log[-3:]}
 
-    def save(self) -> None:
-        if self.path is None:
+    def save(self, action: str = "") -> None:
+        """Write the game as it stands; with an action, as a committed turn in the day's journal."""
+        if self.store is None or self.ended:
             return
-        data = {"version": PLAIN_SAVE_VERSION, "seed": self.world.seed, "state": self.state.to_dict(),
-                "targets": [list(t) for t in self.targets], "visited": [list(v) for v in self.visited],
-                "deliveries": self.deliveries,
-                "days_flown": self.days_flown, "total_km": self.total_km, "log": self.log[-3:]}
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            temp = self.path.with_name(self.path.name + f".{os.getpid()}.tmp")
-            with open(temp, "w", encoding="utf-8") as handle:
-                handle.write(json.dumps(data))
-                handle.flush()
-                os.fsync(handle.fileno())     # on disk before it replaces the last good save
-            temp.replace(self.path)
+            self.store.commit(self.launch.user_id, self.launch.handle, self._career(), self.state.to_dict(), action)
             self.saved_ok = True
-        except OSError:
+        except LeaseLost:
+            self.ended = "taken"
+        except sqlite3.Error as error:
+            diagnose(f"a turn could not be saved: {error}")
             self.saved_ok = False       # play on; say so on the screen
+
+    def pulse(self, now: float) -> bool:
+        """Called as time passes: keep the lease alive. True if the screen has to change."""
+        if self.store is None or self.busy is not None or self.ended:
+            return False
+        if self._last_beat is not None and now - self._last_beat < HEARTBEAT_SECONDS:
+            return False
+        self._last_beat = now
+        return not self._mine()
+
+    def _mine(self, write: bool = True) -> bool:
+        """Is the pilot still this session's? If not, this session is over.
+
+        The heartbeat writes. The look before a turn only reads: the commit
+        that follows checks again inside its transaction and is the heartbeat.
+        """
+        try:
+            if (self.store.beat if write else self.store.holds)(self.launch.user_id):
+                return True
+        except sqlite3.Error:
+            return True                   # the records cannot be reached; the commit will say so
+        self.ended = "taken"
+        return False
+
+    def take_over(self) -> None:
+        """The caller chose to fly here: the other session ends at its next turn."""
+        try:
+            self.store.claim(self.launch.user_id, self._transport(), force=True)
+        except sqlite3.Error as error:
+            diagnose(f"records cannot be kept: {error}")
+            self._drop_store()
+        self.busy = None
+        self._begin()
+
+    def close(self) -> None:
+        """The session is over: give the pilot up, so the next call finds nobody flying."""
+        if self.store is not None:
+            try:
+                if self.busy is None and not self.ended:
+                    self.store.release(self.launch.user_id)
+            except sqlite3.Error:
+                pass
+            self.store.close()
+            self.store = None
 
     # -- the post ------------------------------------------------------------
 
@@ -2743,8 +3110,14 @@ class PlainFlight:
         """Handle a key. Returns "quit" to leave, "help" for help, else None."""
         self.frames_left = 0              # the pilot has moved on: the wind holds still until something changes
         k = key.lower() if len(key) == 1 else key
+        if self.ended:
+            return "quit"                 # any key: there is nothing left to do here
         if k in ("q", "CTRL-C"):
             return "quit"
+        if self.busy is not None:
+            if k == "t":
+                self.take_over()
+            return None
         if k in ("?", "F1"):
             return "help"
         phase = self.phase()
@@ -2791,6 +3164,8 @@ class PlainFlight:
         del self.log[:-3]
 
     def _commit(self, action: str) -> None:
+        if self.store is not None and not self._mine(write=False):
+            return                        # taken over: nothing is worked out or shown from here any more
         before = self.state
         result = self.engine.step(before, action)
         self.state = result.state
@@ -2803,7 +3178,9 @@ class PlainFlight:
         landed = before.status == "aloft" and self.state.status != "aloft"
         if landed:
             self._landed()
-        self.save()                       # before anything is shown
+        self.save(action)                 # before anything is shown
+        if self.ended:
+            return
         if (action == "launch" or landed) and self.saved_ok:
             # No picture of a turn that is not on disk: the screen says it was not saved instead.
             self.pending_scene = self._scene_for("launch" if action == "launch" else "landing")
@@ -2903,7 +3280,7 @@ class PlainFlight:
         at_place = self.engine.place(self.state.x, self.state.y) is not None
         self._new_day(1, refill=at_place)
         self._say(f"Day {self.state.day}. Dawn.")
-        self.save()                       # once, with the new day and its log together
+        self.save("night")                # once, with the new day and its log together
 
     def _nearest(self, towns) -> dict:
         return min(towns, key=lambda t: ((t["x"] - self.state.x) ** 2 + (t["y"] - self.state.y) ** 2, t["cell"]))
@@ -2913,7 +3290,7 @@ class PlainFlight:
         self._new_day(2, town["x"], town["y"], refill=True)
         self._say(f"Two days on foot to {town['name']}. Day {self.state.day}.")
         self.targets = self._next_targets()
-        self.save()
+        self.save("walk")
 
     def _picked_up(self) -> None:
         ports = [t for t in self.world.towns if t["port"]] or self.world.towns
@@ -2921,11 +3298,37 @@ class PlainFlight:
         self._new_day(1, town["x"], town["y"], refill=True)
         self._say(f"The packet boat lands you at {town['name']}. Day {self.state.day}.")
         self.targets = self._next_targets()
-        self.save()
+        self.save("boat")
 
     # -- the screen ----------------------------------------------------------
 
+    def _draw_lease(self, s: "Session") -> list[str]:
+        """The two screens about who is flying this pilot: someone else is, or someone else now is."""
+        launch = self.launch
+        wide = s.width - 2
+        out = [s._line(0, 1, "FAIR WINDS", "accent")]
+        if self.ended:
+            lines = [f"{launch.handle} is now flying from another session.",
+                     "Every turn flown here was saved. That session flies on from the last of them."]
+            keys = [("Any key", f"Return to {launch.node_name}")]
+        else:
+            minutes = max(0, int((self.busy["now"] - self.busy["started"]) / 60))
+            since = "a moment ago" if minutes < 1 else "a minute ago" if minutes == 1 else f"{minutes} minutes ago"
+            lines = [f"{launch.handle} is already flying: a session over {self.busy['transport']}, opened {since}.",
+                     "A pilot flies in one place at a time.",
+                     "",
+                     "If that is you on another screen, or a call that was cut off,",
+                     "you can fly here. The other session then ends at its next turn.",
+                     "Nothing is lost."]
+            keys = [("T", "Take over here"), ("Q", f"Return to {launch.node_name}")]
+        for i, line in enumerate(lines):
+            out.append(s._line(2 + i, 1, line[:wide], "text" if i == 0 else "dim"))
+        out += s._keys(s.height - 1, keys)
+        return out
+
     def draw(self, s: "Session") -> list[str]:
+        if self.busy is not None or self.ended:
+            return self._draw_lease(s)
         state, launch = self.state, self.launch
         phase = self.phase()
         # The layout follows the terminal: a bigger window is a bigger map.
@@ -3837,6 +4240,9 @@ class Session:
         if self.stop:
             return
         self._check_geometry()
+        if self.game is not None and self.game.pulse(self.clock()):
+            self.scene = None                   # the pilot was taken over: that is all there is to show
+            self._dirty = True
         if self.scene is not None:
             self._scene_step()
             return
@@ -4014,7 +4420,17 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="fair_winds.py", description="Fair Winds, a door game for NetBBS.")
     parser.add_argument("--version", action="version", version=VERSION)
     parser.add_argument("--world-map", metavar="NODE_ID", help="print the continent of a node id and exit")
+    parser.add_argument("--backup", metavar="FOLDER",
+                        help="copy every world's records to FOLDER and exit; safe while callers are playing")
     args = parser.parse_args(argv)
+    if args.backup is not None:
+        try:
+            names = backup_worlds(data_dir(os.environ), Path(args.backup))
+        except (OSError, sqlite3.Error) as error:
+            print(f"backup failed: {error}", file=sys.stderr)
+            return 1
+        print("\n".join(names) if names else "no world to back up")
+        return 0
     if args.world_map is not None:
         print(world_map(World(world_seed(args.world_map))))
         return 0
@@ -4034,26 +4450,40 @@ def main(argv=None) -> int:
     local = LocalTerminal()
     if launch.host == "standalone":
         local.enter()
-    session = Session(launch, Input(sys.stdin.fileno(), console=local.console), out,
-                      game=PlainFlight(launch, data_dir(os.environ), os.environ))
-
-    def on_terminate(signum, frame):
-        session.terminated = True
-
-    def on_resize(signum, frame):
-        session.resized = True
-
-    signal.signal(signal.SIGTERM, on_terminate)
-    signal.signal(signal.SIGINT, on_terminate)
-    for name in ("SIGUSR1", "SIGWINCH"):     # NetBBS signals a resize; so does a local terminal
-        if hasattr(signal, name):
-            signal.signal(getattr(signal, name), on_resize)
-    session.scenes_on = os.environ.get("DOOR_SCENES", "").strip() != "0"
-    if os.environ.get("DOOR_SPLASH", "").strip() != "0":
-        session.start_splash()              # with the scenes off it is still there, and holds still
     try:
+        game = PlainFlight(launch, data_dir(os.environ), os.environ)
+    except StoreError as error:
+        # The records are there and cannot be used. Nothing is written over them.
+        local.leave()
+        diagnose(f"cannot open the world's records: {error}")
+        try:
+            out.write("Fair Winds cannot read this world's records, and has left them untouched.\r\n"
+                      "Please tell the SysOp.\r\n")
+        except SessionClosed:
+            pass
+        return 3
+    try:                                    # from here the pilot is held: given up whatever happens next
+        session = Session(launch, Input(sys.stdin.fileno(), console=local.console), out, game=game)
+
+        def on_terminate(signum, frame):
+            session.terminated = True
+
+        def on_resize(signum, frame):
+            session.resized = True
+
+        signal.signal(signal.SIGTERM, on_terminate)
+        signal.signal(signal.SIGINT, on_terminate)
+        if hasattr(signal, "SIGHUP"):
+            signal.signal(signal.SIGHUP, on_terminate)      # a dropped line: leave properly, so the pilot is free
+        for name in ("SIGUSR1", "SIGWINCH"):     # NetBBS signals a resize; so does a local terminal
+            if hasattr(signal, name):
+                signal.signal(getattr(signal, name), on_resize)
+        session.scenes_on = os.environ.get("DOOR_SCENES", "").strip() != "0"
+        if os.environ.get("DOOR_SPLASH", "").strip() != "0":
+            session.start_splash()              # with the scenes off it is still there, and holds still
         session.run()
     finally:
+        game.close()
         local.leave()
     return 0
 

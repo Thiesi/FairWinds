@@ -21,8 +21,9 @@ what the door is. This file says how to work here.
 charset readings, layouts that fill the terminal), S07 (the relief map), S08
 (wind on the map, moving in bursts, and the sounding panel) and S09 (the
 splash, and the launch and landing scenes). The game can be played:
-`python fair_winds.py` in a terminal, or as a door under NetBBS. The next slice
-is S10, the first of P3.
+`python fair_winds.py` in a terminal, or as a door under NetBBS. Of P3, S10
+(the world database, the pilot's lease and the atomic turn commit) is built.
+The next slice is S11, the calendar.
 
 To look at a screen, run `python scripts/capture.py`: it writes each size and
 colour depth as an HTML page under `.test-tmp/captures`, which headless Edge
