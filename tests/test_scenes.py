@@ -164,22 +164,70 @@ class InSession(GameCase):
         self.assertTrue(session.out.text, "the game is painted again when the scene ends")
 
     def test_any_key_ends_a_scene_and_is_not_also_a_move(self):
-        game, session, clock = self.start(keys=[b"\r", None, b"\r"])
+        game, session, clock = self.start(keys=[b"\r", None, None, None, b"\r"])
         session.scenes_on = True
-        session.step()
-        session.step()
+        for _ in range(4):
+            session.step()
         self.assertIsNotNone(session.scene)
         session.step()                                   # the second Enter arrives during the scene
         self.assertIsNone(session.scene)
         self.assertEqual(game.state.turn, 1, "it ended the scene and held nothing")
 
-    def test_ctrl_c_and_a_lost_caller_still_end_the_session_from_a_scene(self):
-        game, session, clock = self.start(keys=[b"\r", b"\x03"])
+    def test_a_key_in_the_first_moment_of_a_scene_does_not_skip_it(self):
+        game, session, clock = self.start(keys=[b"\r", b"\r", b"\r"])   # Enter held down
         session.scenes_on = True
         session.step()
         session.step()
+        session.step()
+        self.assertIsNotNone(session.scene, "auto-repeat is not a wish to skip")
+        self.assertEqual(game.state.turn, 1, "and it is still not a move")
+        game, session, clock = self.start(keys=[b"\r", b"\x03"], user_id=77)
+        session.scenes_on = True
+        session.step()
+        session.step()
+        self.assertEqual(session.stop, "quit", "Ctrl-C is never held off")
+
+    def test_no_scene_of_a_turn_that_was_not_saved(self):
+        game, session, clock = self.start(keys=[b"\r"])
+        session.scenes_on = True
+        game.save = lambda: setattr(game, "saved_ok", False)
+        session.step()
+        self.assertIsNone(session.scene)
+        self.assertIsNone(game.pending_scene)
+
+    def test_the_wind_moves_after_a_scene_as_after_any_turn(self):
+        game, session, clock = self.start(keys=[b"\r"], terminal_width=168, terminal_height=46)
+        session.scenes_on = True
+        session.step()
+        self.play(session, clock)
+        self.assertEqual(game.frames_left, fw.BURST_FRAMES, "the burst waited for the scene")
+        self.assertEqual(session._sent, [], "and the scene's bytes are not held against it")
+        writes = []
+        real = session.out.write
+        session.out.write = lambda text: (writes.append(len(text)), real(text))
+        for _ in range(fw.BURST_FRAMES + 3):
+            session.step()
+        self.assertEqual(game.frames_left, 0)
+        self.assertGreaterEqual(len(writes), fw.BURST_FRAMES - 2, "nearly every frame was painted, not one lump")
+
+    def test_a_landing_caption_is_the_landing_however_much_else_was_said(self):
+        game, session, clock = self.start()
+        game.heard = []
+        game._say("17:45  Down at Thistle Cairn: a clean landing.")
+        game._say("The post for Thistle Cairn is delivered. That makes 4.")
+        game._say("New post aboard, for " + ", ".join(["Somewhere With A Long Name"] * 5) + ".")
+        self.assertFalse(any("Down at" in line for line in game.log), "the log has moved on")
+        asked = game._scene_for("landing")
+        self.assertEqual(asked["caption"], "Down at Thistle Cairn: a clean landing.")
+        self.assertEqual(asked["sub"], "The post for Thistle Cairn is delivered. That makes 4.")
+
+    def test_ctrl_c_and_a_lost_caller_still_end_the_session_from_a_scene(self):
+        game, session, clock = self.start(keys=[b"\r", None, None, None, b"\x03"])
+        session.scenes_on = True
+        for _ in range(5):
+            session.step()
         self.assertEqual(session.stop, "quit")
-        game, session, clock = self.start(keys=[b"\r", b""])
+        game, session, clock = self.start(keys=[b"\r", b""], user_id=78)
         session.scenes_on = True
         session.step()
         session.step()
@@ -210,6 +258,7 @@ class InSession(GameCase):
         asked = game.pending_scene
         self.assertEqual(asked["kind"], "landing")
         self.assertTrue(asked["caption"])
+        self.assertNotEqual(asked["caption"], "Down.", "it says what the logbook said")
         self.assertTrue(0.0 <= asked["hour"] <= 24.0)
         session._take_scene()
         self.assertEqual(session.scene.kind, "landing")
@@ -249,6 +298,7 @@ class InSession(GameCase):
             session.step()
         finally:
             fw.current_geometry = real
+        self.assertIsNone(session._scene_at, "nothing of the scene's timing is left")
         self.assertIsNone(session.scene)
         self.assertEqual((session.width, session.height), (100, 30))
 

@@ -2580,6 +2580,7 @@ class PlainFlight:
         self.motion = want_motion(launch, environ or {}) and self.map.pixels      # the character map's wind holds still
         self.frames_left = 0              # frames of moving wind still to show
         self.pending_scene: dict | None = None    # a scene the last turn earned, for the session to play
+        self.heard: list = []             # what the last turn said, each line whole (the log keeps three, wrapped)
         self.opening_notice = ""          # shown on the first screen, where it cannot scroll away
         loaded = self._load()
         if loaded is not True:
@@ -2776,6 +2777,7 @@ class PlainFlight:
 
     def _say(self, line: str) -> None:
         """Add to the log, wrapped to the screen. The last three lines show."""
+        self.heard.append(line)
         words, current = line.split(" "), ""
         for word in words:
             if current and len(current) + 1 + len(word) > 76:
@@ -2790,6 +2792,7 @@ class PlainFlight:
         before = self.state
         result = self.engine.step(before, action)
         self.state = result.state
+        self.heard = []
         stamp = clock_text(before.minute)
         for event in result.events:
             line = self._describe(event)
@@ -2799,7 +2802,8 @@ class PlainFlight:
         if landed:
             self._landed()
         self.save()                       # before anything is shown
-        if action == "launch" or landed:
+        if (action == "launch" or landed) and self.saved_ok:
+            # No picture of a turn that is not on disk: the screen says it was not saved instead.
             self.pending_scene = self._scene_for("launch" if action == "launch" else "landing")
         if action != "pibal":
             self.typed_ahead = True
@@ -2818,9 +2822,10 @@ class PlainFlight:
             caption = f"Day {state.day}, {clock_text(minute)}. Up and away" + (f" from {name}." if name else ".")
             sub = ""
         else:
-            lines = [line.split("  ", 1)[-1] for line in self.log[-3:]]
-            caption = next((line for line in lines if line.startswith(("Down ", "Midnight"))), "Down.")
-            sub = next((line for line in lines if "delivered" in line or "stranded" in line), "")
+            lines = [line.split("  ", 1)[-1] if line[:2].isdigit() else line for line in self.heard]
+            caption = next((line for line in lines if line.startswith(("Down ", "Midnight"))),
+                           lines[0] if lines else "Down.")
+            sub = next((line for line in lines if line != caption and ("delivered" in line or "no post" in line)), "")
         return {"kind": kind, "hour": minute / 60.0, "cloud": frame.cloud(state.x, state.y)[0],
                 "biome": self.world.sample(state.x, state.y)[1], "place": place is not None,
                 "seed": int(state.x) * 7919 + int(state.y) * 104729 + 17, "caption": caption, "sub": sub}
@@ -3336,6 +3341,7 @@ PLAIN_HELP = (
 SCENE_FRAME_SECONDS = 1 / 7
 SCENE_FRAME_BYTES = 6000             # a scene's frame that costs more than this is shown less often
 SCENE_STRIDE_MAX = 4
+SCENE_GRACE_SECONDS = 0.3            # a key this soon after a scene begins was meant for what came before it
 _TITLE_FONT = {
     "F": "11111 10000 10000 11110 10000 10000 10000", "A": "01110 10001 10001 11111 10001 10001 10001",
     "I": "11111 00100 00100 00100 00100 00100 11111", "R": "11110 10001 10001 11110 10100 10010 10001",
@@ -3641,6 +3647,8 @@ class Session:
         self._painted = 0                     # bytes the last paint sent
         self._scene_at: float | None = None   # the moment the scene's shown frame belongs to
         self._scene_due = 1                   # frames the scene moves on by at its next paint
+        self._scene_began = 0.0               # when the scene's first frame went out
+        self._after_scene = False             # the next paint puts the game back after a scene
         self._next_poll = self.started + GEOMETRY_POLL
 
     # -- time ---------------------------------------------------------------
@@ -3677,7 +3685,8 @@ class Session:
         if size != (self.width, self.height):
             self.width, self.height = size
             self.shown = None               # a resize throws the buffer away and repaints everything
-            self.scene = None               # and a scene painted for the old size is over
+            if self.scene is not None:
+                self._end_scene()           # and a scene painted for the old size is over
             self._dirty = True
 
     # -- drawing ------------------------------------------------------------
@@ -3707,9 +3716,14 @@ class Session:
             changed = self.frame.render(self.shown)
         if changed:
             self.out.write(changed)
-            now = self.clock()
-            self._sent = [(when, size) for when, size in self._sent if when > now - 1.0]
-            self._sent.append((now, len(changed)))
+            if self.scene is None and not self._after_scene:
+                # A scene paces its own frames, and the paint that puts the
+                # game back is its last. Counted against the moving wind, they
+                # would hold back the whole burst that follows a scene.
+                now = self.clock()
+                self._sent = [(when, size) for when, size in self._sent if when > now - 1.0]
+                self._sent.append((now, len(changed)))
+        self._after_scene = False
         self._painted = len(changed)
         if self._wind_frames and self.game is not None and not whole:
             # This paint was the wind moving, by so many frames. A whole
@@ -3892,6 +3906,8 @@ class Session:
 
     def _end_scene(self) -> None:
         self.scene, self._next_frame, self._scene_at, self._dirty = None, None, None, True
+        self._after_scene = True
+        self._sent.clear()
 
     def _scene_step(self) -> None:
         """One step while a scene plays: paint, wait for its next frame, and end it on any key."""
@@ -3905,7 +3921,7 @@ class Session:
             if not whole and self._painted > SCENE_FRAME_BYTES:
                 stride = min(SCENE_STRIDE_MAX, -(-self._painted // SCENE_FRAME_BYTES))
             if self._scene_at is None:
-                self._scene_at = self.clock()
+                self._scene_at = self._scene_began = self.clock()
             self._scene_due = stride
             self._next_frame = self._scene_at + stride * SCENE_FRAME_SECONDS
         resting = scene.hold and scene.index >= scene.frames - 1
@@ -3929,6 +3945,8 @@ class Session:
             self.keys.flush()
             if "CTRL-C" in keys:
                 self.stop = "quit"
+            elif not scene.hold and self.clock() - self._scene_began < SCENE_GRACE_SECONDS:
+                return                          # a held Enter is not a wish to skip what it began
             self._end_scene()
             return
         if resting:

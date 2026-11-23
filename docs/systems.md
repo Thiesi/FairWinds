@@ -666,7 +666,12 @@ scene runs at 7 frames a second. A frame that costs more than 6 KB is followed
 by a longer wait, in proportion, up to four frames' worth, and the balloon
 moves that much further at the next one, so a wide screen gets fewer frames
 and the scene lasts as long. Its last pose is always shown. A resize ends a
-scene. The session deadline, a lost caller and Ctrl-C end the session from a
+scene. A key in the first 0.3 s of a launch or landing scene is used up
+without ending it: a held Enter was not a wish to skip what it began. Ctrl-C
+is never held off, and the splash, which asks for a key, takes one at once. A turn that could not be saved gets no scene; the screen says
+it was not saved. The bytes of a scene, and of the paint that puts the game
+back, are not counted against the moving wind's cap, so the burst after a
+launch plays as after any turn. The session deadline, a lost caller and Ctrl-C end the session from a
 scene as from anywhere else.
 
 Without half blocks (sixteen colours, CP437 without them, ASCII) there are no
