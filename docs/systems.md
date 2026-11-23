@@ -373,8 +373,9 @@ Space flies the choice. J chooses a jettison, L a landing, P releases a pibal
 at once. N stays the night. Keys typed before a turn's result is on screen are
 dropped, so a held key flies one turn.
 
-**The post.** There is post for the three nearest places not visited lately,
-towns and stations alike, and landing at any of them delivers it. One fixed
+**The post.** S05 had post for the three nearest places not visited lately,
+towns and stations alike, and landing at any of them delivered it. S12 put
+contracts in its place (section 6); what S05 found still holds. One fixed
 destination is the wrong game: with three layers the winds span less than half
 the compass on most days, so a single town is often simply upwind. Measured
 with a search that flies on the true winds: one of three places can be reached
@@ -382,10 +383,8 @@ in a day on about three days in four, in 6 to 42 turns; one fixed nearest town
 on fewer than half. S12's contracts keep this shape: several destinations a
 day, and the wind picks.
 
-**Placeholders, each replaced by the slice named.** A delivery fills the balloon
-up and mends it for nothing, and so does a night at a town or station; landing
-where there is no post changes nothing (S12). Walking out and the packet boat
-happen at a key press (S16). Forecast coverage counts towns and the three starting stations
+**Placeholders, each replaced by the slice named.** Walking out and the packet
+boat happen at a key press (S16). Forecast coverage counts towns and the three starting stations
 (S15). The pilot's record holds the plain flight's own fields (the post
 aboard, the last places delivered to, deliveries, days flown, distance, the
 log) as one JSON text; S11 to S13 give them columns and tables of their own.
@@ -408,6 +407,64 @@ Deadlines are world dates, so waiting costs.
 **No dead ends.** A pilot with no postmarks and no fuel can always take a short
 subsidised mail run from a town. A scripted career must never reach a state from
 which it cannot earn fuel.
+
+**As built (S12).** The tables are `PRICES`, `STATION_PRICE`, `CARGO_KINDS`,
+`LATE_SHARE`, `DAMAGED_SHARE`, `LIFT`, `OFFER_REACH`, `TOWN_OFFERS`,
+`STATION_OFFERS`, `START_POSTMARKS` and `RELIEF`.
+
+| Cargo | Weight | Pays | Due | Forfeit if lost | Share of a town's offers |
+| --- | --- | --- | --- | --- | --- |
+| Mailbag | 1 | 12 + 0.20 a km | 3 days | 5 | 50 |
+| Parcel | 3 | 20 + 0.40 a km | 4 days | 15 | 32 |
+| Instruments | 2 | 28 + 0.55 a km | 4 days | 25 | 18 |
+
+One more day is allowed for every 300 km. A balloon lifts 8. Cargo delivered
+after its day pays half. Instruments shaken by a rough landing pay half. Cargo
+lost (a hard landing loses half of it by keyed draws, a ditching all of it)
+costs its forfeit, and never more than the pilot has.
+
+| At a town | Postmarks |
+| --- | --- |
+| A unit of fuel | 1 |
+| A sack of ballast | 4 |
+| A pibal | 6 |
+| A point of wear mended | 1 |
+
+A weather station asks half as much again, rounded up. Nothing is filled or
+mended for nothing: not by a delivery, not by a night.
+
+A town's post office offers three to five contracts on a world day, a station
+two mailbags. Each is for a different one of the six nearest places, so the
+day's wind has several to choose among. The offers are keyed draws on the
+world, the place and the day: the same for every caller, and each pilot may
+carry each once. A contract taken can be put back at the same counter. A new
+pilot has 40 postmarks and a first round already aboard: three mailbags for
+the three nearest places, due in five days. Frontier freight comes with the
+masts (S15), and the licence does not yet shape the offers (S13).
+
+**The relief run.** A pilot at a town or station who has less than 25 fuel, or
+a balloon too worn to fly, and cannot pay to put that right, may ask once a
+day: the postmaster brings the fuel to 25, the wear down to 70 and the ballast
+to one sack, and gives them a mailbag for the nearest place that pays 8. A
+balloon down in the wild that cannot launch (under 2 fuel, or too worn) is
+stranded, and its pilot walks out to a town. So there is always a way to fly
+on. A scripted pilot flies ten world days in each of three worlds in the
+tests and must be able to launch, or be walking out, every morning.
+
+**The post office screen.** O opens it on the ground at a town or station:
+the day's offers with distance, bearing, weight, pay and day due; what is
+aboard; and the stores. Digits take a contract or put it back; F buys ten
+fuel, A as much as fits and can be paid for, S a sack, P a pibal, M mends as
+much as the postmarks pay for, R asks for the relief run when it is due. From
+30 rows up, where the terminal shows pixels, the place itself is painted over
+the counter (the station vista of S09). The map marks with `#` the places
+there is cargo aboard for; with nothing aboard it names the nearest offices.
+
+**Not yet tuned.** The amounts are a first table. Measured with a scripted
+pilot that steers by the forecast track and takes the nearest contracts: about
+one delivery in four flying days, and it lives on the relief run. A person
+reads the wind better than that script, but how much better, and whether a
+casual caller gets by, is for the play-test after S13.
 
 **Licence.** Seven grades: Fledgling, Aeronaut, Pilot, Navigator, Wind-reader,
 Master, Commodore of the Post. Earned by logbook points from distance,

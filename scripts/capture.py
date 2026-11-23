@@ -135,6 +135,8 @@ def main(argv) -> int:
             name = f"flight-{width}x{height}-{depth}.html"
             (OUT / name).write_text(page(fly(width, height, depth), name), encoding="utf-8")
             print(name, f"{width * CELL_W}x{height * CELL_H} px")
+            name = f"office-{width}x{height}-{depth}.html"
+            (OUT / name).write_text(page(fly(width, height, depth, turns=("o", "2", "f")), name), encoding="utf-8")
             for which in SCENES:
                 name = f"scene-{which}-{width}x{height}-{depth}.html"
                 (OUT / name).write_text(page(scene(which, width, height, depth), name), encoding="utf-8")

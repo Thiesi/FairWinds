@@ -232,12 +232,12 @@ class InSession(GameCase):
         game, session, clock = self.start()
         game.heard = []
         game._say("17:45  Down at Thistle Cairn: a clean landing.")
-        game._say("The post for Thistle Cairn is delivered. That makes 4.")
+        game._say("Delivered to Thistle Cairn: mailbag, 36 postmarks. That makes 4.")
         game._say("New post aboard, for " + ", ".join(["Somewhere With A Long Name"] * 5) + ".")
         self.assertFalse(any("Down at" in line for line in game.log), "the log has moved on")
         asked = game._scene_for("landing")
         self.assertEqual(asked["caption"], "Down at Thistle Cairn: a clean landing.")
-        self.assertEqual(asked["sub"], "The post for Thistle Cairn is delivered. That makes 4.")
+        self.assertEqual(asked["sub"], "Delivered to Thistle Cairn: mailbag, 36 postmarks. That makes 4.")
 
     def test_ctrl_c_and_a_lost_caller_still_end_the_session_from_a_scene(self):
         game, session, clock = self.start(keys=[b"\r", None, None, None, b"\x03"])
