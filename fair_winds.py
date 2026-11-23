@@ -1449,7 +1449,8 @@ class Flight:
         """Where the forecast says this choice leads: the action, then holding.
 
         The pilot knows the true wind only where they have read it: in their
-        own layer, and in every layer while a pibal's reading lasts. There the
+        own layer, the layer a launch enters (they are standing in it), and
+        every layer while a pibal's reading lasts. There the
         track starts from the truth and looks ahead turn by turn. Any other
         layer is forecast from a bulletin `UNREAD_LEAD` minutes old, so it is
         never the truth, not even for the first turn.
@@ -1462,13 +1463,15 @@ class Flight:
           points   (x, y, layer) after each turn
           blocked  True if high ground forces a climb along the way
           forced   fuel the forced climbs would cost
+          sacks    ballast sacks the forced climbs would spend
           stop     why the track ends early: "ridge" (ground above the
                    ceiling), "high_ground" (a forced climb that cannot be
                    paid for), "fuel" (nothing left to hold with), or None
         """
         offered = self.actions(state)
         if action not in offered or action in ("land", "pibal"):
-            return {"layer": state.layer, "cost": None, "points": [], "blocked": False, "forced": 0, "stop": None}
+            return {"layer": state.layer, "cost": None, "points": [], "blocked": False, "forced": 0, "sacks": 0,
+                    "stop": None}
         layer = state.layer
         if action == "launch":
             layer = self.lowest_open(state.x, state.y)
@@ -1477,11 +1480,12 @@ class Flight:
         elif action == "sink":
             layer -= 1
         first = layer
-        read = layer == state.layer or state.pibal_until >= state.turn
+        # On the ground the pilot stands in the air they would launch into.
+        read = layer == state.layer or action == "launch" or state.pibal_until >= state.turn
         stale = 0.0 if read else UNREAD_LEAD
         fuel = state.fuel - offered[action]
         ballast = state.ballast - (1 if action == "jettison" else 0)
-        x, y, points, blocked, forced, stop = state.x, state.y, [], False, 0, None
+        x, y, points, blocked, forced, sacks, stop = state.x, state.y, [], False, 0, 0, None
         top = self.top_layer(state)
         for i in range(horizon):
             turn = state.turn + i
@@ -1509,6 +1513,7 @@ class Flight:
                         forced += price
                     elif ballast > 0:
                         ballast -= 1
+                        sacks += 1
                     else:
                         stop = "high_ground"
                         break
@@ -1518,7 +1523,7 @@ class Flight:
             if stop:
                 break
         return {"layer": first, "cost": offered[action], "points": points, "blocked": blocked,
-                "forced": forced, "stop": stop}
+                "forced": forced, "sacks": sacks, "stop": stop}
 
 
 # --------------------------------------------------------------------------

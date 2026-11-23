@@ -580,6 +580,18 @@ class Preview(unittest.TestCase):
         self.assertGreater(guessed, len(days) * 0.8, "an unread layer is a forecast from its first turn")
         self.assertGreater(far_differs, len(days) * 0.8, "without a station the far end of a track is a guess")
 
+    def test_a_launch_starts_from_the_wind_the_pilot_is_standing_in(self):
+        engine = fw.Flight(WORLD, WEATHER, "flight-node/12")
+        for day in range(1, 20):
+            state = fw.FlightState(x=self.x, y=self.y, day=day)
+            vx, vy = WEATHER.frame(day, state.minute).wind(state.x, state.y, 1)
+            first = engine.preview(state, "launch", 4)["points"][0]
+            self.assertAlmostEqual(first[0], state.x + vx * 0.25)
+            self.assertAlmostEqual(first[1], state.y + vy * 0.25)
+            flown = engine.step(state, "launch").state
+            self.assertAlmostEqual(first[0], flown.x, msg="the first turn goes where the preview said")
+        self.assertNotIn("pibal", engine.actions(fw.FlightState(x=self.x, y=self.y)), "no pibal from the ground")
+
     def test_at_a_station_even_an_unread_layer_is_forecast_exactly(self):
         engine = fw.Flight(WORLD, WEATHER, "flight-node/12")
         state = aloft(self.x, self.y, layer=2, day=9)
@@ -611,6 +623,7 @@ class Preview(unittest.TestCase):
         self.assertEqual((flown.layer, 60 - 1 - flown.fuel), (2, over["forced"]), "the preview charges what the turn does")
         on_ballast = east.preview(aloft(x, y, fuel=4), "hold", 1)
         self.assertEqual((on_ballast["forced"], on_ballast["stop"], on_ballast["points"][0][2]), (0, None, 2))
+        self.assertEqual((on_ballast["sacks"], over["sacks"]), (1, 0), "a sack the climb would spend is reported")
         down = east.preview(aloft(x, y, fuel=1, ballast=0), "hold", 3)
         self.assertEqual(down["stop"], "high_ground", "a climb that cannot be paid for ends the track")
         self.assertEqual(len(down["points"]), 1)

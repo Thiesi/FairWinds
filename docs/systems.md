@@ -259,14 +259,15 @@ horizon (the action, then holding) and the cost. This is the core of the
 interface.
 
 The pilot knows the true wind only where they have read it: in their own
-layer, and in every layer while a pibal's reading lasts. There a track starts
+layer, in the layer a launch enters (they are standing in it), and in every
+layer while a pibal's reading lasts. There a track starts
 from the truth and looks ahead turn by turn. Any other layer is forecast from a
 bulletin two hours old, so it is a guess from its first turn. That gap is what
 a pibal is for. At a station the forecast is exact either way.
 
 A track follows fuel and ballast as the flight would, so it never shows
-somewhere the balloon cannot get to. It reports the fuel that forced climbs
-would cost, and it ends early where the flight would: at ground above the
+somewhere the balloon cannot get to. It reports the fuel and the ballast sacks
+that forced climbs would cost, and it ends early where the flight would: at ground above the
 ceiling, at a forced climb that cannot be paid for, or where the fuel for
 holding runs out.
 
