@@ -73,39 +73,66 @@ many days are waiting, and when the next one opens:
 truncated to 64 bits. `generation` starts at 0 and changes only if a SysOp
 starts a new world. A standalone launch uses a fixed development `node_id`.
 
-**Elevation.** Value-noise fBm shaped into one continent: a large-scale field,
-a ridged field for mountain chains, a detail field, and a falloff toward the
-world's edge so that land covers 38 to 52 percent of the world. Heights run from
-the sea floor to about 4,000 m. The pitch page's script holds a working
-prototype of this shape; port its idea, not its constants.
+**Elevation.** Value-noise fBm shaped into one continent: a large-scale field
+(260 km, five octaves), a ridged field for mountain chains (170 km, four), a
+detail field (42 km, three), and a falloff from a centre and radii drawn from
+the seed. The world's edge is always sea. The sea level is then set per world
+so that land covers a share drawn between 41 and 49 percent of the chart grid.
 
-**Moisture and biomes.** A second field gives moisture. Biomes come from
-elevation and moisture: sea, shore, grassland, forest, dry plain, hills, high
-mountain, snow. Biome sets map colour, station vista and surface behaviour.
+The shaped height `e` becomes metres as `4000 * e * e` on land, capped at
+4,500 m, and `5000 * e` under water, down to 3,000 m. Squaring keeps most land
+low, so the surface layer is open over lowland and only hills and ranges block
+it: hills from 500 m, high mountain from 1,500 m, snow from 2,800 m.
+
+The generator uses only `+ - * /` and comparisons on doubles, never the maths
+library, so every platform bakes byte-identical tiles. A pinned fingerprint in
+the tests holds Linux and Windows to the same bytes.
+
+**Moisture and biomes.** A second field (300 km, three octaves) gives
+moisture. Biomes come from elevation and moisture: deep sea (below -200 m),
+shallow sea, shore (below 30 m), dry plain (moisture under 0.42), forest (over
+0.58), grassland, hills, high mountain, snow. Biome sets map colour, station
+vista and surface behaviour.
 
 **Tiles.** The world is baked at 2.5 km per sample into tiles of 32 by 32
-samples (20 by 13 tiles, rounded up). A tile stores elevation and biome per
-sample. Tiles are baked on first need and cached in the world's data directory;
-a cache is keyed by seed and bake version and is rebuilt if either differs or
-its checksum fails. The chart uses a 12.5 km reading derived from the same
-tiles. Rendering only ever reads tiles.
+samples (20 by 13 tiles, rounded up). A tile stores elevation in metres and
+biome per sample. Tiles are baked on first need and cached in
+`terrain-<seed>-b<bake version>` under the world's data directory, one file per
+tile, written whole or not at all. Each file carries its bake version, seed and
+position and a checksum; a file that fails any of them is rebuilt and replaced,
+never trusted. A cache that cannot be written only costs speed. Rendering only
+ever reads tiles. A tile bakes in about 5 ms and reads in under 1 ms on the
+development host.
 
-**Settlements.** 14 to 18 towns placed by the generator: ports on the coast,
-others on lowland and in valleys, at least 80 km apart, every one reachable.
-Towns have names from the name generator, a post office, stores and a rigging
-loft. Three starting weather stations stand near the pilot start town.
+**The chart grid.** The same shape sampled at 10 km, 160 by 100 cells, is built
+once per world with the index (about 0.15 s) and cached beside the tiles. It
+sets the sea level, and it is the grid that settlements, features and charting
+(section 7) use.
 
-**Features.** The generator labels 200 to 260 features: peaks, ranges, passes,
-lakes, bays, capes, plains, forests. Each has a footprint of chart cells and a
-seed for its name candidates. Features are unnamed until charted (section 7).
+**Settlements.** 14 to 18 towns placed by the generator on the mainland, the
+largest connected land: up to six ports on the coast first, then others on
+shore, grassland, forest and dry plain, at least 80 km apart. Towns have names
+from the name generator, a post office, stores and a rigging loft. The first
+port is the start town. Three starting weather stations stand 40 to 120 km from
+it.
+
+**Features.** The generator labels 200 to 260 features, each a footprint of
+chart cells: lakes (water that does not reach the world's edge), islands, up to
+forty peaks (local summits above 1,500 m), and stretches of plain, forest, dry
+plain, hills and range, cut where they cross an 80 km block so that no feature
+is too large to chart in a few flights. The largest are kept. Features are
+unnamed until charted (section 7). Passes, bays and capes are left for S14.
 
 **Local winds.** The generator defines 12 to 20 recurring local winds (section
 4). They are the almanac's content.
 
 **Wonders.** Forty sites or conditions (section 9).
 
-**The Gyre.** A permanent cyclone centred inland, at least 300 km from the
-start town, over land that is hard to reach.
+**The Gyre.** A permanent cyclone centred on the mainland, at least 300 km
+from the start town, at the place farthest from every town.
+
+`python fair_winds.py --world-map <node id>` prints a node's continent as
+characters, with its towns, stations and the Gyre.
 
 ## 4. Weather
 

@@ -582,12 +582,14 @@ Blockers: S28.
 
 Fetch and start from current remote `main`. One topic per branch and PR; when
 work depends on an unmerged PR, stack it and say so at the top of the body.
-Commit, push and open a PR; wait for Claude's completed written review. Triage
-findings by caller and SysOp impact, fix the meaningful ones, and request
-`@claude review` again after fixes. Merge only after that cycle and the relevant
-checks pass, and only when the owner asks. Explain dismissed findings. Never
-treat a failed or skipped reviewer run as approval. Never rewrite a pushed
-branch. Delete merged branches and task-owned worktrees.
+Open the PR ready for review, which starts Claude's automated review; to ask
+again, comment tagging `@claude` with the word "review". Triage the findings:
+fix what a player or a SysOp would notice, and reply on the PR explaining any
+finding that is declined as having no real-world effect. Push fixes, ask for a
+re-review and triage again. When the review is settled and every check is
+green, merge and move on to the next slice. Never treat a failed or skipped
+reviewer run as approval. Never rewrite a pushed branch. Delete merged branches
+and task-owned worktrees.
 
 Captures that are evidence for a PR go on an orphan `evidence/<topic>` branch
 and are linked from the PR body. They are not committed to the feature branch.

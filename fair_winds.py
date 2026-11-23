@@ -5,25 +5,28 @@ One file, standard library only, Python 3.11 or newer. Runs as a native stdio
 door under NetBBS (launch details in the JSON named by NETBBS_DOOR_INFO), or
 standalone in a terminal for development.
 
-This build is slice S01 of docs/design.md: the host adapter and the terminal
-lifecycle. It opens, shows what the host told it, and closes cleanly. The game
-arrives in the slices that follow.
+This build reaches slice S02 of docs/design.md: the host adapter and terminal
+lifecycle, and the world generator with its terrain cache. The door opens,
+shows what the host told it, and closes cleanly. The game arrives in the
+slices that follow.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import queue
 import shutil
 import signal
+import struct
 import sys
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "0.1.0.dev1"
+VERSION = "0.1.0.dev2"
 DOOR_API = 5
 MIN_WIDTH, MIN_HEIGHT = 80, 24
 MAX_DIMENSION = 1000
@@ -216,6 +219,514 @@ def layout_tier(width: int, height: int) -> str:
     if width >= 132 and height >= 40:
         return "medium"
     return "small"
+
+
+# --------------------------------------------------------------------------
+# Determinism: every draw is keyed (docs/systems.md, section 14). Nothing in
+# the game calls an unseeded generator.
+# --------------------------------------------------------------------------
+
+def world_seed(node_id: str, generation: int = 0) -> int:
+    """The 64-bit seed of a node's world."""
+    digest = hashlib.sha256(f"fair-winds/1/{node_id}/{generation}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big")
+
+
+def draw(seed: int, purpose: str, *keys) -> int:
+    """A 64-bit number fixed by the seed, a purpose and its keys."""
+    text = "/".join([str(seed), purpose, *(str(k) for k in keys)])
+    return int.from_bytes(hashlib.sha256(text.encode("utf-8")).digest()[:8], "big")
+
+
+def draw_unit(seed: int, purpose: str, *keys) -> float:
+    """The same draw as a number from 0 up to, not including, 1."""
+    return (draw(seed, purpose, *keys) >> 11) / 9007199254740992.0
+
+
+# --------------------------------------------------------------------------
+# The world: one continent per seed (docs/systems.md, section 3).
+#
+# Terrain uses only +, -, *, / and comparisons on doubles, never the maths
+# library, so every platform bakes byte-identical tiles.
+# --------------------------------------------------------------------------
+
+WORLD_W, WORLD_H = 1600.0, 1000.0      # km
+SAMPLE_KM = 2.5                        # one terrain sample
+TILE_N = 32                            # samples along a tile's side
+TILE_KM = SAMPLE_KM * TILE_N           # 80 km
+TILES_X, TILES_Y = 20, 13              # the last row runs past the south edge
+CHART_KM = 10.0                        # one chart cell
+CHART_W, CHART_H = 160, 100
+BAKE_VERSION = 1                       # change it and every cache is rebuilt
+
+SEA_DEEP, SEA_SHALLOW, SHORE, GRASS, FOREST, DRY, HILLS, MOUNTAIN, SNOW = range(9)
+BIOME_NAMES = ("deep sea", "shallow sea", "shore", "grassland", "forest", "dry plain", "hills",
+               "high mountain", "snow")
+LAND_TARGET = (0.41, 0.49)             # share of the world that is land
+TOWN_SPACING = 8                       # chart cells: 80 km
+
+_NAME_FIRST = ("Aster", "Brine", "Cinder", "Dun", "Kettle", "Hollow", "Salt", "Lee", "Marrow", "Thistle",
+               "Ember", "Gull", "Harrow", "Wren", "Tarn", "Quill", "Morrow", "Fen", "Alder", "Rook",
+               "Sorrel", "Vane", "Pike", "Cobble", "Larch", "Heron", "Flint", "Mallow", "Osier", "Tansy")
+_NAME_LAST = ("wick", "mere", "ford", "haven", "stead", "holm", "by", "gate", "moor", "reach",
+              " Rock", " Tarn", " Cross", " Landing", " Hythe")
+
+
+def _lattice(seed32: int, octave: int, ix: int, iy: int) -> float:
+    h = (ix * 0x9E3779B1 + iy * 0x85EBCA77 + seed32 * 0xC2B2AE3D + octave * 0x27D4EB2F) & 0xFFFFFFFF
+    h ^= h >> 15
+    h = (h * 0x2C1B3C6D) & 0xFFFFFFFF
+    h ^= h >> 12
+    h = (h * 0x297A2D39) & 0xFFFFFFFF
+    h ^= h >> 15
+    return h / 4294967296.0
+
+
+def _axis(start: float, step: float, count: int, cell: float):
+    """Lattice index and smoothed weight for each sample along one axis."""
+    out = []
+    for i in range(count):
+        f = (start + i * step) / cell
+        ix = int(f // 1)
+        t = f - ix
+        out.append((ix, t * t * (3.0 - 2.0 * t)))
+    return out
+
+
+def fbm_grid(seed32: int, scale: float, octaves: int, x0: float, y0: float, step: float, nx: int, ny: int):
+    """Value-noise fBm over a grid of samples, each 0 to 1, row by row.
+
+    The lattice is hashed once per octave for the whole grid, which is what
+    makes baking a tile cheap.
+    """
+    out = [0.0] * (nx * ny)
+    amp, norm, cell = 0.5, 0.0, scale
+    for octave in range(octaves):
+        cols, rows = _axis(x0, step, nx, cell), _axis(y0, step, ny, cell)
+        lo, hi = cols[0][0], cols[-1][0] + 1
+        cache: dict[int, list[float]] = {}
+        for j, (iy, v) in enumerate(rows):
+            for row in (iy, iy + 1):
+                if row not in cache:
+                    cache[row] = [_lattice(seed32, octave, ix, row) for ix in range(lo, hi + 1)]
+            top, bottom = cache[iy], cache[iy + 1]
+            line = [top[k] + (bottom[k] - top[k]) * v for k in range(hi - lo + 1)]
+            base = j * nx
+            for i, (ix, u) in enumerate(cols):
+                a = line[ix - lo]
+                out[base + i] += amp * (a + (line[ix - lo + 1] - a) * u)
+        norm += amp
+        amp *= 0.5
+        cell *= 0.5
+    return [v / norm for v in out]
+
+
+def _smooth(v: float, a: float, b: float) -> float:
+    t = (v - a) / (b - a)
+    t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
+    return t * t * (3.0 - 2.0 * t)
+
+
+def metres(e: float) -> int:
+    """Shaped height to metres: most land is low, and only ridges are high."""
+    if e >= 0.0:
+        return min(4500, round(4000.0 * e * e))
+    return max(-3000, round(e * 5000.0))
+
+
+def biome_of(m: int, moisture: float) -> int:
+    if m < -200:
+        return SEA_DEEP
+    if m < 0:
+        return SEA_SHALLOW
+    if m < 30:
+        return SHORE
+    if m >= 2800:
+        return SNOW
+    if m >= 1500:
+        return MOUNTAIN
+    if m >= 500:
+        return HILLS
+    if moisture < 0.42:
+        return DRY
+    if moisture > 0.58:
+        return FOREST
+    return GRASS
+
+
+@dataclass(frozen=True)
+class Tile:
+    """32 by 32 terrain samples: metres and biome, row by row."""
+    tx: int
+    ty: int
+    elevation: tuple
+    biome: bytes
+
+
+class TerrainCacheError(Exception):
+    """A cached file is damaged, stale or for another world."""
+
+
+class World:
+    """A node's continent: shape, settlements and features, all from one seed.
+
+    Terrain is baked into tiles on first need and cached, in memory and, when
+    a folder is given, on disk. A cached file is checked before it is trusted
+    and rebuilt if it fails. Nothing here is evaluated per frame.
+    """
+
+    def __init__(self, seed: int, cache_dir: Path | None = None):
+        self.seed = seed
+        self._seeds = {name: draw(seed, "noise", name) & 0xFFFFFFFF
+                       for name in ("shape", "ridge", "detail", "moisture")}
+        self.cx = 720.0 + 160.0 * draw_unit(seed, "shape", "cx")
+        self.cy = 460.0 + 80.0 * draw_unit(seed, "shape", "cy")
+        self.rx = 700.0 + 100.0 * draw_unit(seed, "shape", "rx")
+        self.ry = 430.0 + 60.0 * draw_unit(seed, "shape", "ry")
+        self.cache_dir = None
+        if cache_dir is not None:
+            self.cache_dir = Path(cache_dir) / f"terrain-{seed:016x}-b{BAKE_VERSION}"
+        self._tiles: dict[tuple[int, int], Tile] = {}
+        self._load_index()
+
+    # -- shape ---------------------------------------------------------------
+
+    def _raw(self, x0, y0, step, nx, ny):
+        """Shaped height before the sea level is set, and moisture."""
+        s = self._seeds
+        shape = fbm_grid(s["shape"], 260.0, 5, x0, y0, step, nx, ny)
+        ridge = fbm_grid(s["ridge"], 170.0, 4, x0, y0, step, nx, ny)
+        detail = fbm_grid(s["detail"], 42.0, 3, x0, y0, step, nx, ny)
+        moisture = fbm_grid(s["moisture"], 300.0, 3, x0, y0, step, nx, ny)
+        out = []
+        for j in range(ny):
+            dy = (y0 + j * step - self.cy) / self.ry
+            for i in range(nx):
+                k = j * nx + i
+                dx = (x0 + i * step - self.cx) / self.rx
+                d2 = dx * dx + dy * dy
+                e = (shape[k] - 0.5) * 1.3 + 0.36 - d2 * 0.75
+                if d2 > 0.8:
+                    e -= (d2 - 0.8) * 3.0          # the world's edge is always sea
+                r = 2.0 * ridge[k] - 1.0
+                r = 1.0 - (r if r >= 0.0 else -r)
+                inland = _smooth(e, 0.02, 0.3)
+                e += (r * r - 0.5) * 0.7 * inland + (detail[k] - 0.5) * 0.16 * inland
+                out.append(e)
+        return out, moisture
+
+    def _grid(self, x0, y0, step, nx, ny):
+        raw, moisture = self._raw(x0, y0, step, nx, ny)
+        heights = [metres(e - self.sea_level) for e in raw]
+        return heights, bytes(biome_of(m, moisture[k]) for k, m in enumerate(heights))
+
+    # -- the index: sea level, chart grid, settlements, features ---------------
+
+    def _load_index(self) -> None:
+        if self.cache_dir is not None:
+            try:
+                self._read_index()
+                return
+            except (OSError, ValueError, KeyError, TypeError, TerrainCacheError):
+                pass
+        self._build_index()
+        self._write_index()
+
+    def _build_index(self) -> None:
+        half = CHART_KM / 2.0
+        raw, moisture = self._raw(half, half, CHART_KM, CHART_W, CHART_H)
+        target = LAND_TARGET[0] + (LAND_TARGET[1] - LAND_TARGET[0]) * draw_unit(self.seed, "shape", "land")
+        ordered = sorted(raw)
+        self.sea_level = ordered[min(len(ordered) - 1, int((1.0 - target) * len(ordered)))]
+        self.chart_elevation = [metres(e - self.sea_level) for e in raw]
+        self.chart_biome = bytes(biome_of(m, moisture[k]) for k, m in enumerate(self.chart_elevation))
+        self._settle()
+
+    def _components(self, member):
+        """Connected groups of chart cells for which member(index) holds."""
+        seen, groups = set(), []
+        for start in range(CHART_W * CHART_H):
+            if start in seen or not member(start):
+                continue
+            group, stack = [], [start]
+            seen.add(start)
+            while stack:
+                k = stack.pop()
+                group.append(k)
+                x, y = k % CHART_W, k // CHART_W
+                for nx_, ny_ in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                    if 0 <= nx_ < CHART_W and 0 <= ny_ < CHART_H:
+                        n = ny_ * CHART_W + nx_
+                        if n not in seen and member(n):
+                            seen.add(n)
+                            stack.append(n)
+            group.sort()
+            groups.append(group)
+        return groups
+
+    def _settle(self) -> None:
+        biome, elevation, seed = self.chart_biome, self.chart_elevation, self.seed
+        cells = CHART_W * CHART_H
+        land = sorted(self._components(lambda k: biome[k] >= SHORE), key=lambda g: (-len(g), g[0]))
+        water = self._components(lambda k: biome[k] < SHORE)
+        edge = lambda k: k % CHART_W in (0, CHART_W - 1) or k // CHART_W in (0, CHART_H - 1)
+        ocean = set()
+        lakes = []
+        for group in water:
+            if any(edge(k) for k in group):
+                ocean.update(group)
+            else:
+                lakes.append(group)
+        main = set(land[0]) if land else set()
+        self.land_cells = sum(len(g) for g in land)
+
+        def dist2(a, b):
+            return (a % CHART_W - b % CHART_W) ** 2 + (a // CHART_W - b // CHART_W) ** 2
+
+        def neighbours(k):
+            x, y = k % CHART_W, k // CHART_W
+            return [ny_ * CHART_W + nx_ for nx_, ny_ in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1))
+                    if 0 <= nx_ < CHART_W and 0 <= ny_ < CHART_H]
+
+        # Towns: ports first, then inland, never closer than 80 km, all on the mainland.
+        buildable = [k for k in sorted(main) if biome[k] in (SHORE, GRASS, FOREST, DRY)]
+        order = sorted(buildable, key=lambda k: draw(seed, "town", k))
+        ports = [k for k in order if any(n in ocean for n in neighbours(k))]
+        want = 14 + draw(seed, "town-count") % 5
+        chosen: list[int] = []
+
+        def take(candidates, limit, spacing):
+            for k in candidates:
+                if len(chosen) >= limit:
+                    return
+                if all(dist2(k, c) >= spacing * spacing for c in chosen):
+                    chosen.append(k)
+
+        take(ports, min(6, want), TOWN_SPACING)
+        port_cells = set(chosen)
+        take(order, want, TOWN_SPACING)
+        if len(chosen) < 14:                       # a cramped continent: use hills too
+            take(sorted((k for k in main if biome[k] == HILLS), key=lambda k: draw(seed, "town", k)), 14, TOWN_SPACING)
+        used: set[str] = set()
+        self.towns = []
+        for k in chosen:
+            self.towns.append({"name": self._name(used, k, k in port_cells), "cell": k, "port": k in port_cells,
+                               "x": (k % CHART_W) * CHART_KM + 5.0, "y": (k // CHART_W) * CHART_KM + 5.0})
+        self.start_town = 0
+        start = chosen[0] if chosen else 0
+
+        # Three weather stations near the start town, so nobody begins without a forecast.
+        self.stations = []
+        near = sorted((k for k in main if 16 <= dist2(k, start) <= 144 and biome[k] != SNOW),
+                      key=lambda k: draw(seed, "station", k))
+        picked: list[int] = []
+        for k in near:
+            if len(picked) == 3:
+                break
+            if all(dist2(k, c) >= 9 for c in chosen) and all(dist2(k, p) >= 16 for p in picked):
+                picked.append(k)
+        for k in picked:
+            self.stations.append({"name": self._name(used, k, False, station=True), "cell": k,
+                                  "x": (k % CHART_W) * CHART_KM + 5.0, "y": (k // CHART_W) * CHART_KM + 5.0})
+
+        # The Gyre: inland, far from the start town, as far from every town as the land allows.
+        far = [k for k in sorted(main) if dist2(k, start) >= 900] or sorted(main) or [0]
+        gyre = max(far, key=lambda k: (min((dist2(k, c) for c in chosen), default=0), -k))
+        self.gyre = {"cell": gyre, "x": (gyre % CHART_W) * CHART_KM + 5.0, "y": (gyre // CHART_W) * CHART_KM + 5.0}
+
+        # Features: what callers will chart and name.
+        fixed = []
+        for group in sorted(lakes, key=lambda g: (-len(g), g[0]))[:20]:
+            fixed.append(("lake", group))
+        for group in land[1:16]:
+            fixed.append(("island", group))
+        peaks = []
+        for k in range(cells):
+            if elevation[k] < 1500:
+                continue
+            x, y = k % CHART_W, k // CHART_W
+            around = [elevation[ny_ * CHART_W + nx_] for nx_ in (x - 1, x, x + 1) for ny_ in (y - 1, y, y + 1)
+                      if (nx_, ny_) != (x, y) and 0 <= nx_ < CHART_W and 0 <= ny_ < CHART_H]
+            if all(elevation[k] > a for a in around):
+                peaks.append(k)
+        peaks.sort(key=lambda k: (-elevation[k], k))
+        kept: list[int] = []
+        for k in peaks:
+            if len(kept) == 40:
+                break
+            if all(dist2(k, p) >= 9 for p in kept):
+                kept.append(k)
+        fixed += [("peak", [k]) for k in kept]
+        kinds = {SHORE: "plain", GRASS: "plain", FOREST: "forest", DRY: "dry plain", HILLS: "hills",
+                 MOUNTAIN: "range", SNOW: "range"}
+        pieces = []
+        for kind in ("plain", "forest", "dry plain", "hills", "range"):
+            for by in range(0, CHART_H, 8):
+                for bx in range(0, CHART_W, 8):
+                    inside = lambda k: (bx <= k % CHART_W < bx + 8 and by <= k // CHART_W < by + 8
+                                        and kinds.get(biome[k]) == kind)
+                    block = [k for y in range(by, min(by + 8, CHART_H)) for x in range(bx, min(bx + 8, CHART_W))
+                             for k in (y * CHART_W + x,) if inside(k)]
+                    if not block:
+                        continue
+                    members = set(block)
+                    seen: set[int] = set()
+                    for first in block:
+                        if first in seen:
+                            continue
+                        group, stack = [], [first]
+                        seen.add(first)
+                        while stack:
+                            k = stack.pop()
+                            group.append(k)
+                            for n in neighbours(k):
+                                if n in members and n not in seen:
+                                    seen.add(n)
+                                    stack.append(n)
+                        group.sort()
+                        pieces.append((kind, group))
+        pieces.sort(key=lambda p: (-len(p[1]), p[0], p[1][0]))
+        count = 200 + draw(seed, "feature-count") % 61
+        features = (fixed + pieces)[:count]
+        self.features = [{"id": i, "kind": kind, "cells": group} for i, (kind, group) in enumerate(features)]
+
+    def _name(self, used: set, cell: int, port: bool, station: bool = False) -> str:
+        for attempt in range(200):
+            first = _NAME_FIRST[draw(self.seed, "name", cell, attempt, 0) % len(_NAME_FIRST)]
+            if station:
+                last = (" Station", " Cairn", " Post")[draw(self.seed, "name", cell, attempt, 1) % 3]
+                name = first + last
+            elif port and draw(self.seed, "name", cell, attempt, 2) % 2:
+                name = "Port " + first
+            else:
+                name = first + _NAME_LAST[draw(self.seed, "name", cell, attempt, 1) % len(_NAME_LAST)]
+            if name not in used:
+                used.add(name)
+                return name
+        name = f"Waypoint {cell}"
+        used.add(name)
+        return name
+
+    @property
+    def land_fraction(self) -> float:
+        return self.land_cells / (CHART_W * CHART_H)
+
+    # -- the cache -------------------------------------------------------------
+
+    @staticmethod
+    def _seal(payload: bytes) -> bytes:
+        return payload + hashlib.sha256(payload).digest()[:8]
+
+    @staticmethod
+    def _unseal(data: bytes) -> bytes:
+        if len(data) < 8 or hashlib.sha256(data[:-8]).digest()[:8] != data[-8:]:
+            raise TerrainCacheError("checksum")
+        return data[:-8]
+
+    def _store(self, name: str, payload: bytes) -> None:
+        """Write a cache file whole or not at all. A cache that cannot be written is only slower."""
+        if self.cache_dir is None:
+            return
+        try:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            temp = self.cache_dir / f"{name}.{os.getpid()}.{threading.get_ident()}.tmp"
+            temp.write_bytes(self._seal(payload))
+            temp.replace(self.cache_dir / name)
+        except OSError:
+            pass
+
+    def _write_index(self) -> None:
+        index = {"seed": self.seed, "bake": BAKE_VERSION, "sea_level": self.sea_level,
+                 "land_cells": self.land_cells, "towns": self.towns, "start_town": self.start_town,
+                 "stations": self.stations, "gyre": self.gyre, "features": self.features,
+                 "chart_elevation": self.chart_elevation, "chart_biome": list(self.chart_biome)}
+        self._store("index.json", json.dumps(index, separators=(",", ":")).encode("utf-8"))
+
+    def _read_index(self) -> None:
+        index = json.loads(self._unseal((self.cache_dir / "index.json").read_bytes()).decode("utf-8"))
+        if index["seed"] != self.seed or index["bake"] != BAKE_VERSION:
+            raise TerrainCacheError("another world")
+        cells = CHART_W * CHART_H
+        if len(index["chart_elevation"]) != cells or len(index["chart_biome"]) != cells:
+            raise TerrainCacheError("size")
+        self.sea_level = float(index["sea_level"])
+        self.land_cells = int(index["land_cells"])
+        self.towns, self.start_town = index["towns"], index["start_town"]
+        self.stations, self.gyre, self.features = index["stations"], index["gyre"], index["features"]
+        self.chart_elevation = index["chart_elevation"]
+        self.chart_biome = bytes(index["chart_biome"])
+
+    _TILE_HEAD = struct.Struct("<4sHQhh")
+
+    def bake_tile(self, tx: int, ty: int) -> Tile:
+        half = SAMPLE_KM / 2.0
+        heights, biome = self._grid(tx * TILE_KM + half, ty * TILE_KM + half, SAMPLE_KM, TILE_N, TILE_N)
+        return Tile(tx, ty, tuple(heights), biome)
+
+    def _tile_bytes(self, tile: Tile) -> bytes:
+        return (self._TILE_HEAD.pack(b"FWT1", BAKE_VERSION, self.seed, tile.tx, tile.ty)
+                + struct.pack(f"<{TILE_N * TILE_N}h", *tile.elevation) + tile.biome)
+
+    def _read_tile(self, tx: int, ty: int) -> Tile:
+        data = self._unseal((self.cache_dir / f"t{tx:02d}_{ty:02d}.bin").read_bytes())
+        head, count = self._TILE_HEAD.size, TILE_N * TILE_N
+        if len(data) != head + count * 3:
+            raise TerrainCacheError("size")
+        if self._TILE_HEAD.unpack_from(data) != (b"FWT1", BAKE_VERSION, self.seed, tx, ty):
+            raise TerrainCacheError("another tile")
+        biome = data[head + count * 2:]
+        if max(biome) > SNOW:
+            raise TerrainCacheError("biome")
+        return Tile(tx, ty, struct.unpack_from(f"<{count}h", data, head), bytes(biome))
+
+    def tile(self, tx: int, ty: int) -> Tile:
+        """A tile from memory, else from disk if it checks out, else freshly baked."""
+        if not (0 <= tx < TILES_X and 0 <= ty < TILES_Y):
+            raise IndexError("tile outside the world")
+        key = (tx, ty)
+        found = self._tiles.get(key)
+        if found is None:
+            if self.cache_dir is not None:
+                try:
+                    found = self._read_tile(tx, ty)
+                except (OSError, struct.error, ValueError, TerrainCacheError):
+                    found = None
+            if found is None:
+                found = self.bake_tile(tx, ty)
+                self._store(f"t{tx:02d}_{ty:02d}.bin", self._tile_bytes(found))
+            self._tiles[key] = found
+        return found
+
+    def sample(self, x: float, y: float) -> tuple[int, int]:
+        """Metres and biome at a place, from the nearest terrain sample. Off the world is deep sea."""
+        if not (0.0 <= x < WORLD_W and 0.0 <= y < WORLD_H):
+            return -3000, SEA_DEEP
+        sx, sy = int(x / SAMPLE_KM), int(y / SAMPLE_KM)
+        tile = self.tile(sx // TILE_N, sy // TILE_N)
+        k = (sy % TILE_N) * TILE_N + sx % TILE_N
+        return tile.elevation[k], tile.biome[k]
+
+
+def world_map(world: World, width: int = 80) -> str:
+    """The whole continent as characters, for a look at a seed from the command line."""
+    glyphs = " .:-\"',^A*"
+    step = CHART_W // width if width < CHART_W else 1
+    marks = {t["cell"]: "#" if i == world.start_town else "o" for i, t in enumerate(world.towns)}
+    marks.update({s["cell"]: "+" for s in world.stations})
+    marks[world.gyre["cell"]] = "@"
+    lines = []
+    for y in range(0, CHART_H, step * 2):
+        row = []
+        for x in range(0, CHART_W, step):
+            mark = next((marks[yy * CHART_W + xx] for yy in range(y, min(CHART_H, y + step * 2))
+                         for xx in range(x, x + step) if yy * CHART_W + xx in marks), None)
+            row.append(mark or glyphs[world.chart_biome[y * CHART_W + x]])
+        lines.append("".join(row).rstrip())
+    lines.append("")
+    lines.append(f"seed {world.seed:016x}   land {world.land_fraction:.0%}   towns {len(world.towns)}   "
+                 f"features {len(world.features)}   # start town   o town   + station   @ the Gyre")
+    lines.append("towns: " + ", ".join(t["name"] for t in world.towns))
+    return "\n".join(lines)
 
 
 # --------------------------------------------------------------------------
@@ -665,7 +1176,11 @@ def diagnose(message: str) -> None:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="fair_winds.py", description="Fair Winds, a door game for NetBBS.")
     parser.add_argument("--version", action="version", version=VERSION)
-    parser.parse_args(argv)
+    parser.add_argument("--world-map", metavar="NODE_ID", help="print the continent of a node id and exit")
+    args = parser.parse_args(argv)
+    if args.world_map is not None:
+        print(world_map(World(world_seed(args.world_map))))
+        return 0
 
     out = Output(sys.stdout.fileno())
     try:
