@@ -5,10 +5,10 @@ One file, standard library only, Python 3.11 or newer. Runs as a native stdio
 door under NetBBS (launch details in the JSON named by NETBBS_DOOR_INFO), or
 standalone in a terminal for development.
 
-This build reaches slice S04 of docs/design.md: the host adapter and terminal
-lifecycle, the world generator with its terrain cache, the weather, and the
-turn engine. The door opens, shows what the host told it, and closes cleanly.
-The game arrives in the slices that follow.
+This build reaches slice S05 of docs/design.md: the host adapter and terminal
+lifecycle, the world generator with its terrain cache, the weather, the turn
+engine, and the plain flight: the whole turn on an 80 x 24 text screen, to
+find out whether it is fun before anything is drawn.
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "0.1.0.dev4"
+VERSION = "0.1.0.dev5"
 DOOR_API = 5
 MIN_WIDTH, MIN_HEIGHT = 80, 24
 MAX_DIMENSION = 1000
@@ -883,8 +883,11 @@ class WeatherFrame:
             f = 1.0 + q2
             felt = min(1.0, strength / 20.0) / (f * f)
             near = max(near, felt)
-            off = (q2 - 0.45) / 0.45
-            ring = max(ring, min(1.0, strength / 20.0) * (1.0 - min(1.0, off if off >= 0 else -off)))
+            # Only a strong low has squalls, in a narrow ring about two thirds of a radius out.
+            force = (strength - 14.0) / 10.0
+            force = 0.0 if force < 0.0 else 1.0 if force > 1.0 else force
+            off = (q2 - 0.45) / 0.2
+            ring = max(ring, force * (1.0 - min(1.0, off if off >= 0 else -off)))
         return near, ring
 
     def cloud(self, x: float, y: float) -> tuple[float, int]:
@@ -899,7 +902,7 @@ class WeatherFrame:
         _, ring = self._low(x, y)
         if ring <= 0.0:
             return 0.0
-        return ring * _smooth(_noise(self.weather.noise_seed, 41, (x + self.drift) / 45.0, y / 45.0), 0.45, 0.7)
+        return ring * _smooth(_noise(self.weather.noise_seed, 41, (x + self.drift) / 45.0, y / 45.0), 0.5, 0.75)
 
     def fog(self, x: float, y: float) -> float:
         """Dawn fog from 0 to 1: calm lowland only."""
@@ -1168,7 +1171,7 @@ ROTOR_CHANCE = 0.35
 ROTOR_WEAR = 2
 ROTOR_REACH_KM = 15.0
 RIDGE_WEAR = 2
-PLACE_RADIUS_KM = 7.5                       # this close to a town or station is at it
+PLACE_RADIUS_KM = 12.5                      # this close to a town or station is at it
 
 ACTIONS = ("launch", "hold", "climb", "sink", "jettison", "land", "pibal")
 
@@ -1751,6 +1754,590 @@ class LocalTerminal:
 
 
 # --------------------------------------------------------------------------
+# The plain flight (S05): the whole turn on an 80 x 24 text screen, to find
+# out whether choosing a layer is fun before anything is drawn. Its save is
+# one small file per pilot; the world database replaces it in S10.
+# --------------------------------------------------------------------------
+
+PLAIN_SAVE_VERSION = 1
+PLAIN_HORIZON = 6                    # turns a track looks ahead: the first instruments
+POST_CHOICES = 3                     # destinations on offer at once
+STATION_REACH_KM = 150.0             # a town or station sharpens the forecast this far out
+MAP_COLS, MAP_ROWS = 52, 16
+MAP_CELL_KM = (5.0, 10.0)            # a character is twice as tall as it is wide
+_MAP_GLYPHS = ("~", "~", ".", ",", '"', ":", "n", "^", "A")
+_MAP_ROLES = ("sea", "sea", "text", "land", "land", "text", "dim", "text", "text")
+_TRACK_ROLES = {"sink": "cool", "hold": "accent", "climb": "warm", "launch": "accent", "jettison": "warm"}
+
+
+def data_dir(environ) -> Path:
+    """Where this installation keeps its world."""
+    named = environ.get("DOOR_FW_DATA_DIR")
+    return Path(named) if named else Path(__file__).resolve().parent / "data"
+
+
+def clock_text(minute: int) -> str:
+    minute %= MINUTES_PER_DAY
+    return f"{minute // 60:02d}:{minute % 60:02d}"
+
+
+def bearing(dx: float, dy: float) -> str:
+    """The compass point that lies in the direction (dx, dy)."""
+    return compass(-dx, -dy)
+
+
+class PlainFlight:
+    """One pilot's game on the plain screen.
+
+    Every committed turn is saved before its result is shown, so a session
+    can end at any moment and resume on the same turn.
+    """
+
+    def __init__(self, launch: Launch, folder: Path | None):
+        self.launch = launch
+        node = launch.node_id or "standalone"
+        self.world = World(world_seed(node), folder)
+        self.weather = Weather(self.world)
+        self.engine = Flight(self.world, self.weather, f"{node}/{launch.user_id}")
+        self.path = None
+        if folder is not None and not launch.guest:
+            self.path = Path(folder) / f"pilot-{self.world.seed:016x}-{launch.user_id}.json"
+        self.saved_ok = True
+        self.log: list[str] = []
+        self.typed_ahead = False          # set when a turn was committed: later keys in the same read are dropped
+        self.opening_notice = ""          # shown on the first screen, where it cannot scroll away
+        loaded = self._load()
+        if loaded is not True:
+            self._new_game()
+        if loaded == "damaged":
+            self.opening_notice = "Your saved game could not be read. This is a new one; the old file is kept."
+        elif loaded == "unkept":
+            # The unreadable file could not be moved aside. Saving now would
+            # destroy it, so this game is played unsaved and the file stays.
+            self.opening_notice = "Your saved game could not be read. This game is not saved. Tell the SysOp."
+            self.path = None
+            self.saved_ok = False
+        self.save()                       # so a game that cannot be saved says so before the first turn
+        self._choose_default()
+
+    # -- the save ------------------------------------------------------------
+
+    def _new_game(self) -> None:
+        start = self.world.towns[self.world.start_town]
+        self.state = FlightState(x=start["x"], y=start["y"], day=1)
+        self.visited = [("town", self.world.start_town)]
+        self.targets = self._next_targets()
+        self.deliveries, self.days_flown, self.total_km = 0, 0, 0.0
+        self.log = []
+        self._say(f"You are at {start['name']}. There is post for {self._names()}.")
+        self._say("Read the winds and fly to whichever the day favours.")
+
+    def _load(self):
+        """True if a saved game was read, False if there is none, "damaged" if one
+        was set aside, "unkept" if it could not even be set aside.
+
+        Only a missing file means a new pilot. A file that is there but
+        cannot be used is moved aside under one fixed name, so the next save
+        never overwrites a game somebody might still want back.
+        """
+        if self.path is None:
+            return False
+        try:
+            text = self.path.read_text(encoding="utf-8")
+        except (FileNotFoundError, NotADirectoryError):
+            return False                  # no file there, or no folder for one to be in
+        except (OSError, UnicodeDecodeError):
+            return self._set_aside()
+        try:
+            data = json.loads(text)
+            if data["version"] != PLAIN_SAVE_VERSION or data["seed"] != self.world.seed:
+                return self._set_aside()
+            self.state = FlightState.from_dict(data["state"])
+            self.targets = [self._ref(t) for t in data["targets"]][:POST_CHOICES]
+            self.visited = [self._ref(v) for v in data["visited"]][-4:]
+            if not self.targets:
+                return False
+            self.deliveries, self.days_flown = int(data["deliveries"]), int(data["days_flown"])
+            self.total_km = float(data["total_km"])
+            self.log = [str(line) for line in data.get("log", [])][-3:]
+            return True
+        except (ValueError, KeyError, TypeError):
+            return self._set_aside()
+
+    def _set_aside(self) -> str:
+        try:
+            self.path.replace(self.path.with_name(self.path.name + ".bad"))
+        except OSError:
+            return "unkept"
+        return "damaged"
+
+    def save(self) -> None:
+        if self.path is None:
+            return
+        data = {"version": PLAIN_SAVE_VERSION, "seed": self.world.seed, "state": self.state.to_dict(),
+                "targets": [list(t) for t in self.targets], "visited": [list(v) for v in self.visited],
+                "deliveries": self.deliveries,
+                "days_flown": self.days_flown, "total_km": self.total_km, "log": self.log[-3:]}
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            temp = self.path.with_name(self.path.name + f".{os.getpid()}.tmp")
+            with open(temp, "w", encoding="utf-8") as handle:
+                handle.write(json.dumps(data))
+                handle.flush()
+                os.fsync(handle.fileno())     # on disk before it replaces the last good save
+            temp.replace(self.path)
+            self.saved_ok = True
+        except OSError:
+            self.saved_ok = False       # play on; say so on the screen
+
+    # -- the post ------------------------------------------------------------
+
+    def _ref(self, value) -> tuple[str, int]:
+        kind, index = value
+        group = self.world.towns if kind == "town" else self.world.stations
+        if kind not in ("town", "station") or not 0 <= int(index) < len(group):
+            raise ValueError("no such place")
+        return kind, int(index)
+
+    def place_of(self, ref: tuple[str, int]) -> dict:
+        return (self.world.towns if ref[0] == "town" else self.world.stations)[ref[1]]
+
+    def _next_targets(self) -> list[tuple[str, int]]:
+        """Post for the nearest places not visited lately: the day's wind picks among them."""
+        here = self.state
+        refs = [("town", i) for i in range(len(self.world.towns))]
+        refs += [("station", i) for i in range(len(self.world.stations))]
+        at = self.engine.place(here.x, here.y)
+        refs = [r for r in refs if r != at and r not in self.visited[-2:]]
+        refs.sort(key=lambda r: ((self.place_of(r)["x"] - here.x) ** 2 + (self.place_of(r)["y"] - here.y) ** 2, r))
+        return refs[:POST_CHOICES]
+
+    def _names(self) -> str:
+        names = [self.place_of(t)["name"] for t in self.targets]
+        return ", ".join(names[:-1]) + (" and " if len(names) > 1 else "") + names[-1]
+
+    def bearings(self, x: float | None = None, y: float | None = None) -> list[tuple[float, str, dict]]:
+        """Distance, direction and place for each destination, nearest first."""
+        x = self.state.x if x is None else x
+        y = self.state.y if y is None else y
+        out = []
+        for ref in self.targets:
+            place = self.place_of(ref)
+            dx, dy = place["x"] - x, place["y"] - y
+            out.append((math.sqrt(dx * dx + dy * dy), bearing(dx, dy), place))
+        return sorted(out, key=lambda item: item[0])
+
+    def coverage(self, x: float, y: float) -> float:
+        """How well the nearest town or starting station covers this place, 0 to 1."""
+        best = 0.0
+        for place in self.world.towns + self.world.stations:
+            d = math.sqrt((x - place["x"]) ** 2 + (y - place["y"]) ** 2)
+            best = max(best, 1.0 - d / STATION_REACH_KM)
+        return best
+
+    # -- choosing ------------------------------------------------------------
+
+    def choices(self) -> list[str]:
+        """The layer choices on offer, lowest first."""
+        offered = self.engine.actions(self.state)
+        return [a for a in ("sink", "hold", "climb", "launch") if a in offered]
+
+    def _choose_default(self) -> None:
+        offered = self.engine.actions(self.state)
+        self.choice = "hold" if "hold" in offered else next(iter(self.choices()), None)
+        if self.choice is None and "land" in offered:
+            self.choice = "land"
+
+    def preview(self, action: str) -> dict:
+        return self.engine.preview(self.state, action, PLAIN_HORIZON, self.coverage(self.state.x, self.state.y))
+
+    def phase(self) -> str:
+        state = self.state
+        if state.status == "aloft":
+            return "aloft"
+        if state.status in ("stranded", "ditched"):
+            return state.status
+        return "ground" if self.engine.actions(state) else "rest"
+
+    # -- keys ----------------------------------------------------------------
+
+    def key(self, key: str) -> str | None:
+        """Handle a key. Returns "quit" to leave, "help" for help, else None."""
+        k = key.lower() if len(key) == 1 else key
+        if k in ("q", "CTRL-C"):
+            return "quit"
+        if k in ("?", "F1"):
+            return "help"
+        phase = self.phase()
+        offered = self.engine.actions(self.state)
+        if phase in ("aloft", "ground"):
+            options = self.choices()
+            if k in ("w", "UP") and self.choice in options:
+                self.choice = options[min(len(options) - 1, options.index(self.choice) + 1)]
+            elif k in ("s", "DOWN") and self.choice in options:
+                self.choice = options[max(0, options.index(self.choice) - 1)]
+            elif k in ("w", "s", "UP", "DOWN") and options:
+                self.choice = options[0]
+            elif k == "j" and "jettison" in offered:
+                self.choice = "jettison"
+            elif k == "l" and "land" in offered:
+                self.choice = "land"
+            elif k == "l" and "launch" in offered:
+                self.choice = "launch"
+            elif k == "p" and "pibal" in offered:
+                self._commit("pibal")
+            elif k in ("ENTER", " ") and self.choice in offered:
+                self._commit(self.choice)
+            elif k == "n" and phase == "ground":
+                self._night()
+        elif phase == "rest" and k in ("n", "ENTER", " "):
+            self._night()
+        elif phase == "stranded" and k in ("w", "ENTER", " "):
+            self._walk_out()
+        elif phase == "ditched" and k in ("n", "ENTER", " "):
+            self._picked_up()
+        return None
+
+    def _say(self, line: str) -> None:
+        """Add to the log, wrapped to the screen. The last three lines show."""
+        words, current = line.split(" "), ""
+        for word in words:
+            if current and len(current) + 1 + len(word) > 76:
+                self.log.append(current)
+                current = "       " + word          # a continued line sits under the text, not the clock
+            else:
+                current = f"{current} {word}" if current else word
+        self.log.append(current)
+        del self.log[:-3]
+
+    def _commit(self, action: str) -> None:
+        before = self.state
+        result = self.engine.step(before, action)
+        self.state = result.state
+        stamp = clock_text(before.minute)
+        for event in result.events:
+            line = self._describe(event)
+            if line:
+                self._say(f"{stamp}  {line}")
+        if before.status == "aloft" and self.state.status != "aloft":
+            self._landed()
+        self.save()                       # before anything is shown
+        if action != "pibal":
+            self.typed_ahead = True
+        self._choose_default()
+
+    def _describe(self, event: tuple) -> str:
+        code = event[0]
+        if code == "launch":
+            return f"Up and away into layer {event[1]}, {LAYER_NAMES[event[1] - 1]}."
+        if code in ("hold", "climb", "sink", "jettison"):
+            return ""                      # the drift line says it
+        if code == "drift":
+            return f"Layer {self.state.layer if self.state.layer else '-'}: {event[1]:g} km on a {event[2]} wind."
+        if code == "forced_climb":
+            return f"High ground: forced up into layer {event[1]} for {event[2]} fuel."
+        if code == "forced_jettison":
+            return f"High ground and no fuel to spare: a sack goes over the side for layer {event[1]}."
+        if code == "ridge":
+            return "High ground ahead rises above your ceiling. The balloon is held in its lee."
+        if code == "high_ground":
+            return "High ground, and nothing left to climb with."
+        if code == "squall":
+            return f"A squall throws the balloon into layer {event[1]}."
+        if code == "rotor":
+            return "Rough air behind the high ground shakes the balloon."
+        if code == "pibal":
+            return f"A pibal goes up: true winds in every layer for {PIBAL_TURNS} turns."
+        if code == "midnight":
+            return "Midnight. The day is over and the balloon comes down."
+        if code == "ditch":
+            return "Down on the water. The post is lost."
+        if code == "land":
+            place = event[2]
+            where = "in the wild"
+            if place:
+                group = self.world.towns if place[0] == "town" else self.world.stations
+                where = f"at {group[place[1]]['name']}"
+            return f"Down {where}: a {event[1]} landing."
+        if code == "stranded":
+            return "No fuel, and nobody near. You are stranded."
+        return ""
+
+    def _landed(self) -> None:
+        place = self.engine.place(self.state.x, self.state.y)
+        if self.state.status != "ground" or place is None:
+            return
+        if place not in self.targets:
+            self._say(f"There was no post for {self.place_of(place)['name']}. A night here fills the balloon.")
+            return
+        self.deliveries += 1
+        self._say(f"The post for {self.place_of(place)['name']} is delivered. That makes {self.deliveries}.")
+        if not self.visited or self.visited[-1] != place:
+            self.visited.append(place)
+        del self.visited[:-4]
+        self.targets = self._next_targets()
+        self._say(f"New post aboard, for {self._names()}.")
+        # Until towns have stores (S12), a delivery fills the balloon up.
+        self.state = dataclasses.replace(self.state, fuel=FUEL_START, ballast=BALLAST_START,
+                                         pibals=PIBALS_START, wear=0)
+
+    def _new_day(self, days: int, x: float | None = None, y: float | None = None, refill: bool = False) -> None:
+        state = self.state
+        stores = dict(fuel=FUEL_START, ballast=BALLAST_START, pibals=PIBALS_START, wear=0) if refill else {}
+        self.total_km += state.distance        # today's distance joins the total as the day ends
+        if state.turn > 0:
+            self.days_flown += 1              # a day nothing was flown on is not a flying day
+        self.state = dataclasses.replace(state, day=state.day + days, turn=0, layer=0, status="ground",
+                                         distance=0.0, pibal_until=-1,
+                                         x=state.x if x is None else x, y=state.y if y is None else y, **stores)
+        self._choose_default()
+
+    def _night(self) -> None:
+        at_place = self.engine.place(self.state.x, self.state.y) is not None
+        self._new_day(1, refill=at_place)
+        self._say(f"Day {self.state.day}. Dawn.")
+        self.save()                       # once, with the new day and its log together
+
+    def _nearest(self, towns) -> dict:
+        return min(towns, key=lambda t: ((t["x"] - self.state.x) ** 2 + (t["y"] - self.state.y) ** 2, t["cell"]))
+
+    def _walk_out(self) -> None:
+        town = self._nearest(self.world.towns)
+        self._new_day(2, town["x"], town["y"], refill=True)
+        self._say(f"Two days on foot to {town['name']}. Day {self.state.day}.")
+        self.targets = self._next_targets()
+        self.save()
+
+    def _picked_up(self) -> None:
+        ports = [t for t in self.world.towns if t["port"]] or self.world.towns
+        town = self._nearest(ports)
+        self._new_day(1, town["x"], town["y"], refill=True)
+        self._say(f"The packet boat lands you at {town['name']}. Day {self.state.day}.")
+        self.targets = self._next_targets()
+        self.save()
+
+    # -- the screen ----------------------------------------------------------
+
+    def draw(self, s: "Session") -> list[str]:
+        state, launch = self.state, self.launch
+        phase = self.phase()
+        out = [s._line(0, 1, "FAIR WINDS", "accent"),
+               s._line(0, 13, f"Day {state.day}  {clock_text(state.minute)}", "text")]
+        distance, toward, nearest = self.bearings()[0]
+        post = f"Nearest post: {nearest['name']}, {distance:.0f} km {toward}"
+        out.append(s._line(0, max(32, 79 - len(post)), post, "text"))
+        out += self._draw_map(s)
+        out += self._draw_panel(s, phase)
+        for i, line in enumerate(self.log[-3:]):
+            out.append(s._line(17 + i, 1, line[:78], "dim" if i < len(self.log[-3:]) - 1 else "text"))
+        if s.notice:
+            out.append(s._line(20, 1, s.notice[:78], "warn"))
+        elif not self.saved_ok:
+            out.append(s._line(20, 1, "This game cannot be saved here. Tell the SysOp. You can play on.", "warn"))
+        elif launch.guest:
+            out.append(s._line(20, 1, "You are visiting: nothing is kept when you leave.", "dim"))
+        sentence, role = self._sentence(phase)
+        out.append(s._line(21, 1, sentence[:78], role))
+        out.append(s._line(22, 1, f"{launch.handle}  {self.deliveries} delivered  {self.total_km + state.distance:.0f} km"
+                                  f"   {s.width} x {s.height} {launch.color_depth} {layout_tier(s.width, s.height)}"
+                                  f" {'standalone' if launch.host == 'standalone' else launch.transport}"[:78], "dim"))
+        out += s._keys(23, self._key_help(phase))
+        return out
+
+    def _key_help(self, phase: str):
+        leave = ("Q", f"Return to {self.launch.node_name}")
+        offered = self.engine.actions(self.state)
+        if phase == "aloft":
+            keys = [("W/S", "Layer"), ("Enter", "Fly it")]
+            if "jettison" in offered:
+                keys.append(("J", "Jettison"))
+            if "pibal" in offered:
+                keys.append(("P", "Pibal"))
+            if "land" in offered:
+                keys.append(("L", "Land"))
+            return keys + [("?", "Help"), ("Q", "Quit")]
+        if phase == "ground":
+            return [("Enter", "Launch"), ("N", "Night here"), ("?", "Help"), leave]
+        if phase == "stranded":
+            return [("W", "Walk out"), ("?", "Help"), leave]
+        if phase == "ditched":
+            return [("N", "Wait for the boat"), ("?", "Help"), leave]
+        return [("N", "Next day"), ("?", "Help"), leave]
+
+    def _sentence(self, phase: str) -> tuple[str, str]:
+        state = self.state
+        if phase == "stranded":
+            return "Stranded with no fuel. Walking out to the nearest town costs two days.", "warn"
+        if phase == "ditched":
+            return "Adrift. The packet boat will take a day to bring you to port.", "warn"
+        if phase == "rest":
+            if state.grounded:
+                return "The balloon is too worn to fly. A night at a town mends it.", "warn"
+            return "Nothing more to do today. Sleep, and fly on at dawn.", "text"
+        choice = self.choice
+        if choice == "land":
+            kind = self.engine.landing_class(state)
+            if kind == "ditch":
+                return "Land here? This is water: you would ditch and lose the post.", "warn"
+            wind = self.weather.frame(state.day, state.minute).surface_speed(state.x, state.y)
+            return f"Land here: a {kind} landing in {wind:.0f} km/h on the ground. Enter to land.", \
+                   "warn" if kind != "clean" else "accent"
+        if choice is None:
+            return "", "text"
+        look = self.preview(choice)
+        layer = look["layer"]
+        verb = {"hold": "Hold in", "climb": "Climb to", "sink": "Sink to", "launch": "Launch into",
+                "jettison": "Drop a sack for"}[choice]
+        text = f"{verb} layer {layer} {LAYER_NAMES[layer - 1]}: {look['cost']} fuel."
+        if look["points"]:
+            ex, ey, _ = look["points"][-1]
+            left, _, place = self.bearings(ex, ey)[0]
+            minutes = len(look["points"]) * TURN_MINUTES
+            text += f" In {minutes} min: {left:.0f} km from {place['name']}."
+        stop = look["stop"]
+        if stop == "ridge":
+            return text + " High ground you cannot climb stops you.", "warn"
+        if stop == "high_ground":
+            return text + " You cannot pay for the climb ahead!", "warn"
+        if stop == "fuel":
+            return text + " Then the fuel is gone.", "warn"
+        if look["forced"] or look["sacks"]:
+            price = f"{look['forced']} fuel" if look["forced"] else f"{look['sacks']} sack"
+            return text + f" High ground will force a climb: {price}.", "warn"
+        return text, "accent"
+
+    def _draw_map(self, s: "Session") -> list[str]:
+        state = self.state
+        cw, ch = MAP_CELL_KM
+        x0, y0 = state.x - MAP_COLS / 2 * cw, state.y - MAP_ROWS / 2 * ch
+        frame = self.weather.frame(state.day, state.minute)
+        cells: dict[tuple[int, int], tuple[str, str]] = {}
+
+        def put(wx: float, wy: float, glyph: str, role: str) -> tuple[int, int] | None:
+            col, row = int((wx - x0) // cw), int((wy - y0) // ch)
+            if 0 <= col < MAP_COLS and 0 <= row < MAP_ROWS:
+                cells[(col, row)] = (glyph, role)
+                return col, row
+            return None
+
+        out = []
+        for row in range(MAP_ROWS):
+            run, run_role, start = [], None, 0
+            for col in range(MAP_COLS):
+                wx, wy = x0 + (col + 0.5) * cw, y0 + (row + 0.5) * ch
+                biome = self.world.sample(wx, wy)[1]
+                glyph, role = _MAP_GLYPHS[biome], _MAP_ROLES[biome]
+                if frame.squall(wx, wy) > SQUALL_THRESHOLD:
+                    glyph, role = "%", "warn"
+                if role != run_role:
+                    if run:
+                        out.append(s._line(1 + row, 1 + start, "".join(run), run_role))
+                    run, run_role, start = [], role, col
+                run.append(glyph)
+            if run:
+                out.append(s._line(1 + row, 1 + start, "".join(run), run_role))
+        for kind, group, glyph, role in (("town", self.world.towns, "o", "text"),
+                                         ("station", self.world.stations, "+", "cool")):
+            for i, place in enumerate(group):
+                wanted = (kind, i) in self.targets
+                where = put(place["x"], place["y"], "#" if wanted else glyph, "accent" if wanted else role)
+                if where and wanted:
+                    name = place["name"][:MAP_COLS - where[0] - 2]
+                    for j, letter in enumerate(name):
+                        cells[(where[0] + 1 + j, where[1])] = (letter, "accent")
+        if state.status in ("aloft", "ground") and self.engine.actions(state):
+            order = [a for a in self.choices() if a != self.choice]
+            if self.choice in ("sink", "hold", "climb", "launch", "jettison"):
+                order.append(self.choice)           # the chosen track is drawn last, on top
+            for action in order:
+                look = self.preview(action)
+                role = _TRACK_ROLES[action] if action == self.choice else "dim"
+                for px, py, layer in look["points"]:
+                    put(px, py, str(layer), role)
+        cells[(MAP_COLS // 2, MAP_ROWS // 2)] = ("@", "bright")
+        for (col, row), (glyph, role) in cells.items():
+            out.append(s._line(1 + row, 1 + col, glyph, role))
+        return out
+
+    def _draw_panel(self, s: "Session", phase: str) -> list[str]:
+        state, col = self.state, 55
+        offered = self.engine.actions(state)
+        frame = self.weather.frame(state.day, state.minute)
+        cover = self.coverage(state.x, state.y)
+        low, top = self.engine.lowest_open(state.x, state.y), self.engine.top_layer(state)
+        here = state.layer if state.status == "aloft" else 0
+        out = [s._line(1, col, "LAYER      WIND   FUEL", "dim")]
+        picked = None
+        if self.choice in ("hold", "climb", "sink", "launch", "jettison"):
+            picked = self.preview(self.choice)["layer"]
+        costs = {}
+        for action in ("sink", "hold", "climb", "launch"):
+            if action in offered:
+                costs[self.engine.preview(state, action, 1)["layer"]] = offered[action]
+        row = 2
+        for layer in range(top, 0, -1):
+            mark = ">" if layer == here else "*" if layer == picked else " "
+            if layer < low:
+                wind = "ground"
+            else:
+                read = layer == here or (here == 0 and layer == low) or state.pibal_until >= state.turn
+                if read:
+                    vx, vy = frame.wind(state.x, state.y, layer)
+                else:
+                    vx, vy = self.weather.frame(state.day, state.minute, UNREAD_LEAD, cover).wind(state.x, state.y, layer)
+                speed = math.sqrt(vx * vx + vy * vy)
+                wind = f"{' ' if read else '~'}{compass(vx, vy):>3} {speed:>3.0f}"
+            cost = f"{costs[layer]:>3}" if layer in costs else "   "
+            role = "bright" if layer == here else "accent" if layer == picked else "text"
+            out.append(s._line(row, col, f"{mark}{layer} {LAYER_NAMES[layer - 1]:<7}{wind:<9}{cost}", role))
+            row += 1
+        out.append(s._line(row, col, "~ forecast, not read", "dim"))
+        row += 2
+        out.append(s._line(row, col, f"Fuel {state.fuel:>3}   Sacks {state.ballast}", "text"))
+        out.append(s._line(row + 1, col, f"Pibals {state.pibals}   Wear {state.wear}", "text"))
+        if state.pibal_until >= state.turn and state.status == "aloft":
+            out.append(s._line(row + 2, col, f"Pibal read: {state.pibal_until - state.turn + 1} turns", "cool"))
+        left = max(0, DUSK_MINUTE - state.minute)
+        light = f"Dusk in {left // 60}h{left % 60:02d}" if left else "Night"
+        out.append(s._line(row + 3, col, light, "text" if left > 90 else "warn"))
+        ground = frame.surface_speed(state.x, state.y)
+        out.append(s._line(row + 4, col, f"Ground wind {ground:.0f} km/h", "text"))
+        cloud, _ = frame.cloud(state.x, state.y)
+        sky = "clear" if cloud < 0.2 else "broken cloud" if cloud < 0.6 else "overcast"
+        if frame.fog(state.x, state.y) > FOG_THRESHOLD:
+            sky = "fog on the ground"
+        out.append(s._line(row + 5, col, f"Sky {sky}", "text"))
+        out.append(s._line(row + 6, col, f"Forecast {'sharp' if cover > 0.66 else 'fair' if cover > 0.33 else 'vague'}", "dim"))
+        for i, (distance, toward, place) in enumerate(self.bearings()[:POST_CHOICES]):
+            out.append(s._line(14 + i, col, f"# {place['name'][:14]:<14}{distance:>4.0f} {toward}", "accent" if i == 0 else "text"))
+        return out
+
+
+PLAIN_HELP = (
+    "A balloon cannot steer. It can only climb or sink, and every layer of air",
+    "blows a different way. Each turn is fifteen minutes. Pick the layer whose",
+    "wind takes you where you want to go, and carry the post to any place marked #.",
+    "",
+    "  W / S or arrows   look at the layer above or below; its track is drawn",
+    "  Enter or Space    fly the chosen layer for one turn",
+    "  J  drop a sack of ballast: up one layer for no fuel",
+    "  P  release a pibal: true winds in every layer for four turns",
+    "  L  land (from the lowest layer the ground leaves open)",
+    "  N  stay the night    ?  this help    Q  leave (the game is saved)",
+    "",
+    "The map: @ you, # places with post waiting, o towns, + weather stations,",
+    "~ sea  . shore  , grass  \" forest  : dry plain  n hills  ^ mountain  A snow,",
+    "% squall. Digits are tracks: where each layer would carry you, by forecast.",
+    "A wind marked ~ is a forecast: you have not read that layer. Your own layer",
+    "is always true. Climbing costs fuel, sinking is free, holding costs 1 (0 from",
+    "11:00 to 15:00, 2 after 20:00). Land in 15 km/h or less for a clean landing.",
+    "Within 12 km of a place counts as being there: two or three map cells.",
+    "",
+    "Leaving never loses anything. The game is saved every turn.",
+)
+
+
+# --------------------------------------------------------------------------
 # The session.
 # --------------------------------------------------------------------------
 
@@ -1762,6 +2349,11 @@ _INK = {
     "dim": {"truecolor": "38;2;112;126;148", "256": "38;5;103", "16": "36"},
     "text": {"truecolor": "38;2;206;214;226", "256": "38;5;252", "16": "37"},
     "warn": {"truecolor": "38;2;255;150;130", "256": "38;5;210", "16": "1;31"},
+    "bright": {"truecolor": "1;38;2;255;255;255", "256": "1;38;5;231", "16": "1;37"},
+    "sea": {"truecolor": "38;2;70;130;190", "256": "38;5;67", "16": "34"},
+    "land": {"truecolor": "38;2;120;180;110", "256": "38;5;108", "16": "32"},
+    "cool": {"truecolor": "38;2;120;228;255", "256": "38;5;117", "16": "1;36"},
+    "warm": {"truecolor": "38;2;255;150;196", "256": "38;5;218", "16": "1;35"},
 }
 
 
@@ -1772,8 +2364,9 @@ class Session:
     limit) goes through `run`, which always restores the terminal.
     """
 
-    def __init__(self, launch: Launch, inp: Input, out: Output, clock=time.monotonic):
+    def __init__(self, launch: Launch, inp: Input, out: Output, clock=time.monotonic, game=None):
         self.launch = launch
+        self.game = game                      # the plain flight, when there is one
         self.inp, self.out, self.clock = inp, out, clock
         self.keys = KeyDecoder()
         self.width, self.height = launch.width, launch.height
@@ -1783,6 +2376,8 @@ class Session:
         self.terminated = False               # set from a signal handler
         self.view = "front"
         self.notice = ""
+        if game is not None and game.opening_notice:
+            self.notice, game.opening_notice = game.opening_notice, ""      # said once, on the first screen
         self._warned: set[float] = set()
         self._dirty = True
         self._next_poll = self.started + GEOMETRY_POLL
@@ -1843,6 +2438,8 @@ class Session:
             parts += self._undersize()
         elif self.view == "help":
             parts += self._help()
+        elif self.game is not None:
+            parts += self.game.draw(self)
         else:
             parts += self._front()
         parts.append("\x1b[0m")
@@ -1893,6 +2490,8 @@ class Session:
                 "  B or Esc  go back       < and >  turn a page",
                 "",
                 "Leaving never loses anything. The game is saved as you play."]
+        if self.game is not None:
+            text = PLAIN_HELP
         out = [self._line(0, 1, "FAIR WINDS", "accent"), self._line(0, 13, "Help", "dim")]
         out += [self._line(2 + i, 1, t) for i, t in enumerate(text)]
         out += self._keys(self.height - 1, [("B", "Back"), ("Q", "Back")])
@@ -1917,6 +2516,13 @@ class Session:
         if self.view == "help":
             if lower in ("q", "b", "ESC", "?", "ENTER", "CTRL-C"):
                 self.view = "front"
+            return
+        if self.game is not None and layout_tier(self.width, self.height) != "undersize":
+            answer = self.game.key(key)
+            if answer == "quit":
+                self.stop = "quit"
+            elif answer == "help":
+                self.view = "help"
             return
         if lower in ("q", "CTRL-C"):
             self.stop = "quit"
@@ -1946,6 +2552,12 @@ class Session:
             if self.stop:
                 break
             self._handle(key)
+            if self.game is not None and self.game.typed_ahead:
+                # A turn was flown. Keys typed before its result was seen are
+                # dropped, so a held key never flies turns unseen.
+                self.game.typed_ahead = False
+                self.keys.flush()
+                break
 
     def run(self) -> str:
         try:
@@ -1994,7 +2606,8 @@ def main(argv=None) -> int:
     local = LocalTerminal()
     if launch.host == "standalone":
         local.enter()
-    session = Session(launch, Input(sys.stdin.fileno(), console=local.console), out)
+    session = Session(launch, Input(sys.stdin.fileno(), console=local.console), out,
+                      game=PlainFlight(launch, data_dir(os.environ)))
 
     def on_terminate(signum, frame):
         session.terminated = True

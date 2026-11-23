@@ -194,7 +194,8 @@ blocked terrain and the mouth of a pass are sharp on purpose.
 
 **Other fields**, from the same frame: pressure in hPa (for isobars); cloud
 cover from 0 to 1 with its deck in layer 3 near a low and layer 4 elsewhere;
-squalls as a broken ring around each low; fog from 04:30 to 08:30 over calm
+squalls as a narrow broken ring about two thirds of a radius out from each
+strong low (a weak low has none); fog from 04:30 to 08:30 over calm
 ground below 250 m; the icing level, layer 5, or layer 4 in a cold season; and
 the surface wind for landing.
 
@@ -285,7 +286,7 @@ cargo lost, the fragile survivors damaged). At night away from a town or
 station it is one class worse, unless the balloon has night gear. In fog away
 from a town or station it is one class worse again. A hard landing is refused
 while the pilot has any other way to stay up. A town or station counts as
-reached within 7.5 km of it.
+reached within 12.5 km of it.
 
 **Out of fuel.** Only free actions remain: sinking, landing, a jettison, and
 holding in the midday sun. So the balloon sinks a layer a turn and lands where
@@ -319,6 +320,45 @@ is ever destroyed and no career ends.
 
 Every hazard is visible on the map or named in the forecast before the pilot
 enters it.
+
+## 5a. The plain flight
+
+S05 puts the whole turn on an 80 by 24 text screen, to find out whether it is
+fun before anything is drawn. It is a stand-in: S06 to S13 replace its screen,
+its save and its placeholder rules, and keep its findings.
+
+**The screen.** A character map 260 km wide and 160 km tall centred on the
+balloon; a table of the layers with each one's wind, marked `~` where it is a
+forecast and not a reading; stores, daylight, ground wind and sky; the last
+three log lines; one sentence saying what the chosen action costs and where it
+leads; and the keys. Digits on the map are the tracks of the choices on offer,
+six turns ahead, the chosen one bright.
+
+**Keys.** W and S or the arrows step through sink, hold and climb. Enter or
+Space flies the choice. J chooses a jettison, L a landing, P releases a pibal
+at once. N stays the night. Keys typed before a turn's result is on screen are
+dropped, so a held key flies one turn.
+
+**The post.** There is post for the three nearest places not visited lately,
+towns and stations alike, and landing at any of them delivers it. One fixed
+destination is the wrong game: with three layers the winds span less than half
+the compass on most days, so a single town is often simply upwind. Measured
+with a search that flies on the true winds: one of three places can be reached
+in a day on about three days in four, in 6 to 42 turns; one fixed nearest town
+on fewer than half. S12's contracts keep this shape: several destinations a
+day, and the wind picks.
+
+**Placeholders, each replaced by the slice named.** A delivery fills the balloon
+up and mends it for nothing, and so does a night at a town or station; landing
+where there is no post changes nothing (S12). A new day starts when the pilot
+asks, with no calendar (S11). Walking out and the packet boat happen at a key
+press (S16). The save is one JSON file per pilot, written whole and synced
+after every turn. A save that cannot be read is moved aside to `<save>.bad`,
+never overwritten, and the pilot is told on the first screen; there is one such
+file per pilot, so a SysOp who wants one should collect it before it happens
+again. If it cannot even be moved aside, the game is played unsaved and the
+file is left alone (S10). Forecast coverage counts towns and the three
+starting stations (S15).
 
 ## 6. Economy and progress
 

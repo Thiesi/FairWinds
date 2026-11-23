@@ -15,16 +15,21 @@ what the door is. This file says how to work here.
    constants.
 4. Check the phase trackers on GitHub (issues #1 to #7) for what is done.
 
-**Status:** P0 is complete. S01 (host adapter and terminal lifecycle), S02
-(world generator and terrain cache), S03 (weather) and S04 (turn engine) are
-built. The door opens, shows what the host told it and closes cleanly, and
-`--world-map <node id>` prints a continent. The engine can fly a whole day, but
-no screen shows it yet. The next slice is S05, the plain flight, which ends in
-the owner's play-test.
+**Status:** P0 and P1 are built: S01 (host adapter and terminal lifecycle), S02
+(world generator and terrain cache), S03 (weather), S04 (turn engine) and S05
+(the plain flight). The game can be played in plain text at 80 x 24:
+`python fair_winds.py` in a terminal, or as a door under NetBBS.
 
-For S05's tuning: with the starting balloon, the towns nearest the start town
-are often 150 km and more away, and a simple scripted pilot reaches one only on
-some days. Whether that is a good first flight is for the play-test to judge.
+**P1 ends in the owner's play-test. Do not start S06 until the owner has played
+at least five flying days and said the turn is fun.** If the verdict is no,
+rework the turn first. Record the verdict and any retuned numbers in the S05
+PR or the P1 tracker (#2).
+
+Tuning already done from measurement, before the play-test: squalls were made
+narrow and rarer (they sat over a start town all day), a place counts as
+reached within 12.5 km (was 7.5), and the post is for three places at once,
+because one fixed town is upwind on most days. `docs/systems.md` section 5a
+has the numbers.
 
 P1 ends in a playtest by the owner (S05). Do not start P2 until the owner has
 said the turn is fun.

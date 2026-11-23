@@ -12,7 +12,7 @@ from support import DOOR, ROOT
 import fair_winds as fw
 
 GOLDEN_NODE = "golden-node"
-GOLDEN_WEATHER = "a1bf4cb1d2850fe63342f3df2b0b71d4810b8a0bb4ab0662f655f979457d8d91"
+GOLDEN_WEATHER = "59834eae411c2721b49983923f5c2b4d656cf9bd76f0a7efcf9c8ad66c2fc3cc"
 
 # Documented bounds (docs/systems.md, section 4).
 STEP_BOUND = 6.0        # km/h between one turn and the next, same place

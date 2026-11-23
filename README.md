@@ -20,8 +20,12 @@ supplies to the stranded.
 
 ## Status
 
-**In development. Not playable yet.** The plan is complete and the first slice
-is built: the door launches under NetBBS or standalone, and leaves cleanly.
+**In development.** The first phase is built: the world, the weather, the turn,
+and a plain text screen to fly it on. There is no art yet, and most of the game
+(the career, the shared world, the seasons) is still to come.
+
+To try the plain flight, run `python fair_winds.py` in a terminal of at least
+80 x 24. The game is saved every turn under `data/` beside the file.
 
 - [Build plan](docs/design.md): scope, phases and slices with acceptance
   criteria.

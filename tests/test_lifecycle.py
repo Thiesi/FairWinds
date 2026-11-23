@@ -23,7 +23,7 @@ class Lifecycle(unittest.TestCase):
         with Door() as door:
             self.assertTrue(door.wait_for("Return to Test Node"))
             screen = door.screen()
-            self.assertIn("Welcome aboard, Mara.", screen.text())
+            self.assertIn("Mara", screen.text())
             self.assertIn("80 x 24", screen.text())
             self.assertTrue(screen.cursor_hidden)
             door.send("q")
@@ -99,10 +99,10 @@ class Lifecycle(unittest.TestCase):
         with Door() as door:
             self.assertTrue(door.wait_for("Return to"))
             door.send("?")
-            self.assertTrue(door.wait_for("Keys that work everywhere"))
+            self.assertTrue(door.wait_for("A balloon cannot steer"))
             door.send("b")
             time.sleep(0.5)
-            self.assertIn("Welcome aboard", door.screen().text())
+            self.assertIn("Nearest post", door.screen().text())
             self.assertIsNone(door.proc.poll(), "B in help goes back, it does not quit")
             door.send("q")
             self.assert_clean_exit(door)
@@ -115,7 +115,7 @@ class Lifecycle(unittest.TestCase):
             door.send(b"[A")
             time.sleep(0.4)
             self.assertIsNone(door.proc.poll())
-            self.assertIn("Welcome aboard", door.screen().text())
+            self.assertIn("Nearest post", door.screen().text())
             door.send("q")
             self.assert_clean_exit(door)
 

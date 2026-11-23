@@ -89,6 +89,7 @@ class Door:
         self.info_path = Path(self._dir.name) / "door_info.json"
         env = {k: v for k, v in os.environ.items() if not k.startswith(("DOOR_", "NETBBS_"))}
         env["PYTHONIOENCODING"] = "utf-8"
+        env["DOOR_FW_DATA_DIR"] = str(Path(self._dir.name) / "data")
         if hosted:
             self.write_info(info if info is not None else door_info(), raw)
             env["NETBBS_DOOR_INFO"] = str(self.info_path)
