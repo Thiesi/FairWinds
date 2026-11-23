@@ -25,6 +25,7 @@ import struct
 import sys
 import threading
 import time
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -1828,7 +1829,31 @@ def nearest256(rgb) -> int:
 
 
 def _rgb(ink):
-    return INKS[ink][0] if isinstance(ink, str) else ink
+    """An ink as three whole numbers from 0 to 255, whatever arithmetic produced it."""
+    if isinstance(ink, str):
+        return INKS[ink][0]
+    return tuple(0 if v < 0 else 255 if v > 255 else int(v) for v in ink)
+
+
+_ASCII_GLYPHS = {HALF_BLOCK: "#", LOWER_BLOCK: "#", "\u2588": "#", "\u2591": ".", "\u2592": ":", "\u2593": "#",
+                 "\u00b7": "-", "\u2022": "*", "\u00b0": "o"}
+
+
+def safe_glyph(ch: str) -> str:
+    """One printable character that takes exactly one cell, or a question mark.
+
+    The buffer is only right if what it writes moves the cursor one cell. A
+    control character, an escape, or a wide or zero-width character would
+    put the caller's terminal out of step with it.
+    """
+    if len(ch) != 1 or not ch.isprintable():
+        return "?"
+    if " " <= ch <= "~":
+        return ch
+    if unicodedata.east_asian_width(ch) in ("W", "F") or unicodedata.combining(ch) \
+            or unicodedata.category(ch) in ("Mn", "Me", "Cf"):
+        return "?"
+    return ch
 
 
 class Screen:
@@ -1849,13 +1874,15 @@ class Screen:
         self.fg: list = [None] * n
         self.bg: list = [None] * n
         self.split = bytearray(n)          # 1 where the cell holds two pixels: fg on top, bg below
+        self._cells: list | None = None    # what goes out for each cell, worked out once per frame
 
     # -- drawing -------------------------------------------------------------
 
     def put(self, x: int, y: int, ch: str, fg=None, bg=None) -> None:
         if 0 <= x < self.width and 0 <= y < self.height:
             k = y * self.width + x
-            self.ch[k], self.fg[k], self.bg[k], self.split[k] = ch, fg, bg, 0
+            self.ch[k], self.fg[k], self.bg[k], self.split[k] = safe_glyph(ch), fg, bg, 0
+            self._cells = None
 
     def text(self, x: int, y: int, text: str, fg="text", bg=None) -> None:
         """A run of text, clipped at the edges. One character is one cell."""
@@ -1881,9 +1908,10 @@ class Screen:
                 base = _rgb(self.bg[k]) if self.bg[k] is not None else (0, 0, 0)
                 self.ch[k], self.fg[k], self.bg[k], self.split[k] = HALF_BLOCK, base, base, 1
             if py & 1:
-                self.bg[k] = rgb
+                self.bg[k] = _rgb(rgb)
             else:
-                self.fg[k] = rgb
+                self.fg[k] = _rgb(rgb)
+            self._cells = None
 
     def over(self, x: int, y: int, ch: str, fg="bright", darken: float = 0.6) -> None:
         """A glyph on top of pixels: it takes the cell, on the darkened mean of what was there."""
@@ -1891,8 +1919,7 @@ class Screen:
             k = y * self.width + x
             if self.split[k]:
                 top, bottom = self.fg[k], self.bg[k]
-                mean = tuple((top[i] + bottom[i]) / 2 * (1 - darken) for i in range(3))
-                self.put(x, y, ch, fg, tuple(int(v) for v in mean))
+                self.put(x, y, ch, fg, _rgb(tuple((top[i] + bottom[i]) / 2 * (1 - darken) for i in range(3))))
             else:
                 self.put(x, y, ch, fg, self.bg[k])
 
@@ -1921,7 +1948,15 @@ class Screen:
                     ch, fg, bg = LOWER_BLOCK, bottom, top
         if ch == " " and bg is None:
             return " ", "", ""
+        if self.charset == "ascii" and not ch.isascii():
+            ch = _ASCII_GLYPHS.get(ch, "?")
         return ch, ("" if ch == " " else self._fg_code(fg)), self._bg_code(bg)
+
+    def cells(self) -> list:
+        """What goes out for every cell. Worked out once: a frame is drawn, then rendered."""
+        if self._cells is None:
+            self._cells = [self._cell(k) for k in range(self.width * self.height)]
+        return self._cells
 
     def _fg_code(self, ink) -> str:
         if ink is None:
@@ -1933,7 +1968,7 @@ class Screen:
         rgb = _rgb(ink)
         if depth == "256":
             return f"38;5;{nearest256(rgb)}"
-        return f"38;2;{int(rgb[0])};{int(rgb[1])};{int(rgb[2])}"
+        return f"38;2;{rgb[0]};{rgb[1]};{rgb[2]}"
 
     def _bg_code(self, ink) -> str:
         if ink is None:
@@ -1944,7 +1979,7 @@ class Screen:
         rgb = _rgb(ink)
         if depth == "256":
             return f"48;5;{nearest256(rgb)}"
-        return f"48;2;{int(rgb[0])};{int(rgb[1])};{int(rgb[2])}"
+        return f"48;2;{rgb[0]};{rgb[1]};{rgb[2]}"
 
     def render(self, previous: "Screen | None" = None) -> str:
         """The bytes that turn `previous` into this frame. None means a cleared screen.
@@ -1956,6 +1991,8 @@ class Screen:
         same_size = previous is not None and previous.width == w and previous.height == h \
             and previous.depth == self.depth and previous.charset == self.charset
         blank = (" ", "", "")
+        mine = self.cells()
+        theirs = previous.cells() if same_size else [blank] * (w * h)
         out: list[str] = []
         state = None
         sixteen = self.depth == "16"
@@ -1964,19 +2001,18 @@ class Screen:
             limit = w - 1 if y == h - 1 else w
             while x < limit:
                 k = y * w + x
-                cell = self._cell(k)
-                if cell == (previous._cell(k) if same_size else blank):
+                cell = mine[k]
+                if cell == theirs[k]:
                     x += 1
                     continue
                 out.append(f"\x1b[{y + 1};{x + 1}H")
                 while x < limit:
                     k = y * w + x
-                    cell = self._cell(k)
-                    if cell == (previous._cell(k) if same_size else blank):
+                    cell = mine[k]
+                    if cell == theirs[k]:
                         # A short gap is cheaper to write through than to jump over,
                         # and it keeps words whole in the byte stream.
-                        ahead = next((n for n in range(1, 5) if x + n < limit and self._cell(k + n)
-                                      != (previous._cell(k + n) if same_size else blank)), 0)
+                        ahead = next((n for n in range(1, 5) if x + n < limit and mine[k + n] != theirs[k + n]), 0)
                         if not ahead:
                             break
                     ch, fg, bg = cell
@@ -2579,7 +2615,7 @@ PLAIN_HELP = (
     "  J  drop a sack of ballast: up one layer for no fuel",
     "  P  release a pibal: true winds in every layer for four turns",
     "  L  land (from the lowest layer the ground leaves open)",
-    "  N  stay the night    ?  this help    Q  leave (the game is saved)",
+    "  N  stay the night   ?  this help   Ctrl-L  redraw   Q  leave (saved)",
     "",
     "The map: @ you, # places with post waiting, o towns, + weather stations,",
     "~ sea  . shore  , grass  \" forest  : dry plain  n hills  ^ mountain  A snow,",
@@ -2754,8 +2790,13 @@ class Session:
     # -- input --------------------------------------------------------------
 
     def _handle(self, key: str) -> None:
-        self.notice = ""
         self._dirty = True
+        if key in ("CTRL-L", "CTRL-R"):
+            # Redraw: only differences are sent, so if a line was garbled on
+            # the way, or the host wrote over the screen, this puts it right.
+            self.shown = None
+            return
+        self.notice = ""
         lower = key.lower() if len(key) == 1 else key
         if self.view == "help":
             if lower in ("q", "b", "ESC", "?", "ENTER", "CTRL-C"):
@@ -2809,6 +2850,7 @@ class Session:
             while not self.stop:
                 self.step()
             if self.stop == "deadline":
+                # Written straight out, past the buffer: the session is over and nothing is drawn after it.
                 self.out.write("\x1b[0m\x1b[2J\x1b[1;2HSession time is up. Nothing is lost.")
         except SessionClosed:
             self.stop = "closed"

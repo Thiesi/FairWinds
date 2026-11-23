@@ -164,6 +164,70 @@ class Colours(unittest.TestCase):
             self.assertTrue(self.frame(depth, "ascii").render(None).isascii())
 
 
+class Hardening(unittest.TestCase):
+    def test_colours_out_of_range_are_clamped_never_sent(self):
+        screen = fw.Screen(6, 2)
+        screen.put(0, 0, "x", (-3, 300, 12.9), (999, -1, 0))
+        screen.pixel(1, 0, (-50, 128.7, 400))
+        screen.pixel(1, 1, (0, 0, 0))
+        screen.pixel(2, 2, (300, 300, 300))
+        screen.over(2, 1, "@", "bright", -5.0)       # a darkening that would overshoot
+        text = screen.render(None)
+        self.assertIn("38;2;0;255;12;48;2;255;0;0", text)
+        for group in SGR.findall(text):
+            for part in group.split(";"):
+                self.assertTrue(part.isdigit() and 0 <= int(part) <= 255, group)
+        for depth in ("256", "16"):
+            odd = fw.Screen(4, 1, depth)
+            odd.put(0, 0, "x", (-9, 900, 40), (500, 500, -500))
+            self.assertNotIn("-", odd.render(None))
+
+    def test_only_one_cell_glyphs_reach_the_terminal(self):
+        screen = fw.Screen(20, 2)
+        for i, ch in enumerate(["\x1b", "\r", "\n", "\x07", "\t", "ab", "", "\u4e2d", "\u0301", "\u200b", "\x9b"]):
+            screen.put(i, 0, ch, "text")
+        screen.text(0, 1, "a\x1b[2Jb\rc", "text")
+        text = screen.render(None)
+        term = apply(text, 20, 2)
+        self.assertEqual(term.out_of_bounds, [])
+        self.assertEqual(term.text().split("\n")[0], "?" * 11)
+        self.assertEqual(term.text().split("\n")[1], "a?[2Jb?c", "an escape in text is drawn, not obeyed")
+        self.assertEqual(text.count("\x1b"), len(re.findall(r"\x1b\[[0-9;]*[Hm]", text)), "only our own sequences")
+        self.assertEqual(fw.safe_glyph("é"), "é")
+        self.assertEqual(fw.safe_glyph(fw.HALF_BLOCK), fw.HALF_BLOCK)
+        self.assertEqual(fw.safe_glyph("~"), "~")
+
+    def test_ascii_callers_get_ascii_glyphs(self):
+        screen = fw.Screen(8, 1, "truecolor", "ascii")
+        screen.text(0, 0, fw.HALF_BLOCK + "\u00b7é\u2592x", "text")
+        text = screen.render(None)
+        self.assertTrue(text.isascii())
+        self.assertEqual(apply(text, 8, 1).text(), "#-?:x")
+        same = fw.Screen(8, 1, "truecolor", "utf-8")
+        same.text(0, 0, "é", "text")
+        self.assertIn("é", same.render(None), "a caller who can show it gets it")
+
+    def test_sixteen_colours_end_with_bold_reset(self):
+        screen = fw.Screen(10, 1, "16")
+        screen.text(0, 0, "bold", "accent")
+        text = screen.render(None)
+        self.assertTrue(text.endswith("\x1b[0m"))
+        self.assertEqual(SGR.findall(text), ["0;1;33;49", "0"])
+        after = fw.Screen(10, 1, "16")
+        after.text(0, 0, "bold", "accent")
+        after.text(5, 0, "dim", "dim")
+        self.assertEqual(SGR.findall(after.render(screen)), ["0;36;49", "0"], "the next frame starts from a reset too")
+
+    def test_a_frame_works_out_its_cells_once(self):
+        screen = fw.Screen(30, 5)
+        screen.text(0, 0, "abc", "text")
+        first = screen.cells()
+        self.assertIs(screen.cells(), first)
+        screen.put(1, 1, "z", "text")
+        self.assertIsNot(screen.cells(), first, "drawing again throws the worked-out cells away")
+        self.assertEqual(screen.cells()[30 + 1][0], "z")
+
+
 class Pixels(unittest.TestCase):
     def test_two_pixels_to_a_cell(self):
         screen = fw.Screen(4, 2)
@@ -280,6 +344,19 @@ class SessionPainting(unittest.TestCase):
         self.assertIn("[Enter] Launch", wide[45])
         self.assertGreater(sum(c in '~.,":n^A' for line in wide[1:39] for c in line[:141]),
                            3 * sum(c in '~.,":n^A' for line in small[1:17] for c in line[:53]), "far more world to see")
+
+    def test_ctrl_l_redraws_the_whole_screen(self):
+        first = self.paint()
+        self.assertEqual(self.paint(), "")
+        for key in ("CTRL-L", "CTRL-R"):
+            self.session._handle(key)
+            again = self.paint()
+            self.assertTrue(again.startswith("\x1b[0m\x1b[2J"), "a clear, then everything")
+            self.assertEqual(apply(again, 80, 24).text(), apply(first, 80, 24).text())
+        self.assertEqual(self.game.state.turn, 0, "a redraw is not a move")
+        self.session.notice = "About 1 minute of session time left."
+        self.session._handle("CTRL-L")
+        self.assertTrue(self.session.notice, "and it does not dismiss a notice")
 
     def test_every_depth_and_charset_paints_the_same_text(self):
         texts = set()
