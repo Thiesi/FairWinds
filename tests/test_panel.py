@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import support                                             # noqa: E402
 from support import Terminal, door_info
 
 import fair_winds as fw
@@ -23,11 +24,12 @@ class PanelCase(unittest.TestCase):
         self._dir = tempfile.TemporaryDirectory(prefix="fair-winds-test-")
 
     def tearDown(self):
+        fw.Store.close_all()
         self._dir.cleanup()
 
     def start(self, width=132, height=40, **changes):
         info = fw.parse_door_info(json.dumps(door_info(terminal_width=width, terminal_height=height, **changes)), {})
-        game = fw.PlainFlight(info, Path(self._dir.name))
+        game = support.new_game(info, Path(self._dir.name))
         return game, fw.Session(info, None, Out(), game=game)
 
     def lines(self, session):

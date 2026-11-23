@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import support                                             # noqa: E402
 from support import Terminal, door_info
 
 import fair_winds as fw
@@ -286,10 +287,11 @@ class SessionPainting(unittest.TestCase):
     def setUp(self):
         self._dir = tempfile.TemporaryDirectory(prefix="fair-winds-test-")
         launch = fw.parse_door_info(json.dumps(door_info()), {})
-        self.game = fw.PlainFlight(launch, Path(self._dir.name))
+        self.game = support.new_game(launch, Path(self._dir.name))
         self.session = fw.Session(launch, None, Out(), game=self.game)
 
     def tearDown(self):
+        fw.Store.close_all()
         self._dir.cleanup()
 
     def paint(self):

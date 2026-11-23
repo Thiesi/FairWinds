@@ -190,3 +190,35 @@ class Door:
 
     def __exit__(self, *exc):
         self.close()
+
+
+_games = []
+
+
+def new_game(*args, **kwargs):
+    """A game as a new session would open it: whichever session came before has ended."""
+    import fair_winds as fw
+    for game in _games:
+        game.close()
+    del _games[:]
+    game = fw.PlainFlight(*args, **kwargs)
+    _games.append(game)
+    return game
+
+
+def stored(folder, user_id=12):
+    """What the database holds for a pilot: the career, with the flight under "state"."""
+    import json
+    import sqlite3
+    found = []
+    for path in sorted(Path(folder).glob("fair_winds-*.db")):
+        db = sqlite3.connect(str(path))
+        try:
+            row = db.execute("SELECT p.career, f.state, f.seq FROM pilots p JOIN flights f USING (user_id)"
+                             " WHERE p.user_id=?", (user_id,)).fetchone()
+        finally:
+            db.close()
+        if row:
+            found.append(dict(json.loads(row[0]), state=json.loads(row[1]), seq=row[2]))
+    assert len(found) == 1, found
+    return found[0]
