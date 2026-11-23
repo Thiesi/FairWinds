@@ -646,6 +646,39 @@ after what it shows has been saved, never waits for a key, ends on any key and
 consumes it. `DOOR_SPLASH=0` removes the splash. `DOOR_SCENES=0` removes the
 rest.
 
+Built so far: the splash, the launch and the landing. Each is a backdrop
+painted once (a sky of four tones from its top to the horizon, taken from the
+hour; a sun on its arc or a moon and stars; cloud by the cloud cover over the
+balloon; two ranges of hills and the ground in the colour of the land there;
+at a town or station, roofs and a mast, with windows lit from dusk to dawn)
+and the balloon moving over it. That backdrop at a place is the station vista;
+the station screen of P3 will stand on it. Below truecolor the ground is one
+tone, because a fade to dark there passes through grey and black.
+
+| Scene | Plays | Lasts |
+| --- | --- | --- |
+| Splash | at the door | the balloon rises for 2.1 s, then it holds under "Press any key" |
+| Launch | after a launch is saved | 1.6 s |
+| Landing | after a landing is saved | 1.9 s, then the picture stays 0.7 s |
+
+The caption under a launch or landing is the logbook's own line for it. A
+scene runs at 7 frames a second. A frame that costs more than 6 KB is followed
+by a longer wait, in proportion, up to four frames' worth, and the balloon
+moves that much further at the next one, so a wide screen gets fewer frames
+and the scene lasts as long. Its last pose is always shown. A resize ends a
+scene. A key in the first 0.3 s of a launch or landing scene is used up
+without ending it: a held Enter was not a wish to skip what it began. Ctrl-C
+is never held off, and the splash, which asks for a key, takes one at once. A turn that could not be saved gets no scene; the screen says
+it was not saved. The bytes of a scene, and of the paint that puts the game
+back, are not counted against the moving wind's cap, so the burst after a
+launch plays as after any turn. The session deadline, a lost caller and Ctrl-C end the session from a
+scene as from anywhere else.
+
+Without half blocks (sixteen colours, CP437 without them, ASCII) there are no
+launch or landing scenes, and the splash is the title and the prompt as text.
+With motion off a scene is one still picture: a launch or landing stays 1.3 s.
+`DOOR_SCENES=0` leaves the splash, still.
+
 **Budgets.** Targets: under 40 KB a second while the wind moves, under a
 quarter of one core, and a one-hour session inside the shipped profile's CPU
 limit with margin. Measured in process on the development host, in truecolor:
