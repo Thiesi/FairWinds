@@ -23,9 +23,11 @@ charset readings, layouts that fill the terminal), S07 (the relief map), S08
 splash, and the launch and landing scenes). The game can be played:
 `python fair_winds.py` in a terminal, or as a door under NetBBS. Of P3, S10
 (the world database, the pilot's lease and the atomic turn commit), S11 (the
-calendar: world days, the three-day window, tempo) and S12 (contracts, cargo,
-postmarks, the stores and the post office screen) are built. The next slice
-is S13, the licence and the balloon; after it comes the owner's play-test.
+calendar: world days, the three-day window, tempo), S12 (contracts, cargo,
+postmarks, the stores and the post office screen) and S13 (the licence, the
+gear and the envelope designer) are built. P3 is built. **The owner's
+play-test comes next, before P4**: see `docs/design.md` after S13. Do not start
+S14 until its verdict is on the P3 tracker (issue #4).
 
 To look at a screen, run `python scripts/capture.py`: it writes each size and
 colour depth as an HTML page under `.test-tmp/captures`, which headless Edge

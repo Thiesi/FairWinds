@@ -158,6 +158,7 @@ class Carrying(PostCase):
         game = self.game()
         self.empty(game)
         offer = dict(game.offers()[0], kind="fragile")
+        game.points = fw.GRADES[fw.CARGO_GRADE["fragile"]][1]
         real = fw.contracts_at
         try:
             fw.contracts_at = lambda world, ref, day: [offer]
@@ -472,7 +473,8 @@ class Screen(PostCase):
             self.assertIn("THE POST OFFICE", text)
             self.assertIn("ABOARD", text)
             self.assertIn("STORES", text)
-            self.assertIn("To the balloon", text)
+            self.assertIn("[Enter] Back", text)
+            self.assertIn("[G] Rigging loft", text)
             self.assertIn("postmarks", text)
         for changes in ({"color_depth": "16"}, {"charset": "cp437", "color_depth": "16"}, {"charset": "ascii"}):
             other = self.game(user_id=300 + len(changes), **changes)

@@ -33,7 +33,7 @@ import zoneinfo
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "0.1.0.dev15"
+VERSION = "0.1.0.dev16"
 DOOR_API = 5
 MIN_WIDTH, MIN_HEIGHT = 80, 24
 MAX_DIMENSION = 1000
@@ -1201,6 +1201,7 @@ class FlightState:
     oxygen: bool = False
     night_gear: bool = False
     iceproof: bool = False
+    reads: int = 0                # layers either side of the balloon's own that its instruments read true
     climb_cost: int = COST_CLIMB
 
     @property
@@ -1255,6 +1256,19 @@ class Flight:
                 break
             layer += 1
         return layer
+
+    def reads(self, state: FlightState, layer: int) -> bool:
+        """Does the pilot know the true wind in this layer, or only a forecast of it?
+
+        Known: every layer while a pibal's reading lasts; on the ground, the
+        layer a launch would enter; aloft, the balloon's own layer and as
+        many either side as its instruments reach.
+        """
+        if state.pibal_until >= state.turn:
+            return True
+        if state.layer == 0:
+            return layer == self.lowest_open(state.x, state.y)
+        return abs(layer - state.layer) <= state.reads
 
     def top_layer(self, state: FlightState) -> int:
         return min(LAYERS if state.oxygen else LAYERS - 1, state.ceiling)
@@ -1489,7 +1503,7 @@ class Flight:
             layer -= 1
         first = layer
         # On the ground the pilot stands in the air they would launch into.
-        read = layer == state.layer or action == "launch" or state.pibal_until >= state.turn
+        read = action == "launch" or self.reads(state, layer)
         stale = 0.0 if read else UNREAD_LEAD
         fuel = state.fuel - offered[action]
         ballast = state.ballast - (1 if action == "jettison" else 0)
@@ -2717,7 +2731,7 @@ def contracts_at(world: "World", ref: tuple[str, int], day: int) -> list[dict]:
     out = []
     for i in range(min(count, len(near))):
         code = "mail"
-        if ref[0] == "town":
+        if ref[0] == "town" and i > 0:          # a town's first offer is always a mailbag: something for anyone
             mark = draw_unit(world.seed, *key, i, "kind") * shares
             for code, kind in CARGO_KINDS.items():
                 mark -= kind["share"]
@@ -2736,6 +2750,94 @@ def contracts_at(world: "World", ref: tuple[str, int], day: int) -> list[dict]:
 def price_of(item: str, ref: tuple[str, int]) -> int:
     """What one of something costs at a place, in postmarks."""
     return PRICES[item] if ref[0] == "town" else int(math.ceil(PRICES[item] * STATION_PRICE))
+
+
+# --------------------------------------------------------------------------
+# The licence and the balloon (S13). Tables again: grades, what earns
+# points, and every tier of every piece of gear with what it does.
+# --------------------------------------------------------------------------
+
+GRADES = (("Fledgling", 0), ("Aeronaut", 60), ("Pilot", 160), ("Navigator", 360), ("Wind-reader", 700),
+          ("Master", 1200), ("Commodore of the Post", 2000))          # the name, and the points it takes
+POINTS = {"mail": 8, "parcel": 14, "fragile": 20, "clean": 3, "km": 0.1}     # a delivery by kind, a clean landing, a km
+CARGO_GRADE = {"mail": 0, "parcel": 1, "fragile": 2}                  # the grade a kind of cargo is entrusted at
+# Each track's first tier is what every balloon starts with. A later tier names its price in postmarks, the
+# grade it is sold at, and sometimes a tier of another track it needs first.
+UPGRADES = {
+    "envelope": {"name": "Envelope", "tiers": (
+        {"lift": 8, "ceiling": 3},
+        {"price": 150, "grade": 1, "lift": 11, "ceiling": 4},
+        {"price": 450, "grade": 3, "lift": 14, "ceiling": 5})},
+    "burner": {"name": "Burner", "tiers": (
+        {"climb": COST_CLIMB},
+        {"price": 120, "grade": 1, "climb": 2},
+        {"price": 380, "grade": 3, "climb": 1})},
+    "tanks": {"name": "Tanks", "tiers": (
+        {"tank": FUEL_START},
+        {"price": 100, "grade": 1, "tank": 90},
+        {"price": 320, "grade": 3, "tank": 130})},
+    "instruments": {"name": "Instruments", "tiers": (
+        {"horizon": 6, "reads": 0},
+        {"price": 140, "grade": 2, "horizon": 10, "reads": 1},
+        {"price": 420, "grade": 4, "horizon": 16, "reads": LAYERS})},
+    "wireless": {"name": "Wireless", "tiers": (
+        {"reach": 150.0},
+        {"price": 200, "grade": 2, "reach": 300.0})},
+    "night": {"name": "Night gear", "tiers": (
+        {"night": False},
+        {"price": 180, "grade": 2, "night": True})},
+    "oxygen": {"name": "Oxygen", "tiers": (
+        {"oxygen": False},
+        {"price": 300, "grade": 4, "oxygen": True, "needs": ("envelope", 2)})},
+}
+TRACKS = tuple(UPGRADES)
+TIER_NAMES = ("I", "II", "III")
+PATTERNS = ("stripes", "halves", "chevrons", "rings")
+# The colours an envelope may be painted in. Each reads as a different one of the sixteen.
+ENVELOPE_COLOURS = (("teal", (44, 172, 172)), ("cream", (246, 232, 202)), ("coral", (240, 112, 92)),
+                    ("navy", (36, 52, 160)), ("gold", (236, 188, 40)), ("green", (24, 170, 40)),
+                    ("plum", (150, 60, 160)), ("charcoal", (72, 72, 80)))
+FIRST_DESIGN = {"pattern": "stripes", "colours": [0, 1, 2, 1]}
+OTHERS_SHOWN = 24                    # other pilots' balloons drawn on a map at most
+
+
+def gear_text(track: str, tier: dict) -> str:
+    """What a tier of gear does, in a few words."""
+    if track == "envelope":
+        return f"lifts {tier['lift']}, reaches layer {tier['ceiling']}"
+    if track == "burner":
+        return f"a climb costs {tier['climb']} fuel"
+    if track == "tanks":
+        return f"hold {tier['tank']} fuel"
+    if track == "instruments":
+        reads = ("reads your layer", "reads the layers next to yours")[tier["reads"]] if tier["reads"] < 2 \
+            else "reads every layer"
+        return f"tracks {tier['horizon']} turns ahead, {reads}"
+    if track == "wireless":
+        return f"forecasts from places {tier['reach']:.0f} km off"
+    if track == "night":
+        return "better night landings, no night fuel penalty" if tier["night"] else "none"
+    return f"layer {LAYERS}" if tier["oxygen"] else "none"
+
+
+def grade_of(points: int) -> int:
+    """The grade that many points make: an index into GRADES."""
+    return max((i for i, (_, need) in enumerate(GRADES) if points >= need), default=0)
+
+
+def design_of(value) -> dict:
+    """An envelope design from stored data, or the first design if it is not one."""
+    try:
+        pattern, colours = value["pattern"], [int(c) for c in value["colours"]]
+        if pattern in PATTERNS and len(colours) == 4 and all(0 <= c < len(ENVELOPE_COLOURS) for c in colours):
+            return {"pattern": pattern, "colours": colours}
+    except (KeyError, TypeError, ValueError):
+        pass
+    return {"pattern": FIRST_DESIGN["pattern"], "colours": list(FIRST_DESIGN["colours"])}
+
+
+def design_rgb(design: dict) -> tuple:
+    return tuple(ENVELOPE_COLOURS[c][1] for c in design["colours"])
 
 
 # --------------------------------------------------------------------------
@@ -2941,6 +3043,11 @@ class Store:
             return seq
         return self._write(work)
 
+    def others(self, user_id: int) -> list[tuple[str, str]]:
+        """Every other pilot of this world: career and flight as stored text, the latest to fly first."""
+        return self.db.execute("SELECT p.career, f.state FROM pilots p JOIN flights f USING (user_id)"
+                               " WHERE p.user_id<>? ORDER BY f.rowid DESC", (user_id,)).fetchall()
+
     def journal(self, user_id: int) -> list[tuple]:
         """The committed turns of the pilot's current flying day: (seq, day, turn, action)."""
         return self.db.execute("SELECT seq, day, turn, action FROM turns WHERE user_id=? ORDER BY seq",
@@ -3086,6 +3193,9 @@ class PlainFlight:
         self.heard: list = []
         self.opening_notice = ""          # shown on the first screen, where it cannot scroll away
         self.hub = False                  # the post office screen is open
+        self.loft = False                 # the rigging loft screen is open
+        self.others: list = []            # other pilots in this world: (x, y, colour), for the map
+        self._grade_seen = 0
         self.hub_note = ""                # what the last thing done there came to
         self._vista = None                # the picture over the post office, kept while it is the same picture
         self.busy: dict | None = None     # another live session holds this pilot: who, until the caller decides
@@ -3140,6 +3250,8 @@ class PlainFlight:
                                    "The records are busy. This game is not saved; yours is safe. Try again soon.")
             self._drop_store()
         self.save()                       # so a game that cannot be saved says so before the first turn
+        self._grade_seen = self.grade()
+        self._see_others()
         if self._imported and self.saved_ok and self.store is not None and not self.ended:
             # Only once the database has the pilot. And never over an earlier file of that name.
             aside = self.legacy.with_name(self.legacy.name + ".imported")
@@ -3158,6 +3270,8 @@ class PlainFlight:
         self._dated = True
         self.deliveries, self.days_flown, self.total_km = 0, 0, 0.0
         self.postmarks, self.manifest, self.taken, self.next_id = START_POSTMARKS, [], [], 1
+        self.gear, self.points, self.design = {track: 0 for track in TRACKS}, 0, design_of(None)
+        self._fit()
         home = ("town", self.world.start_town)
         for dest in places_near(self.world, start["x"], start["y"], skip=home)[:POST_CHOICES]:
             # A first round, already aboard: three mailbags for the three nearest places.
@@ -3275,10 +3389,17 @@ class PlainFlight:
                                  "due": flight.day + FIRST_ROUND_DAYS})
                 next_id += 1
             flight = dataclasses.replace(flight, cargo=tuple((item["id"], False, "ok") for item in manifest))
+        gear = {track: int(career.get("gear", {}).get(track, 0)) for track in TRACKS}
+        if any(not 0 <= tier < len(UPGRADES[track]["tiers"]) for track, tier in gear.items()):
+            raise ValueError("no such gear")
+        # A pilot from before the licence is credited with the deliveries they made.
+        points = int(career["points"]) if "points" in career else deliveries * POINTS["mail"]
         self._dated = bool(career.get("dated", False))
         self.state, self.manifest, self.taken = flight, manifest, taken
         self.postmarks, self.next_id = postmarks, next_id
         self.deliveries, self.days_flown, self.total_km, self.log = deliveries, days_flown, total_km, log
+        self.gear, self.points, self.design = gear, max(0, points), design_of(career.get("design"))
+        self._fit()
 
     def _cargo_item(self, item: dict) -> dict:
         """One line of the manifest, checked. Raises ValueError, KeyError or TypeError if it is not one."""
@@ -3316,6 +3437,7 @@ class PlainFlight:
 
     def _career(self) -> dict:
         return {"manifest": self.manifest, "taken": self.taken, "postmarks": self.postmarks, "next_id": self.next_id,
+                "gear": self.gear, "points": self.points, "design": self.design,
                 "deliveries": self.deliveries, "days_flown": self.days_flown, "total_km": self.total_km,
                 "log": self.log[-3:], "dated": self._dated}
 
@@ -3349,8 +3471,10 @@ class PlainFlight:
 
     def _day_may_have_opened(self) -> bool:
         """Look at the calendar. If a day has opened, say so where it matters. True if anything changed."""
+        before = self.others
+        self._see_others()                # the same glance takes in where everyone else has got to
         if not self._look_at_the_calendar():
-            return False
+            return self.others != before
         if self._catch_up():
             self.save()
         self._choose_default()
@@ -3463,8 +3587,10 @@ class PlainFlight:
             return f"Put back: {self.cargo_text(mine, long=False)}."
         if offer["contract"] in self.taken:
             return "You have carried that one already."
-        if self.weight() + offer["weight"] > LIFT:
-            return f"Too heavy: the balloon lifts {LIFT} and carries {self.weight()} already."
+        if self.grade() < CARGO_GRADE[offer["kind"]]:
+            return f"That is entrusted to a licence of {GRADES[CARGO_GRADE[offer['kind']]][0]} or better."
+        if self.weight() + offer["weight"] > self.lift():
+            return f"Too heavy: the balloon lifts {self.lift()} and carries {self.weight()} already."
         item = self._load_cargo(offer)
         self.taken.append(offer["contract"])
         self.save("post")
@@ -3474,7 +3600,7 @@ class PlainFlight:
         """Buy fuel, sacks or pibals: so many, or with no count as many as fit and can be paid for."""
         state, each = self.state, price_of(item, self.here())
         have = {"fuel": state.fuel, "sack": state.ballast, "pibal": state.pibals}[item]
-        room = STORES_FULL[item] - have
+        room = (self.tank() if item == "fuel" else STORES_FULL[item]) - have
         want = room if count is None else min(count, room)
         got = min(want, self.postmarks // each)
         word = {"fuel": "fuel", "sack": "sacks", "pibal": "pibals"}[item]
@@ -3526,7 +3652,7 @@ class PlainFlight:
         self.taken.append(self._relief_mark())
         said = "The postmaster fuels and patches the balloon on account."
         near = places_near(self.world, state.x, state.y, skip=ref)
-        if near and self.weight() + CARGO_KINDS["mail"]["weight"] <= LIFT:
+        if near and self.weight() + CARGO_KINDS["mail"]["weight"] <= self.lift():
             item = self._load_cargo({"contract": None, "kind": "mail", "dest": list(near[0]), "origin": list(ref),
                                      "weight": CARGO_KINDS["mail"]["weight"], "payout": RELIEF["payout"],
                                      "due": state.day + RELIEF["days"]})
@@ -3550,8 +3676,116 @@ class PlainFlight:
         best = 0.0
         for place in self.world.towns + self.world.stations:
             d = math.sqrt((x - place["x"]) ** 2 + (y - place["y"]) ** 2)
-            best = max(best, 1.0 - d / STATION_REACH_KM)
+            best = max(best, 1.0 - d / self.fitted("wireless")["reach"])
         return best
+
+    # -- the licence and the gear ---------------------------------------------
+
+    def fitted(self, track: str) -> dict:
+        """The tier of a piece of gear this balloon has."""
+        return UPGRADES[track]["tiers"][self.gear[track]]
+
+    def lift(self) -> int:
+        return self.fitted("envelope")["lift"]
+
+    def tank(self) -> int:
+        return self.fitted("tanks")["tank"]
+
+    def score(self) -> int:
+        """Logbook points: what deliveries and clean landings earned, and a point for every ten km flown."""
+        return self.points + int((self.total_km + self.state.distance) * POINTS["km"])
+
+    def grade(self) -> int:
+        return grade_of(self.score())
+
+    def at_loft(self) -> bool:
+        """The rigging loft is in towns."""
+        return self.at_office() and self.here()[0] == "town"
+
+    def _fit(self) -> None:
+        """Set the flight's own figures from the gear: what the engine flies by."""
+        envelope = self.fitted("envelope")
+        oxygen = self.fitted("oxygen")["oxygen"]
+        ceiling = envelope["ceiling"] + (1 if oxygen and envelope["ceiling"] == LAYERS - 1 else 0)
+        self.state = dataclasses.replace(self.state, ceiling=ceiling, oxygen=oxygen,
+                                         night_gear=self.fitted("night")["night"],
+                                         climb_cost=self.fitted("burner")["climb"],
+                                         reads=self.fitted("instruments")["reads"])
+
+    def _promote(self) -> None:
+        """Say so when the points have made a new grade."""
+        grade = self.grade()
+        if grade > self._grade_seen:
+            self._say(f"The Post makes you {'an' if GRADES[grade][0][0] in 'AEIOU' else 'a'} {GRADES[grade][0]}.")
+        self._grade_seen = grade
+
+    def cannot_fit(self, track: str) -> str:
+        """Why the next tier of this gear cannot be bought now, or "" if it can."""
+        tiers, have = UPGRADES[track]["tiers"], self.gear[track]
+        if have + 1 >= len(tiers):
+            return "nothing more to fit"
+        tier = tiers[have + 1]
+        if self.grade() < tier["grade"]:
+            return f"sold to {GRADES[tier['grade']][0]}s"
+        if "needs" in tier and self.gear[tier["needs"][0]] < tier["needs"][1]:
+            other, need = tier["needs"]
+            return f"needs {UPGRADES[other]['name']} {TIER_NAMES[need]}"
+        if self.postmarks < tier["price"]:
+            return "not enough postmarks"
+        return ""
+
+    def fit(self, track: str) -> str:
+        """Buy the next tier of a piece of gear. Returns what to tell the pilot."""
+        why = self.cannot_fit(track)
+        name = UPGRADES[track]["name"]
+        if why:
+            return f"{name}: {why}."
+        self.gear[track] += 1
+        tier = self.fitted(track)
+        self.postmarks -= tier["price"]
+        self._fit()
+        self.save("gear")
+        return f"Fitted: {name}, {gear_text(track, tier)}."
+
+    def paint(self, what: str) -> str:
+        """Change the envelope's pattern, or one of its four colours, to the next."""
+        if what == "pattern":
+            self.design["pattern"] = PATTERNS[(PATTERNS.index(self.design["pattern"]) + 1) % len(PATTERNS)]
+        else:
+            self.design["colours"][what] = (self.design["colours"][what] + 1) % len(ENVELOPE_COLOURS)
+        self.save("design")
+        names = ", ".join(ENVELOPE_COLOURS[c][0] for c in self.design["colours"])
+        return f"The envelope: {self.design['pattern']} in {names}."
+
+    def _loft_key(self, k: str) -> None:
+        if not self.at_loft() or k in ("ENTER", "ESC", "b", "g", " "):
+            self.loft = False
+            return
+        if len(k) == 1 and k.isdigit() and 1 <= int(k) <= len(TRACKS):
+            self.hub_note = self.fit(TRACKS[int(k) - 1])
+        elif k == "p":
+            self.hub_note = self.paint("pattern")
+        elif k in ("z", "x", "c", "v"):
+            self.hub_note = self.paint("zxcv".index(k))
+        self._choose_default()
+
+    def _see_others(self) -> None:
+        """Where the other pilots of this world are, for the map."""
+        self.others = []
+        if self.store is None:
+            return
+        try:
+            rows = self.store.others(self.launch.user_id)
+        except sqlite3.Error:
+            return
+        for career, state in rows:
+            try:
+                data = json.loads(state)
+                colour = design_rgb(design_of(json.loads(career).get("design")))[0]
+                self.others.append((float(data["x"]), float(data["y"]), colour))
+            except (ValueError, KeyError, TypeError, AttributeError):
+                continue                  # somebody else's record is somebody else's trouble
+        del self.others[OTHERS_SHOWN:]
 
     # -- choosing ------------------------------------------------------------
 
@@ -3567,7 +3801,8 @@ class PlainFlight:
             self.choice = "land"
 
     def preview(self, action: str) -> dict:
-        return self.engine.preview(self.state, action, PLAIN_HORIZON, self.coverage(self.state.x, self.state.y))
+        return self.engine.preview(self.state, action, self.fitted("instruments")["horizon"],
+                                   self.coverage(self.state.x, self.state.y))
 
     def phase(self) -> str:
         state = self.state
@@ -3601,6 +3836,12 @@ class PlainFlight:
             return None                   # the day opened while the pilot waited: show it before any key means anything
         if self.hub:
             self._hub_key(k)
+            return None
+        if self.loft:
+            self._loft_key(k)
+            return None
+        if k == "g" and self.at_loft():
+            self.loft, self.hub_note = True, ""
             return None
         if k == "o" and self.at_office():
             self.hub, self.hub_note = True, ""
@@ -3639,6 +3880,9 @@ class PlainFlight:
         """A key at the post office."""
         if not self.at_office() or k in ("ENTER", "ESC", "b", "o", " "):
             self.hub = False
+            return
+        if k == "g" and self.at_loft():
+            self.hub, self.loft, self.hub_note = False, True, ""
             return
         offers = self.offers()
         if len(k) == 1 and k.isdigit() and 1 <= int(k) <= len(offers):
@@ -3684,8 +3928,11 @@ class PlainFlight:
                 self._say(f"{stamp}  {line}")
         self._lost_cargo()
         landed = before.status == "aloft" and self.state.status != "aloft"
+        if any(event[0] == "land" and event[1] == "clean" for event in result.events):
+            self.points += POINTS["clean"]
         if landed:
             self._landed()
+        self._promote()
         self.save(action)                 # before anything is shown
         if self.ended:
             return
@@ -3716,7 +3963,8 @@ class PlainFlight:
                         and any(word in line for word in ("Delivered", "Nothing aboard", "stranded", "Lost:"))), "")
         return {"kind": kind, "hour": minute / 60.0, "cloud": frame.cloud(state.x, state.y)[0],
                 "biome": self.world.sample(state.x, state.y)[1], "place": place is not None,
-                "seed": int(state.x) * 7919 + int(state.y) * 104729 + 17, "caption": caption, "sub": sub}
+                "seed": int(state.x) * 7919 + int(state.y) * 104729 + 17, "caption": caption, "sub": sub,
+                "design": dict(self.design)}
 
     def _describe(self, event: tuple) -> str:
         code = event[0]
@@ -3792,13 +4040,14 @@ class PlainFlight:
             self._unload(item)
         self.deliveries += len(mine)
         self.postmarks += paid
+        self.points += sum(POINTS[item["kind"]] for item in mine)
         what = self.cargo_text(mine[0], long=False).split(" for ")[0] if len(mine) == 1 else f"{len(mine)} pieces"
         note = f" ({', '.join(sorted(set(notes)))}: less is paid)" if notes else ""
         self._say(f"Delivered to {name}: {what.lower()}, {paid} postmarks{note}. That makes {self.deliveries}.")
 
     def _new_day(self, days: int, x: float | None = None, y: float | None = None) -> None:
         state = self.state
-        self.hub = False
+        self.hub = self.loft = False
         self.taken = [t for t in self.taken if t[2] >= state.day + days]
         self.total_km += state.distance        # today's distance joins the total as the day ends
         if state.turn > 0:
@@ -3879,6 +4128,60 @@ class PlainFlight:
             status += "   " + part
         return status[:wide]
 
+    def _draw_loft(self, s: "Session") -> list[str]:
+        """The rigging loft: the licence, the gear and what more can be fitted, and the envelope's design."""
+        wide = s.width - 2
+        town = self.place_of(self.here())
+        out = [s._line(0, 1, "FAIR WINDS", "accent"),
+               s._line(0, 13, f"The rigging loft at {town['name']}"[:wide - 30], "text")]
+        right = f"{self.postmarks} postmarks"
+        out.append(s._line(0, s.width - 1 - len(right), right, "text"))
+        grade, score = self.grade(), self.score()
+        after = f"{GRADES[grade + 1][0]} at {GRADES[grade + 1][1]}" if grade + 1 < len(GRADES) else "the highest there is"
+        out.append(s._line(1, 1, "LICENCE", "accent"))
+        out.append(s._line(1, 10, f"{GRADES[grade][0]}   {score} points; {after}"[:wide - 9], "text"))
+        out.append(s._line(2, 1, "GEAR", "accent"))
+        room = wide - (18 if s.width >= 100 and self.map.pixels else 0)
+        for i, track in enumerate(TRACKS):
+            tiers, have = UPGRADES[track]["tiers"], self.gear[track]
+            label = TIER_NAMES[have] if len(tiers) > 2 else "fitted" if have else "-"
+            out.append(s._line(3 + i * 2, 1, f"{i + 1}  {UPGRADES[track]['name']:<12}{label:<7}"
+                                             f"{gear_text(track, tiers[have])}"[:room], "text"))
+            if have + 1 >= len(tiers):
+                out.append(s._line(4 + i * 2, 6, "nothing more to fit"[:room], "dim"))
+                continue
+            tier = tiers[have + 1]
+            why = self.cannot_fit(track)
+            label = TIER_NAMES[have + 1] if len(tiers) > 2 else "fit"
+            out.append(s._line(4 + i * 2, 6, f"{'next':<10}{label:<7}{tier['price']:>3} pm  "
+                                             f"{why or gear_text(track, tier)}"[:room - 5], "dim" if why else "cool"))
+        row = 3 + len(TRACKS) * 2
+        names = ", ".join(ENVELOPE_COLOURS[c][0] for c in self.design["colours"])
+        out.append(s._line(row, 1, "ENVELOPE", "accent"))
+        out.append(s._line(row, 11, f"{self.design['pattern']} in {names}"[:wide - 10], "text"))
+        col = 11 + len(self.design["pattern"]) + 4
+        for c in self.design["colours"]:                 # each name in its own colour, where the line has room
+            name, rgb = ENVELOPE_COLOURS[c]
+            if sum(rgb) < 330:
+                rgb = _mix(rgb, (255, 255, 255), 0.4)      # a dark colour's name still has to be read on a dark screen
+            if col + len(name) < s.width - 1:
+                s.frame.text(col, row, name, (int(rgb[0]), int(rgb[1]), int(rgb[2])))
+            col += len(name) + 2
+        out += s._keys(row + 1, [("P", "Pattern"), ("Z", "1st"), ("X", "2nd"), ("C", "3rd"), ("V", "4th colour")])
+        if s.width >= 100 and self.map.pixels:
+            draw_balloon(s.frame, s.width - 9, 16, 7.0, flame=False, colours=design_rgb(self.design),
+                         pattern=self.design["pattern"])
+        if self.hub_note:
+            out.append(s._line(row + 2, 1, self.hub_note[:wide], "bright"))
+        if s.notice:
+            out.append(s._line(s.height - 3, 1, s.notice[:wide], "warn"))
+        elif not self.saved_ok:
+            out.append(s._line(s.height - 3, 1, "This game cannot be saved here. Tell the SysOp. You can play on.", "warn"))
+        out.append(s._line(s.height - 2, 1, self._status(s, wide), "dim"))
+        out += s._keys(s.height - 1, [(f"1-{len(TRACKS)}", "Fit the next"), ("Enter", "Back"), ("?", "Help"),
+                                      ("Q", "Quit")])
+        return out
+
     def _draw_hub(self, s: "Session") -> list[str]:
         """The post office: what is on offer, what is aboard, and the stores."""
         state, ref, wide = self.state, self.here(), s.width - 2
@@ -3901,7 +4204,7 @@ class PlainFlight:
             vista = 0
         row = 1 + vista
         out.append(s._line(row, 1, "THE POST OFFICE", "accent"))
-        load = f"Aboard {self.weight()} of {LIFT} weight"
+        load = f"Aboard {self.weight()} of {self.lift()} weight"
         out.append(s._line(row, s.width - 1 - len(load), load, "text"))
         offers = self.offers()
         for i, offer in enumerate(offers):
@@ -3928,7 +4231,7 @@ class PlainFlight:
             out.append(s._line(row + 2 + i, 1, line[:wide], "text" if lines else "dim"))
         row += 2 + max(len(shown), 1)
         out.append(s._line(row + 1, 1, "STORES", "accent"))
-        out.append(s._line(row + 1, 9, f"Fuel {state.fuel}/{FUEL_START}   Sacks {state.ballast}/{BALLAST_START}   "
+        out.append(s._line(row + 1, 9, f"Fuel {state.fuel}/{self.tank()}   Sacks {state.ballast}/{BALLAST_START}   "
                                        f"Pibals {state.pibals}/{PIBALS_START}   Wear {state.wear}"
                                        f"{'  too worn to fly' if state.grounded else ''}"[:wide - 8], "text"))
         fuel, sack, pibal, mend = (price_of(item, ref) for item in ("fuel", "sack", "pibal", "mend"))
@@ -3941,9 +4244,9 @@ class PlainFlight:
         elif not self.saved_ok:
             out.append(s._line(s.height - 3, 1, "This game cannot be saved here. Tell the SysOp. You can play on.", "warn"))
         out.append(s._line(s.height - 2, 1, self._status(s, wide), "dim"))
-        out += s._keys(s.height - 1, [(f"1-{len(offers)}" if len(offers) > 1 else "1", "Take or put back"),
-                                      ("Enter", "To the balloon"), ("?", "Help"),
-                                      ("Q", "Quit")][0 if offers else 1:])
+        keys = [(f"1-{len(offers)}" if len(offers) > 1 else "1", "Take or put back")] if offers else []
+        keys += [("G", "Rigging loft")] if self.at_loft() else []
+        out += s._keys(s.height - 1, keys + [("Enter", "Back"), ("?", "Help"), ("Q", "Quit")])
         return out
 
     def draw(self, s: "Session") -> list[str]:
@@ -3951,7 +4254,9 @@ class PlainFlight:
             return self._draw_lease(s)
         if self.hub and self.at_office():
             return self._draw_hub(s)
-        self.hub = False
+        if self.loft and self.at_loft():
+            return self._draw_loft(s)
+        self.hub = self.loft = False
         state, launch = self.state, self.launch
         phase = self.phase()
         # The layout follows the terminal: a bigger window is a bigger map.
@@ -3993,7 +4298,7 @@ class PlainFlight:
             if "land" in offered:
                 keys.append(("L", "Land"))
             return keys + [("?", "Help"), ("Q", "Quit")]
-        office = [("O", "Post")] if self.at_office() else []
+        office = [("O", "Post")] if self.at_office() else []      # the loft is a door inside it, and G from here
         if phase == "ground":
             return [("Enter", "Launch")] + office + [("N", "Night"), ("?", "Help"), leave]
         if phase == "stranded":
@@ -4064,7 +4369,7 @@ class PlainFlight:
         state, layer = self.state, self.shown_layer()
         here = state.layer if state.status == "aloft" else 0
         low = self.engine.lowest_open(state.x, state.y)
-        read = layer == here or (here == 0 and layer == low) or state.pibal_until >= state.turn
+        read = self.engine.reads(state, layer)
         if read:
             frame = self.weather.frame(state.day, state.minute)
         else:
@@ -4100,6 +4405,8 @@ class PlainFlight:
             cells.append((cell, place))
         for place, glyph, ink in others:
             view.mark(screen, place["x"], place["y"], glyph, ink)
+        for ox, oy, colour in self.others:
+            view.mark(screen, ox, oy, "Q", colour)      # another pilot's balloon, in the first colour of its envelope
         if state.status in ("aloft", "ground") and self.offered(state):
             order = [a for a in self.choices() if a != self.choice]
             if self.choice in ("sink", "hold", "climb", "launch", "jettison"):
@@ -4126,7 +4433,7 @@ class PlainFlight:
             if layer < low:
                 out[layer] = None
                 continue
-            read = layer == here or (here == 0 and layer == low) or state.pibal_until >= state.turn
+            read = self.engine.reads(state, layer)
             vx, vy = (frame if read else guess).wind(state.x, state.y, layer)
             out[layer] = (vx, vy, read)
         return out
@@ -4154,7 +4461,7 @@ class PlainFlight:
             if layer < low:
                 wind = "ground"
             else:
-                read = layer == here or (here == 0 and layer == low) or state.pibal_until >= state.turn
+                read = self.engine.reads(state, layer)
                 if read:
                     vx, vy = frame.wind(state.x, state.y, layer)
                 else:
@@ -4282,7 +4589,7 @@ class PlainFlight:
                 screen.put(col + 9 + n, r, "\u2588" if n < filled else "\u00b7", ink if n < filled else "dim")
             s._line(r, col + 24, note, "text")
 
-        bar(row + 1, "Fuel", state.fuel, FUEL_START, (255, 176, 84), f"{state.fuel}")
+        bar(row + 1, "Fuel", state.fuel, self.tank(), (255, 176, 84), f"{state.fuel}")
         s._line(row + 2, col, f"{'Ballast':<8}", "dim")
         for n in range(BALLAST_START):
             screen.put(col + 9 + n * 2, row + 2, "\u25a0" if n < state.ballast else "\u00b7",
@@ -4351,7 +4658,7 @@ PLAIN_HELP = (
     "  J  drop a sack of ballast: up one layer for no fuel",
     "  P  release a pibal: true winds in every layer for four turns",
     "  L  land (from the lowest layer the ground leaves open)",
-    "  N  stay the night   O  post office and stores, at a town or station",
+    "  N  night   O  post office and stores; from there G, the rigging loft",
     "  ?  this help   Ctrl-L  redraw   Q  leave (saved)",
     "",
     "The map: @ you, # places with post waiting, o towns, + weather stations,",
@@ -4510,8 +4817,9 @@ class Backdrop:
             screen.pixel_row(0, top + r, self.tops[r], self.bottoms[r])
 
 
-def draw_balloon(screen: Screen, cx: float, cy: float, r: float, light=(1.0, 1.0, 1.0), flame: bool = True) -> None:
-    """The balloon, in pixels: a striped envelope lit from the right, ropes and a basket."""
+def draw_balloon(screen: Screen, cx: float, cy: float, r: float, light=(1.0, 1.0, 1.0), flame: bool = True,
+                 colours=BALLOON_COLOURS, pattern: str = "stripes") -> None:
+    """The balloon, in pixels: an envelope in its pilot's colours and pattern, lit from the right, ropes and a basket."""
     tail = r * 0.5
     for y in range(int(cy - r), int(cy + r + tail) + 1):
         for x in range(int(cx - r), int(cx + r) + 1):
@@ -4525,7 +4833,16 @@ def draw_balloon(screen: Screen, cx: float, cy: float, r: float, light=(1.0, 1.0
                 continue
             u = max(-1.0, min(1.0, dx / max(hw, 1.0)))
             gore = int((math.asin(u) / math.pi + 0.5) * 7.999)
-            col = BALLOON_COLOURS[gore % 4]
+            down = (dy + r) / (2.5 * r)             # 0 at the crown, 1 at the mouth
+            if pattern == "halves":
+                band = 2 if abs(dy) < r * 0.09 else 0 if dy < 0 else 1 if down < 0.86 else 3
+            elif pattern == "rings":
+                band = int(down * 6.0) % 4
+            elif pattern == "chevrons":
+                band = int(down * 6.0 + abs(u) * 2.2) % 4
+            else:
+                band = gore % 4
+            col = colours[band]
             lum = 0.58 + 0.38 * u + 0.1 * (dy / r)
             c = (col[0] * lum * light[0], col[1] * lum * light[1], col[2] * lum * light[2])
             if flame and dy > r * 0.8:
@@ -4554,8 +4871,9 @@ class Scene:
 
     def __init__(self, kind: str, width: int, height: int, pixels: bool, motion: bool, hour: float = 6.6,
                  cloud: float = 0.0, biome: int = GRASS, seed: int = 1, place: bool = False,
-                 caption: str = "", sub: str = "", flat: bool = False):
+                 caption: str = "", sub: str = "", flat: bool = False, design: dict | None = None):
         self.kind, self.width, self.height = kind, width, height
+        self.design = design_of(design)
         self.pixels, self.caption, self.sub = pixels, caption, sub
         self.hold = kind == "splash"
         moving = pixels and motion
@@ -4605,7 +4923,8 @@ class Scene:
             cx, cy = w * 0.24 + w * 0.1 * t, -r * 1.5 + (ground + r * 1.5) * t
         night = back.hour < 5.5 or back.hour >= 20.5
         draw_balloon(screen, cx, cy, r, (0.5, 0.52, 0.66) if night else (1.0, 1.0, 1.0),
-                     flame=self.kind != "landing" or t < 0.9)
+                     flame=self.kind != "landing" or t < 0.9, colours=design_rgb(self.design),
+                     pattern=self.design["pattern"])
         if self.kind == "splash":
             self._title(screen, max(2, int(w * 0.06)), title_y, "FAIR WINDS", scale)
             row = (title_y + 7 * scale) // 2 + 2
@@ -4939,7 +5258,7 @@ class Session:
         self.scene = Scene(asked["kind"], self.width, self.height, True, self.game.motion, hour=asked["hour"],
                            cloud=asked["cloud"], biome=asked["biome"], seed=asked["seed"], place=asked["place"],
                            caption=asked["caption"], sub=asked["sub"],
-                           flat=self.launch.color_depth != "truecolor")
+                           flat=self.launch.color_depth != "truecolor", design=asked.get("design"))
         self._next_frame = self._scene_at = None
         self._dirty = True
 
