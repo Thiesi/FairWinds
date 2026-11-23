@@ -498,19 +498,31 @@ get an art-directed reading, never a nearest-colour fallback.
 
 **Layout tiers.** By the caller's geometry, changing live on resize.
 
-| Tier | From | What it adds |
+| Tier | From | The panel |
 | --- | --- | --- |
-| Small | 80 by 24 | Map, the layer table, stores, three log lines, keys |
-| Medium | 132 by 40 | Relief map, the sky column, layer rows, a longer log |
-| Wide | 168 by 46 | Forecast strip, pilots in the air, cargo |
+| Small | 80 by 24 | 26 columns: a table of the layers within reach, stores as numbers, the post |
+| Medium | 132 by 40 | 40 columns: the sounding, stores as bars, the landing named, the post |
+| Wide | 168 by 46 | The same, and the forecast for the layer in view, hour by hour for six hours |
 
 Within a tier the layout follows the terminal cell for cell: the panel keeps
 its width, the log and keys keep their rows, and the map takes everything
-else. 80 by 24 gives a map of 52 by 16 cells, 132 by 40 one of 104 by 32, and
-168 by 46 one of 140 by 38, so a bigger window shows more of the world. What
-each tier adds beyond a bigger map arrives with S07 and S08.
+else. 80 by 24 gives a map of 52 by 16 cells, 132 by 40 one of 90 by 32, and
+168 by 46 one of 126 by 38, so a bigger window shows more of the world.
 
-A terminal 200 columns or wider may later show the map and chart side by side.
+**The sounding.** All six layers from the jet down, two rows each: the layer's
+name, its wind as the pilot knows it (`~` marks a forecast), the fuel to get
+there, and under that a bar of its speed against the most that layer ever
+blows, with a word where there is one to say: `you`, `cloud deck`, `icing`,
+`out of reach`, `needs oxygen`, or `ground` where the land fills the layer.
+Beside the rows, where the map is drawn in pixels, stands a slice of sky eight
+cells wide: darker with height, the ground filling the layers it reaches, the
+cloud deck in its layer, and the balloon hanging in the layer it is in. On the
+character map there is no sky column and the rows start at the panel's edge.
+
+Stores are bars for fuel, wear and daylight, and a row of marks for ballast
+sacks and pibals. While aloft the panel names the landing the ground wind
+would give now. Bars and marks use only the full block, the middle dot and the
+black square, which CP437 has; an ASCII caller gets `#` and `-`.
 
 **Screens.** Briefing, flight, station, post office, stores, rigging loft,
 chart, almanac, album, guestbook, Daily Drift, Trials, gazette, hall, help.

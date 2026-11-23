@@ -29,7 +29,7 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "0.1.0.dev9"
+VERSION = "0.1.0.dev10"
 DOOR_API = 5
 MIN_WIDTH, MIN_HEIGHT = 80, 24
 MAX_DIMENSION = 1000
@@ -1847,7 +1847,7 @@ def _rgb(ink):
 
 
 _ASCII_GLYPHS = {HALF_BLOCK: "#", LOWER_BLOCK: "#", "\u2588": "#", "\u2591": ".", "\u2592": ":", "\u2593": "#",
-                 "\u00b7": "-", "\u2022": "*", "\u00b0": "o"}
+                 "\u00b7": "-", "\u2022": "*", "\u00b0": "o", "\u25a0": "#"}
 
 
 def safe_glyph(ch: str) -> str:
@@ -1923,6 +1923,17 @@ class Screen:
             else:
                 self.fg[k] = _rgb(rgb)
             self._cells = None
+
+    def pixel_row(self, x: int, y: int, tops, bottoms) -> None:
+        """A run of pixel cells along one row: the upper and lower colour of each. For whole pictures."""
+        if not 0 <= y < self.height:
+            return
+        k, width = y * self.width, self.width
+        for i in range(len(tops)):
+            if 0 <= x + i < width:
+                self.ch[k + x + i], self.fg[k + x + i], self.bg[k + x + i] = HALF_BLOCK, tops[i], bottoms[i]
+                self.split[k + x + i] = 1
+        self._cells = None
 
     def over(self, x: int, y: int, ch: str, fg="bright", darken: float = 0.6) -> None:
         """A glyph on top of pixels: it takes the cell, on the darkened mean of what was there."""
@@ -2276,18 +2287,8 @@ class MapView:
             if key != self._base_key or charted is not None:
                 self._base, self._base_key = self._compose(day, minute, charted), key
             tops, bottoms = self._base
-            width = screen.width
             for r in range(rows):
-                sy = top + r
-                if not 0 <= sy < screen.height:
-                    continue
-                k = sy * width + left
-                t_row, b_row = tops[r], bottoms[r]
-                for c in range(cols):
-                    if 0 <= left + c < width:
-                        screen.ch[k + c], screen.fg[k + c], screen.bg[k + c] = HALF_BLOCK, t_row[c], b_row[c]
-                        screen.split[k + c] = 1
-            screen._cells = None
+                screen.pixel_row(left, top + r, tops[r], bottoms[r])
             return
         frame = self.weather.frame(day, minute)
         cw, ch = MAP_CELL_KM
@@ -2375,28 +2376,20 @@ class MapView:
             self._draw_wind_glyphs(screen)
             return
         tops, bottoms = self._base
-        width, left, top = screen.width, self.left, self.top
+        left, top = self.left, self.top
         for _, _, _, trail in self._streaks:
             n = len(trail)
             for i, (px, py) in enumerate(trail):
-                sx, sy = left + px, top + (py >> 1)
-                if not (0 <= sx < width and 0 <= sy < screen.height):
-                    continue
                 base = (bottoms if py & 1 else tops)[py >> 1][px]
                 t = STREAK_FAINT + (STREAK_BRIGHT - STREAK_FAINT) * (i + 1) / n
-                c = (int(base[0] + (240 - base[0]) * t), int(base[1] + (247 - base[1]) * t),
-                     int(base[2] + (255 - base[2]) * t))
-                k = sy * width + sx
-                if py & 1:
-                    screen.bg[k] = c
-                else:
-                    screen.fg[k] = c
-        screen._cells = None
+                screen.pixel(left + px, top * 2 + py, (int(base[0] + (240 - base[0]) * t),
+                                                       int(base[1] + (247 - base[1]) * t),
+                                                       int(base[2] + (255 - base[2]) * t)))
 
     def _draw_wind_glyphs(self, screen: Screen) -> None:
         """The character map's reading of the wind: a line along it, here and there. It holds still."""
-        for r in range(1, self.rows, 3):
-            for c in range(2 + (r // 3 % 2) * 3, self.cols, 6):
+        for r in range(1, self.rows, 4):
+            for c in range(3 + (r // 4 % 2) * 5, self.cols, 10):
                 vx, vy = self._wind_at(c + 0.5, r * 2 + 1.0)
                 ax, ay = abs(vx), abs(vy)
                 if ax + ay < 4.0:
@@ -2407,7 +2400,7 @@ class MapView:
                     glyph = "|"
                 else:
                     glyph = "\\" if (vx > 0) == (vy > 0) else "/"
-                screen.put(self.left + c, self.top + r, glyph, "bright")
+                screen.put(self.left + c, self.top + r, glyph, "text")
 
     def mark(self, screen: Screen, wx: float, wy: float, glyph: str, ink, force: bool = False):
         """Put a glyph on the place. Returns its cell, or None if it is off the map or the cell is taken."""
@@ -2469,6 +2462,10 @@ class MapView:
 
 PLAIN_SAVE_VERSION = 1
 PLAIN_HORIZON = 6                    # turns a track looks ahead: the first instruments
+PANEL_SMALL, PANEL_WIDE = 26, 40     # columns the panel takes: at 80 x 24, and from 132 x 40 up
+SKY_COLS = 8                         # the sky column of the sounding: this wide, two rows a layer
+_SKY_RAMP = ((18, 28, 74), (40, 88, 168), (100, 160, 224), (172, 210, 242))
+_BAR_RAMP = ((90, 170, 220), (120, 220, 170), (250, 210, 110), (250, 130, 90))
 POST_CHOICES = 3                     # destinations on offer at once
 STATION_REACH_KM = 150.0             # a town or station sharpens the forecast this far out
 _TRACK_ROLES = {"sink": "cool", "hold": "accent", "climb": "warm", "launch": "accent", "jettison": "warm"}
@@ -2856,8 +2853,10 @@ class PlainFlight:
         phase = self.phase()
         # The layout follows the terminal: a bigger window is a bigger map.
         # At 80 x 24 the map is 52 x 16 with the panel beside it and seven rows below.
-        self.map_cols, self.map_rows = s.width - 28, s.height - 8
-        self.panel_col, base, wide = s.width - 25, s.height - 7, s.width - 2
+        self.tier = layout_tier(s.width, s.height)
+        panel = PANEL_SMALL if self.tier == "small" else PANEL_WIDE
+        self.map_cols, self.map_rows = s.width - panel - 2, s.height - 8
+        self.panel_col, base, wide = s.width - panel + 1, s.height - 7, s.width - 2
         out = [s._line(0, 1, "FAIR WINDS", "accent"),
                s._line(0, 13, f"Day {state.day}  {clock_text(state.minute)}", "text")]
         distance, toward, nearest = self.bearings()[0]
@@ -3005,7 +3004,26 @@ class PlainFlight:
                 view.label(screen, cell, place["name"], "accent")
         return []
 
+    def layer_winds(self) -> dict:
+        """For each layer here: (vx, vy, read) as the pilot knows it, or None where the ground fills it."""
+        state = self.state
+        frame = self.weather.frame(state.day, state.minute)
+        guess = self.weather.frame(state.day, state.minute, UNREAD_LEAD, self.coverage(state.x, state.y))
+        low = self.engine.lowest_open(state.x, state.y)
+        here = state.layer if state.status == "aloft" else 0
+        out = {}
+        for layer in range(1, LAYERS + 1):
+            if layer < low:
+                out[layer] = None
+                continue
+            read = layer == here or (here == 0 and layer == low) or state.pibal_until >= state.turn
+            vx, vy = (frame if read else guess).wind(state.x, state.y, layer)
+            out[layer] = (vx, vy, read)
+        return out
+
     def _draw_panel(self, s: "Session", phase: str) -> list[str]:
+        if self.tier != "small":
+            return self._draw_sounding(s, phase)
         state, col = self.state, self.panel_col
         offered = self.engine.actions(state)
         frame = self.weather.frame(state.day, state.minute)
@@ -3057,6 +3075,153 @@ class PlainFlight:
         for i, (distance, toward, place) in enumerate(self.bearings()[:POST_CHOICES]):
             out.append(s._line(14 + i, col, f"# {place['name'][:14]:<14}{distance:>4.0f} {toward}", "accent" if i == 0 else "text"))
         return out
+
+    def _draw_sounding(self, s: "Session", phase: str) -> list[str]:
+        """The panel from 132 x 40 up: a slice of sky with the balloon in it, and the wind in every layer."""
+        state, col, screen = self.state, self.panel_col, s.frame
+        offered = self.engine.actions(state)
+        frame = self.weather.frame(state.day, state.minute)
+        low, top = self.engine.lowest_open(state.x, state.y), self.engine.top_layer(state)
+        here = state.layer if state.status == "aloft" else 0
+        winds = self.layer_winds()
+        picked = None
+        if self.choice in ("hold", "climb", "sink", "launch", "jettison") and self.choice in offered:
+            picked = self.preview(self.choice)["layer"]
+        costs = {}
+        for action in ("sink", "hold", "climb", "launch"):
+            if action in offered:
+                costs[self.engine.preview(state, action, 1)["layer"]] = offered[action]
+        cover, deck = frame.cloud(state.x, state.y)
+        s._line(1, col, "SOUNDING", "accent")
+        s._line(1, col + 9, "the wind above you", "dim")
+
+        # The sky: four pixels to a layer, the jet at the top. Ground fills
+        # the layers it reaches, the cloud deck sits in its own, and the
+        # balloon hangs where it is.
+        first = 2
+        if self.map.pixels:
+            for py in range(LAYERS * 4):
+                layer = LAYERS - py // 4
+                t = py / (LAYERS * 4 - 1) * (len(_SKY_RAMP) - 1)
+                i = min(len(_SKY_RAMP) - 2, int(t))
+                sky = _mix(_SKY_RAMP[i], _SKY_RAMP[i + 1], t - i)
+                if py % 4 == 0:
+                    sky = _mix(sky, (10, 16, 40), 0.22)             # a faint line where one layer ends
+                for px in range(SKY_COLS):
+                    c = sky
+                    if layer < low:
+                        c = (98, 150, 92) if (py % 4 == 0 and layer == low - 1) else (58, 104, 72)
+                    elif layer == deck and cover > 0.2 and (px + py) % 3 != 0 and py % 4 in (1, 2):
+                        c = _mix(sky, (248, 250, 253), min(0.9, 0.4 + cover * 0.5))
+                    screen.pixel(col + px, first * 2 + py, c)
+            if here:
+                by = first * 2 + (LAYERS - here) * 4
+                for dx, dy, c in ((3, 0, (244, 112, 92)), (4, 0, (248, 236, 206)), (2, 1, (244, 112, 92)),
+                                  (3, 1, (248, 236, 206)), (4, 1, (244, 112, 92)), (5, 1, (248, 236, 206)),
+                                  (3, 2, (244, 112, 92)), (4, 2, (248, 236, 206)), (3, 3, (86, 58, 40)),
+                                  (4, 3, (86, 58, 40))):
+                    screen.pixel(col + dx, by + dy, c)
+        text = col + (SKY_COLS + 1 if self.map.pixels else 0)
+        for layer in range(LAYERS, 0, -1):
+            row = first + (LAYERS - layer) * 2
+            mark = ">" if layer == here else "*" if layer == picked else " "
+            ink = "bright" if layer == here else "accent" if layer == picked else "text" if layer <= top else "dim"
+            wind = winds[layer]
+            if wind is None:
+                s._line(row, text, f"{mark}{layer} {LAYER_NAMES[layer - 1]:<8}ground", "dim")
+                continue
+            vx, vy, read = wind
+            speed = math.sqrt(vx * vx + vy * vy)
+            cost = f"{costs[layer]:>3}" if layer in costs else "   "
+            s._line(row, text, f"{mark}{layer} {LAYER_NAMES[layer - 1]:<8}{' ' if read else '~'}{compass(vx, vy):>3}"
+                               f"{speed:>4.0f}{cost}", ink)
+            cap = WIND_CAP[layer - 1]
+            filled = max(1, min(10, round(speed / cap * 10)))
+            t = min(1.0, speed / 100.0) * (len(_BAR_RAMP) - 1)
+            i = min(len(_BAR_RAMP) - 2, int(t))
+            bar = _mix(_BAR_RAMP[i], _BAR_RAMP[i + 1], t - i)
+            for n in range(10):
+                screen.put(text + 2 + n, row + 1, "\u2588" if n < filled else "\u00b7",
+                           (bar if layer <= top else (70, 80, 100)) if n < filled else "dim")
+            if layer == here:
+                note = "you"
+            elif layer > top:
+                note = "needs oxygen" if layer == LAYERS and state.ceiling >= LAYERS - 1 else "out of reach"
+            elif layer == deck and cover > 0.2:
+                note = "cloud deck"
+            elif layer >= frame.icing_layer and not state.iceproof:
+                note = "icing"
+            else:
+                note = ""
+            s._line(row + 1, text + 13, note[:PANEL_WIDE - 15 - (SKY_COLS + 1 if self.map.pixels else 0)],
+                    "accent" if layer == here else "dim")
+        row = first + LAYERS * 2
+        s._line(row, text, "~ forecast, not read", "dim")
+
+        row += 2
+        s._line(row, col, "STORES", "accent")
+
+        def bar(r: int, label: str, value: int, most: int, ink, note: str) -> None:
+            s._line(r, col, f"{label:<8}", "dim")
+            filled = 0 if most <= 0 else max(0, min(14, round(value / most * 14)))
+            for n in range(14):
+                screen.put(col + 9 + n, r, "\u2588" if n < filled else "\u00b7", ink if n < filled else "dim")
+            s._line(r, col + 24, note, "text")
+
+        bar(row + 1, "Fuel", state.fuel, FUEL_START, (255, 176, 84), f"{state.fuel}")
+        s._line(row + 2, col, f"{'Ballast':<8}", "dim")
+        for n in range(BALLAST_START):
+            screen.put(col + 9 + n * 2, row + 2, "\u25a0" if n < state.ballast else "\u00b7",
+                       (226, 206, 160) if n < state.ballast else "dim")
+        s._line(row + 2, col + 24, f"{state.ballast} sacks", "text")
+        s._line(row + 3, col, f"{'Pibals':<8}", "dim")
+        for n in range(PIBALS_START):
+            screen.put(col + 9 + n * 2, row + 3, "\u25a0" if n < state.pibals else "\u00b7",
+                       "cool" if n < state.pibals else "dim")
+        reading = state.pibal_until - state.turn + 1
+        s._line(row + 3, col + 24, f"read: {reading} turns" if reading > 0 and state.status == "aloft"
+                else f"{state.pibals} left", "cool" if reading > 0 and state.status == "aloft" else "text")
+        bar(row + 4, "Wear", state.wear, WEAR_GROUNDED, "warn", f"{state.wear}")
+        left = max(0, DUSK_MINUTE - state.minute)
+        bar(row + 5, "Daylight", left, DUSK_MINUTE - DAWN_MINUTE, (255, 224, 140),
+            f"{left // 60}h{left % 60:02d}" if left else "night")
+
+        row += 7
+        ground = frame.surface_speed(state.x, state.y)
+        landing = self.engine.landing_class(state) if state.status == "aloft" else ""
+        s._line(row, col, f"Ground wind {ground:.0f} km/h" + (f": a {landing} landing" if landing and landing != "ditch"
+                                                                else ": water below" if landing else ""),
+                "warn" if landing in ("hard", "ditch") else "text")
+        sky = "clear" if cover < 0.2 else "broken cloud" if cover < 0.6 else "overcast"
+        if frame.fog(state.x, state.y) > FOG_THRESHOLD:
+            sky = "fog on the ground"
+        reach = self.coverage(state.x, state.y)
+        s._line(row + 1, col, f"Sky {sky}. Forecast {'sharp' if reach > 0.66 else 'fair' if reach > 0.33 else 'vague'}.",
+                "text")
+
+        row += 3
+        s._line(row, col, "POST FOR", "accent")
+        for i, (distance, toward, place) in enumerate(self.bearings()[:POST_CHOICES]):
+            s._line(row + 1 + i, col, f"# {place['name'][:22]:<22}{distance:>5.0f} km {toward}",
+                    "accent" if i == 0 else "text")
+
+        row += 5
+        if self.tier == "wide" and row + 4 < s.height - 7:
+            # The wide tier has room to look ahead: the wind of the layer in view, hour by hour.
+            layer = self.shown_layer()
+            s._line(row, col, "FORECAST", "accent")
+            s._line(row, col + 9, f"layer {layer} here, by the hour", "dim")
+            reach = self.coverage(state.x, state.y)
+            for n in range(6):
+                minute = state.minute + (n + 1) * 60
+                if minute >= MINUTES_PER_DAY:
+                    break
+                vx, vy = self.weather.frame(state.day, minute, (n + 1) * 60.0, reach).wind(state.x, state.y, layer)
+                x = col + n * 6
+                s._line(row + 1, x, f"{minute // 60:02d}h", "dim")
+                s._line(row + 2, x, f"{compass(vx, vy):<4}", "text")
+                s._line(row + 3, x, f"{math.sqrt(vx * vx + vy * vy):<4.0f}", "text")
+        return []
 
 
 PLAIN_HELP = (

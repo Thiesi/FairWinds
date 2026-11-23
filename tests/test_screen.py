@@ -336,10 +336,11 @@ class SessionPainting(unittest.TestCase):
             return lines, you
         for width, height in ((80, 24), (132, 40), (168, 46)):
             lines, (row, col) = layout(width, height)
-            cols, rows = width - 28, height - 8
+            panel = 26 if width < 132 else 40
+            cols, rows = width - panel - 2, height - 8
             self.assertTrue(1 + rows // 4 <= row <= 1 + rows * 3 // 4, "the balloon is in the middle half of the map")
             self.assertTrue(1 + cols // 4 <= col <= 1 + cols * 3 // 4)
-            self.assertIn("LAYER", lines[1][width - 26:])
+            self.assertIn("LAYER" if width < 132 else "SOUNDING", lines[1][width - panel:])
             self.assertIn("[Enter] Launch", lines[height - 1])
             self.assertEqual((self.game.map.cols, self.game.map.rows), (cols, rows), "the map takes what the window gives")
 
