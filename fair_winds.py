@@ -1844,8 +1844,8 @@ class PlainFlight:
             return False
         try:
             text = self.path.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            return False
+        except (FileNotFoundError, NotADirectoryError):
+            return False                  # no file there, or no folder for one to be in
         except (OSError, UnicodeDecodeError):
             return self._set_aside()
         try:
