@@ -505,7 +505,8 @@ callers' maps. Each design has a sixteen-colour reading.
 | Commodore of the Post | 2000 | | |
 
 Points: 8 for a mailbag delivered, 14 for a parcel, 20 for instruments, 3 for
-a clean landing, and one for every ten km flown. Charting will add to them
+a clean landing that ends a flight at least 25 km from where it launched, and
+one for every ten km flown. Charting will add to them
 (S14). A town's first offer of the day is always a mailbag, so there is
 something for a pilot of any grade; an offer above the pilot's grade is shown
 and refused with the grade it wants.
@@ -545,7 +546,7 @@ and the design is always named in words.
 
 **Other pilots on the map.** Each other pilot of the world is drawn where
 their last committed turn left them, as `Q` in the first colour of their
-envelope, at most 24 of them. A session looks again every 20 seconds and at
+envelope, at most 24 of them: the latest to have flown. A session looks again every 20 seconds and at
 each turn. Names, and who is flying today, come with the shared world (S14).
 
 **Not yet tuned.** Thresholds and prices are a first table, as in S12.

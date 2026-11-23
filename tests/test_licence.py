@@ -46,6 +46,7 @@ class Grades(LicenceCase):
         game = self.game()
         self.assertEqual((game.score(), game.grade()), (0, 0))
         item = game.manifest[0]
+        game.key("ENTER")                                # a real launch: the flight has somewhere it began
         self.land_at(game, tuple(item["dest"]), fuel=30)
         self.assertEqual(game.points, fw.POINTS["mail"] + fw.POINTS["clean"])
         game.total_km = 250.0
@@ -53,6 +54,26 @@ class Grades(LicenceCase):
         game.state = dataclasses.replace(game.state, distance=49.0)
         self.assertEqual(game.score(), game.points + 29)
         self.assertEqual(support.stored(self.folder)["points"], game.points)
+
+    def test_hopping_up_and_down_earns_nothing(self):
+        game = self.game()
+        self.empty(game)
+        home = game.here()
+        for _ in range(4):
+            game.key("ENTER")
+            self.assertEqual(game.state.status, "aloft")
+            self.land_at(game, home, fuel=30)            # down again where it went up
+            self.assertEqual(game.state.status, "ground")
+            game.state = dataclasses.replace(game.state, turn=0)
+        self.assertEqual(game.points, 0)
+        game.key("ENTER")
+        far = min((ref for ref in fw.places_near(game.world, game.state.x, game.state.y, skip=home)),
+                  key=lambda ref: 0)
+        self.land_at(game, far, fuel=30)
+        self.assertEqual(game.points, fw.POINTS["clean"], "a flight that went somewhere and came down clean does")
+        game.close()
+        again = self.game()
+        self.assertEqual(again.lift_off, game.lift_off, "and where a flight began is kept with it")
 
     def test_a_rough_landing_earns_no_landing_point(self):
         game = self.game()
@@ -486,6 +507,66 @@ class Others(LicenceCase):
         second = fw.PlainFlight(launch(user_id=2, timezone="UTC"), self.folder, now=self.clock)
         self.assertEqual(second.others, [])
         self.assertTrue(second.saved_ok)
+
+    def test_the_latest_to_fly_are_the_ones_drawn(self):
+        import sqlite3
+        for user in (5, 9, 2):
+            game = fw.PlainFlight(launch(user_id=user, timezone="UTC"), self.folder, now=self.clock)
+            game.key("ENTER")
+            game.close()
+        db = sqlite3.connect(str(next(self.folder.glob("fair_winds-*.db"))))
+        for user, at in ((5, 300.0), (9, 100.0), (2, 200.0)):
+            db.execute("UPDATE turns SET at=? WHERE user_id=?", (at, user))
+            db.execute("UPDATE flights SET state=json_set(state, '$.x', ?) WHERE user_id=?", (float(user), user))
+        db.commit()
+        db.close()
+        store = fw.Store(self.folder, game.world.seed, "node")
+        order = [json.loads(state)["x"] for _, state in store.others(77)]
+        self.assertEqual(order, [5.0, 2.0, 9.0], "by when they last flew, not by their number")
+
+    def test_numbers_that_are_not_numbers_in_another_record_break_nothing(self):
+        import sqlite3
+        first = self.game(user_id=1)
+        first.key("ENTER")
+        first.close()
+        path = str(next(self.folder.glob("fair_winds-*.db")))
+        for career, state in (('{"design": {"pattern": "rings", "colours": [Infinity, 0, 0, 0]}}', None),
+                              (None, '{"x": Infinity, "y": 5.0}'), (None, '{"x": NaN, "y": NaN}'),
+                              ('[1, 2]', None), (None, '"text"')):
+            db = sqlite3.connect(path)
+            if career is not None:
+                db.execute("UPDATE pilots SET career=? WHERE user_id=1", (career,))
+            if state is not None:
+                db.execute("UPDATE flights SET state=? WHERE user_id=1", (state,))
+            db.commit()
+            db.close()
+            second = fw.PlainFlight(launch(user_id=2, timezone="UTC"), self.folder, now=self.clock)
+            self.assertTrue(second.saved_ok)
+            for x, y, _ in second.others:
+                self.assertTrue(x == x and y == y and abs(x) < 1e9)
+            self.assertFalse(second._day_may_have_opened(), "and nothing keeps the screen repainting")
+            second.close()
+
+    def test_ones_own_record_with_such_numbers_is_damaged_not_a_crash(self):
+        import sqlite3
+        game = self.game()
+        game.key("ENTER")
+        game.close()
+        path = str(next(self.folder.glob("fair_winds-*.db")))
+        db = sqlite3.connect(path)
+        whole = db.execute("SELECT career FROM pilots").fetchone()[0]
+        db.close()
+        for spoil in (lambda c: c.update(gear=[1, 2]), lambda c: c.update(points=float("inf")),
+                      lambda c: c.update(postmarks=float("inf")), lambda c: c.update(lift_off=[float("nan")])):
+            career = json.loads(whole)
+            spoil(career)
+            db = sqlite3.connect(path)
+            db.execute("UPDATE pilots SET career=?", (json.dumps(career),))
+            db.commit()
+            db.close()
+            again = self.game()
+            self.assertFalse(again.saved_ok, "it is said to be unreadable, and it is not written over")
+            again.close()
 
     def test_no_more_than_so_many_are_drawn(self):
         for user in range(1, fw.OTHERS_SHOWN + 6):

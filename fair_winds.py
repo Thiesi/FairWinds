@@ -2760,6 +2760,7 @@ def price_of(item: str, ref: tuple[str, int]) -> int:
 GRADES = (("Fledgling", 0), ("Aeronaut", 60), ("Pilot", 160), ("Navigator", 360), ("Wind-reader", 700),
           ("Master", 1200), ("Commodore of the Post", 2000))          # the name, and the points it takes
 POINTS = {"mail": 8, "parcel": 14, "fragile": 20, "clean": 3, "km": 0.1}     # a delivery by kind, a clean landing, a km
+CLEAN_LANDING_KM = 25.0              # a clean landing counts when it ends a flight at least this far from its launch
 CARGO_GRADE = {"mail": 0, "parcel": 1, "fragile": 2}                  # the grade a kind of cargo is entrusted at
 # Each track's first tier is what every balloon starts with. A later tier names its price in postmarks, the
 # grade it is sold at, and sometimes a tier of another track it needs first.
@@ -2810,8 +2811,8 @@ def gear_text(track: str, tier: dict) -> str:
     if track == "tanks":
         return f"hold {tier['tank']} fuel"
     if track == "instruments":
-        reads = ("reads your layer", "reads the layers next to yours")[tier["reads"]] if tier["reads"] < 2 \
-            else "reads every layer"
+        reads = "reads every layer" if tier["reads"] >= LAYERS else \
+            ("reads your layer", "reads the layers next to yours")[min(tier["reads"], 1)]
         return f"tracks {tier['horizon']} turns ahead, {reads}"
     if track == "wireless":
         return f"forecasts from places {tier['reach']:.0f} km off"
@@ -2831,8 +2832,8 @@ def design_of(value) -> dict:
         pattern, colours = value["pattern"], [int(c) for c in value["colours"]]
         if pattern in PATTERNS and len(colours) == 4 and all(0 <= c < len(ENVELOPE_COLOURS) for c in colours):
             return {"pattern": pattern, "colours": colours}
-    except (KeyError, TypeError, ValueError):
-        pass
+    except (KeyError, TypeError, ValueError, ArithmeticError):
+        pass                              # ArithmeticError: a stored number may be an infinity
     return {"pattern": FIRST_DESIGN["pattern"], "colours": list(FIRST_DESIGN["colours"])}
 
 
@@ -3045,8 +3046,10 @@ class Store:
 
     def others(self, user_id: int) -> list[tuple[str, str]]:
         """Every other pilot of this world: career and flight as stored text, the latest to fly first."""
-        return self.db.execute("SELECT p.career, f.state FROM pilots p JOIN flights f USING (user_id)"
-                               " WHERE p.user_id<>? ORDER BY f.rowid DESC", (user_id,)).fetchall()
+        return self.db.execute(
+            "SELECT p.career, f.state FROM pilots p JOIN flights f USING (user_id) WHERE p.user_id<>?"
+            " ORDER BY COALESCE((SELECT max(at) FROM turns t WHERE t.user_id=p.user_id), 0) DESC, p.user_id",
+            (user_id,)).fetchall()
 
     def journal(self, user_id: int) -> list[tuple]:
         """The committed turns of the pilot's current flying day: (seq, day, turn, action)."""
@@ -3271,6 +3274,7 @@ class PlainFlight:
         self.deliveries, self.days_flown, self.total_km = 0, 0, 0.0
         self.postmarks, self.manifest, self.taken, self.next_id = START_POSTMARKS, [], [], 1
         self.gear, self.points, self.design = {track: 0 for track in TRACKS}, 0, design_of(None)
+        self.lift_off = None
         self._fit()
         home = ("town", self.world.start_town)
         for dest in places_near(self.world, start["x"], start["y"], skip=home)[:POST_CHOICES]:
@@ -3358,12 +3362,12 @@ class PlainFlight:
         try:
             self._take(json.loads(row[0]), json.loads(row[1]))
             return True
-        except (ValueError, KeyError, TypeError, IndexError):
+        except (ValueError, KeyError, TypeError, IndexError, AttributeError, ArithmeticError):
             diagnose(f"the record of pilot {self.launch.user_id} cannot be used")
             return "damaged"
 
     def _take(self, career: dict, state: dict):
-        """Set the game from stored data. Raises ValueError, KeyError, TypeError or IndexError if it is not a game."""
+        """Set the game from stored data. If it is not a game it raises one of the errors _load reads as damage."""
         flight = FlightState.from_dict(state)
         deliveries, days_flown, total_km = int(career["deliveries"]), int(career["days_flown"]), float(career["total_km"])
         log = [str(line) for line in career.get("log", [])][-3:]
@@ -3399,6 +3403,8 @@ class PlainFlight:
         self.postmarks, self.next_id = postmarks, next_id
         self.deliveries, self.days_flown, self.total_km, self.log = deliveries, days_flown, total_km, log
         self.gear, self.points, self.design = gear, max(0, points), design_of(career.get("design"))
+        spot = career.get("lift_off")
+        self.lift_off = [float(spot[0]), float(spot[1])] if spot else None
         self._fit()
 
     def _cargo_item(self, item: dict) -> dict:
@@ -3427,7 +3433,7 @@ class PlainFlight:
             if data["version"] != PLAIN_SAVE_VERSION or data["seed"] != self.world.seed:
                 raise ValueError("not this world's save")
             self._take(data, data["state"])
-        except (ValueError, KeyError, TypeError, IndexError):
+        except (ValueError, KeyError, TypeError, IndexError, AttributeError, ArithmeticError):
             # It is left where it is, and both the pilot and the SysOp are told.
             diagnose(f"the old save file {self.legacy.name} cannot be used; it is left in place")
             self.opening_notice = "An older saved game could not be read. This is a new one; the file is kept."
@@ -3437,7 +3443,7 @@ class PlainFlight:
 
     def _career(self) -> dict:
         return {"manifest": self.manifest, "taken": self.taken, "postmarks": self.postmarks, "next_id": self.next_id,
-                "gear": self.gear, "points": self.points, "design": self.design,
+                "gear": self.gear, "points": self.points, "design": self.design, "lift_off": self.lift_off,
                 "deliveries": self.deliveries, "days_flown": self.days_flown, "total_km": self.total_km,
                 "log": self.log[-3:], "dated": self._dated}
 
@@ -3782,8 +3788,10 @@ class PlainFlight:
             try:
                 data = json.loads(state)
                 colour = design_rgb(design_of(json.loads(career).get("design")))[0]
-                self.others.append((float(data["x"]), float(data["y"]), colour))
-            except (ValueError, KeyError, TypeError, AttributeError):
+                x, y = float(data["x"]), float(data["y"])
+                if math.isfinite(x) and math.isfinite(y):
+                    self.others.append((x, y, colour))
+            except (ValueError, KeyError, TypeError, AttributeError, ArithmeticError):
                 continue                  # somebody else's record is somebody else's trouble
         del self.others[OTHERS_SHOWN:]
 
@@ -3928,8 +3936,13 @@ class PlainFlight:
                 self._say(f"{stamp}  {line}")
         self._lost_cargo()
         landed = before.status == "aloft" and self.state.status != "aloft"
-        if any(event[0] == "land" and event[1] == "clean" for event in result.events):
-            self.points += POINTS["clean"]
+        if action == "launch":
+            self.lift_off = [before.x, before.y]
+        if any(event[0] == "land" and event[1] == "clean" for event in result.events) and self.lift_off is not None:
+            # Hopping up and down beside the loft is not airmanship: the flight has to have gone somewhere.
+            far = math.sqrt((self.state.x - self.lift_off[0]) ** 2 + (self.state.y - self.lift_off[1]) ** 2)
+            if far >= CLEAN_LANDING_KM:
+                self.points += POINTS["clean"]
         if landed:
             self._landed()
         self._promote()
