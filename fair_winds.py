@@ -5,14 +5,15 @@ One file, standard library only, Python 3.11 or newer. Runs as a native stdio
 door under NetBBS (launch details in the JSON named by NETBBS_DOOR_INFO), or
 standalone in a terminal for development.
 
-This build reaches slice S03 of docs/design.md: the host adapter and terminal
-lifecycle, the world generator with its terrain cache, and the weather. The door opens,
-shows what the host told it, and closes cleanly. The game arrives in the
-slices that follow.
+This build reaches slice S04 of docs/design.md: the host adapter and terminal
+lifecycle, the world generator with its terrain cache, the weather, and the
+turn engine. The door opens, shows what the host told it, and closes cleanly.
+The game arrives in the slices that follow.
 """
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
 import json
 import math
@@ -27,7 +28,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "0.1.0.dev3"
+VERSION = "0.1.0.dev4"
 DOOR_API = 5
 MIN_WIDTH, MIN_HEIGHT = 80, 24
 MAX_DIMENSION = 1000
@@ -1134,6 +1135,395 @@ def compass(vx: float, vy: float) -> str:
     else:                                    # from the south half
         index = 8 - step if fx >= 0 else 8 + step
     return names[index]
+
+
+# --------------------------------------------------------------------------
+# Flight: the turn engine (docs/systems.md, section 5). A turn is fifteen
+# minutes. Every number is in the tables below, and every chance is a keyed
+# draw, so the same turn always ends the same way.
+# --------------------------------------------------------------------------
+
+DAWN_MINUTE = 6 * 60
+DUSK_MINUTE = 20 * 60
+DAY_TURNS = (MINUTES_PER_DAY - DAWN_MINUTE) // TURN_MINUTES      # 72: dawn to midnight
+SOLAR_MINUTES = (11 * 60, 15 * 60)                               # free lift
+
+FUEL_START, BALLAST_START, PIBALS_START = 60, 5, 3
+COST_LAUNCH = 2
+COST_HOLD_DAY, COST_HOLD_NIGHT = 1, 2
+COST_CLIMB = 3
+COST_CLIMB_EXTRA = {5: 1, 6: 2}             # on top, for climbing into these layers
+PIBAL_TURNS = 4
+UNREAD_LEAD = 120.0                         # minutes: how stale the forecast of an unread layer is
+TURN_HOURS = TURN_MINUTES / 60.0
+
+LANDING_CLASSES = ("clean", "rough", "hard")
+LANDING_WIND = (15.0, 30.0)                 # up to here clean, up to here rough, beyond hard
+LANDING_WEAR = {"clean": 0, "rough": 10, "hard": 30}
+WEAR_GROUNDED = 100
+SQUALL_THRESHOLD = 0.4
+SQUALL_WEAR = 6
+FOG_THRESHOLD = 0.3
+ROTOR_CHANCE = 0.35
+ROTOR_WEAR = 2
+ROTOR_REACH_KM = 15.0
+RIDGE_WEAR = 2
+PLACE_RADIUS_KM = 7.5                       # this close to a town or station is at it
+
+ACTIONS = ("launch", "hold", "climb", "sink", "jettison", "land", "pibal")
+
+
+@dataclass(frozen=True)
+class FlightState:
+    """A balloon between two turns. Frozen: a turn makes a new one."""
+    x: float
+    y: float
+    day: int = 1
+    turn: int = 0                 # turns since dawn
+    layer: int = 0                # 0 on the ground
+    status: str = "ground"        # ground, aloft, stranded, ditched
+    fuel: int = FUEL_START
+    ballast: int = BALLAST_START
+    pibals: int = PIBALS_START
+    wear: int = 0
+    pibal_until: int = -1         # true winds in every layer through this turn
+    distance: float = 0.0         # km drifted today
+    cargo: tuple = ()             # (id, fragile, condition) with condition "ok" or "damaged"
+    ceiling: int = 3              # highest layer the envelope reaches
+    oxygen: bool = False
+    night_gear: bool = False
+    iceproof: bool = False
+    climb_cost: int = COST_CLIMB
+
+    @property
+    def minute(self) -> int:
+        return DAWN_MINUTE + self.turn * TURN_MINUTES
+
+    @property
+    def grounded(self) -> bool:
+        """Too worn to fly until repaired."""
+        return self.wear >= WEAR_GROUNDED
+
+    def to_dict(self) -> dict:
+        data = dataclasses.asdict(self)
+        data["cargo"] = [list(item) for item in self.cargo]
+        return data
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "FlightState":
+        fields = {f.name for f in dataclasses.fields(cls)}
+        kept = {k: v for k, v in data.items() if k in fields}
+        kept["cargo"] = tuple(tuple(item) for item in kept.get("cargo", ()))
+        return cls(**kept)
+
+
+@dataclass(frozen=True)
+class TurnResult:
+    state: FlightState
+    events: tuple                 # (code, detail...) in the order they happened
+
+
+class Flight:
+    """The rules of flying, for one pilot in one world.
+
+    `actions(state)` says what can be done and what it costs. `step(state,
+    action)` plays one turn against the true weather and returns the new
+    state. `preview(state, action)` follows the forecast instead.
+    """
+
+    def __init__(self, world: World, weather: Weather, pilot_key: str):
+        self.world, self.weather, self.pilot_key = world, weather, pilot_key
+        self._places = [(t["x"], t["y"], "town", i) for i, t in enumerate(world.towns)]
+        self._places += [(s["x"], s["y"], "station", i) for i, s in enumerate(world.stations)]
+
+    # -- the ground and the air above it ------------------------------------
+
+    def lowest_open(self, x: float, y: float) -> int:
+        """The lowest layer the terrain here leaves open: 1 over lowland."""
+        height = self.world.sample(x, y)[0]
+        layer = 1
+        for block in LAYER_BLOCK_M:
+            if block is None or height < block:
+                break
+            layer += 1
+        return layer
+
+    def top_layer(self, state: FlightState) -> int:
+        return min(LAYERS if state.oxygen else LAYERS - 1, state.ceiling)
+
+    def place(self, x: float, y: float):
+        """The town or station here, as (kind, index), or None in the wild."""
+        for px, py, kind, index in self._places:
+            if (x - px) * (x - px) + (y - py) * (y - py) <= PLACE_RADIUS_KM * PLACE_RADIUS_KM:
+                return kind, index
+        return None
+
+    def over_water(self, x: float, y: float) -> bool:
+        return self.world.sample(x, y)[1] < SHORE
+
+    def is_night(self, state: FlightState) -> bool:
+        return state.minute >= DUSK_MINUTE
+
+    # -- costs ---------------------------------------------------------------
+
+    def hold_cost(self, state: FlightState, layer: int) -> int:
+        minute = state.minute
+        if minute >= DUSK_MINUTE:
+            cost = COST_HOLD_DAY if state.night_gear else COST_HOLD_NIGHT
+        elif SOLAR_MINUTES[0] <= minute < SOLAR_MINUTES[1]:
+            cost = 0
+        else:
+            cost = COST_HOLD_DAY
+        if layer >= self.weather.frame(state.day, minute).icing_layer and not state.iceproof:
+            cost = max(1, cost) * 2
+        return cost
+
+    def climb_cost(self, state: FlightState, to_layer: int) -> int:
+        return state.climb_cost + COST_CLIMB_EXTRA.get(to_layer, 0)
+
+    def landing_class(self, state: FlightState) -> str:
+        """How a landing here and now would go: clean, rough, hard or ditch."""
+        if self.over_water(state.x, state.y):
+            return "ditch"
+        frame = self.weather.frame(state.day, state.minute)
+        wind = frame.surface_speed(state.x, state.y)
+        rank = 0 if wind <= LANDING_WIND[0] else 1 if wind <= LANDING_WIND[1] else 2
+        lit = self.place(state.x, state.y) is not None
+        if self.is_night(state) and not lit and not state.night_gear:
+            rank += 1
+        if frame.fog(state.x, state.y) > FOG_THRESHOLD and not lit:
+            rank += 1
+        return LANDING_CLASSES[min(rank, 2)]
+
+    def actions(self, state: FlightState) -> dict:
+        """What the pilot may do now, and its cost in fuel."""
+        out: dict[str, int] = {}
+        if state.turn >= DAY_TURNS:
+            return out
+        if state.status == "ground":
+            low = self.lowest_open(state.x, state.y)
+            if not state.grounded and state.fuel >= COST_LAUNCH and low <= self.top_layer(state):
+                out["launch"] = COST_LAUNCH
+            return out
+        if state.status != "aloft":
+            return out
+        low, top = self.lowest_open(state.x, state.y), self.top_layer(state)
+        hold = self.hold_cost(state, state.layer)
+        if hold <= state.fuel:
+            out["hold"] = hold
+        if state.layer < top:
+            cost = self.climb_cost(state, state.layer + 1)
+            if cost <= state.fuel:
+                out["climb"] = cost
+            if state.ballast > 0:
+                out["jettison"] = 0
+        if state.layer > low:
+            out["sink"] = 0
+        if state.pibals > 0 and state.pibal_until < state.turn:
+            out["pibal"] = 0
+        if state.layer <= low:
+            # Too much wind to land in is refused while there is any other way to stay up.
+            stay_up = any(a in out for a in ("hold", "climb", "jettison"))
+            if self.landing_class(state) != "hard" or not stay_up:
+                out["land"] = 0
+        return out
+
+    # -- one turn ------------------------------------------------------------
+
+    def _chance(self, state: FlightState, purpose: str) -> float:
+        return draw_unit(self.world.seed, "turn", self.pilot_key, state.day, state.turn, purpose)
+
+    def step(self, state: FlightState, action: str) -> TurnResult:
+        """Play one turn. Raises ValueError for an action that is not on offer."""
+        offered = self.actions(state)
+        if action not in offered:
+            raise ValueError(f"{action} is not possible now")
+        events: list[tuple] = []
+        if action == "pibal":       # reading the air takes no time
+            return TurnResult(dataclasses.replace(state, pibals=state.pibals - 1,
+                                                  pibal_until=state.turn + PIBAL_TURNS - 1), (("pibal",),))
+        if action == "land":
+            # Judged by the weather at the moment it is chosen; then it takes the turn.
+            landed = self._land(state, events)
+            return TurnResult(dataclasses.replace(landed, turn=state.turn + 1), tuple(events))
+
+        cost, layer, ballast = offered[action], state.layer, state.ballast
+        if action == "launch":
+            layer = self.lowest_open(state.x, state.y)
+        elif action in ("climb", "jettison"):
+            layer += 1
+            if action == "jettison":
+                ballast -= 1
+        elif action == "sink":
+            layer -= 1
+        events.append((action, layer, cost))
+        fuel = state.fuel - cost
+        wear = state.wear
+
+        # Drift on the true wind of the layer the balloon is now in.
+        frame = self.weather.frame(state.day, state.minute)
+        vx, vy = frame.wind(state.x, state.y, layer)
+        x, y = state.x + vx * TURN_HOURS, state.y + vy * TURN_HOURS
+        stranded = False
+        need = self.lowest_open(x, y)
+        if need > layer:
+            # High ground ahead fills this layer.
+            if need > self.top_layer(state):
+                x, y = state.x, state.y                 # it cannot be crossed: held in its lee
+                wear += RIDGE_WEAR
+                events.append(("ridge", need))
+            else:
+                while layer < need:
+                    price = self.climb_cost(state, layer + 1) * 2
+                    if fuel >= price:
+                        fuel -= price
+                        events.append(("forced_climb", layer + 1, price))
+                    elif ballast > 0:
+                        ballast -= 1
+                        events.append(("forced_jettison", layer + 1))
+                    else:
+                        stranded = True
+                        break
+                    layer += 1
+        moved = math.sqrt((x - state.x) * (x - state.x) + (y - state.y) * (y - state.y))
+        if moved:
+            events.append(("drift", round(moved, 1), compass(vx, vy)))
+        after = dataclasses.replace(state, x=x, y=y, layer=layer, status="aloft", fuel=fuel, ballast=ballast,
+                                    wear=wear, turn=state.turn + 1, distance=state.distance + moved)
+        if stranded:
+            events.append(("high_ground",))
+            return TurnResult(self._land(after, events, force="hard"), tuple(events))
+
+        # Hazards, each a keyed draw for this pilot, day and turn.
+        low, top = self.lowest_open(x, y), self.top_layer(state)
+        squall = frame.squall(x, y)
+        if squall > SQUALL_THRESHOLD and layer <= 4:
+            up = self._chance(state, "squall") < 0.5
+            shoved = min(top, layer + 1) if up else max(low, layer - 1)
+            after = dataclasses.replace(after, layer=shoved, wear=after.wear + round(SQUALL_WEAR * squall))
+            events.append(("squall", shoved))
+        elif layer <= 2 and self._in_lee(x, y, vx, vy, layer) and self._chance(state, "rotor") < ROTOR_CHANCE:
+            # Rough air behind ground that reaches this layer: it wears the
+            # balloon, and drops it a layer where there is one below.
+            dropped = max(low, layer - 1)
+            after = dataclasses.replace(after, layer=dropped, wear=after.wear + ROTOR_WEAR)
+            events.append(("rotor", dropped))
+
+        if after.turn >= DAY_TURNS:                     # midnight: the day is over, down it comes
+            events.append(("midnight",))
+            return TurnResult(self._land(after, events), tuple(events))
+        return TurnResult(after, tuple(events))
+
+    def _in_lee(self, x: float, y: float, vx: float, vy: float, layer: int) -> bool:
+        """Is there ground upwind, close by, high enough to fill this layer?"""
+        speed = math.sqrt(vx * vx + vy * vy)
+        if speed < 1.0:
+            return False
+        ux, uy = x - vx / speed * ROTOR_REACH_KM, y - vy / speed * ROTOR_REACH_KM
+        return self.world.sample(ux, uy)[0] >= LAYER_BLOCK_M[layer - 1]
+
+    def _land(self, state: FlightState, events: list, force: str | None = None) -> FlightState:
+        """Put the balloon down here. The class decides wear and what the cargo suffers."""
+        kind = force or self.landing_class(state)
+        if kind == "ditch":
+            events.append(("ditch",))
+            return dataclasses.replace(state, layer=0, status="ditched", cargo=())
+        cargo = state.cargo
+        if kind == "rough":
+            cargo = tuple((i, fragile, "damaged" if fragile else cond) for i, fragile, cond in cargo)
+        elif kind == "hard":
+            # Half the cargo is lost: which half is a keyed draw per item.
+            cargo = tuple((i, fragile, "damaged" if fragile else cond) for i, fragile, cond in cargo
+                          if draw_unit(self.world.seed, "turn", self.pilot_key, state.day, state.turn, "cargo", i) < 0.5)
+        place = self.place(state.x, state.y)
+        status = "ground" if place is not None or state.fuel > 0 else "stranded"
+        events.append(("land", kind, place))
+        if status == "stranded":
+            events.append(("stranded",))
+        return dataclasses.replace(state, layer=0, status=status, cargo=cargo,
+                                   wear=min(WEAR_GROUNDED, state.wear + LANDING_WEAR[kind]))
+
+    # -- looking ahead ---------------------------------------------------------
+
+    def preview(self, state: FlightState, action: str, horizon: int, coverage: float = 0.0) -> dict:
+        """Where the forecast says this choice leads: the action, then holding.
+
+        The pilot knows the true wind only where they have read it: in their
+        own layer, the layer a launch enters (they are standing in it), and
+        every layer while a pibal's reading lasts. There the
+        track starts from the truth and looks ahead turn by turn. Any other
+        layer is forecast from a bulletin `UNREAD_LEAD` minutes old, so it is
+        never the truth, not even for the first turn.
+
+        The track follows the fuel and ballast too, so it ends where the
+        flight would. Returns:
+
+          layer    the layer the first turn is flown in
+          cost     the action's cost, or None if it is not on offer
+          points   (x, y, layer) after each turn
+          blocked  True if high ground forces a climb along the way
+          forced   fuel the forced climbs would cost
+          sacks    ballast sacks the forced climbs would spend
+          stop     why the track ends early: "ridge" (ground above the
+                   ceiling), "high_ground" (a forced climb that cannot be
+                   paid for), "fuel" (nothing left to hold with), or None
+        """
+        offered = self.actions(state)
+        if action not in offered or action in ("land", "pibal"):
+            return {"layer": state.layer, "cost": None, "points": [], "blocked": False, "forced": 0, "sacks": 0,
+                    "stop": None}
+        layer = state.layer
+        if action == "launch":
+            layer = self.lowest_open(state.x, state.y)
+        elif action in ("climb", "jettison"):
+            layer += 1
+        elif action == "sink":
+            layer -= 1
+        first = layer
+        # On the ground the pilot stands in the air they would launch into.
+        read = layer == state.layer or action == "launch" or state.pibal_until >= state.turn
+        stale = 0.0 if read else UNREAD_LEAD
+        fuel = state.fuel - offered[action]
+        ballast = state.ballast - (1 if action == "jettison" else 0)
+        x, y, points, blocked, forced, sacks, stop = state.x, state.y, [], False, 0, 0, None
+        top = self.top_layer(state)
+        for i in range(horizon):
+            turn = state.turn + i
+            if turn >= DAY_TURNS:
+                break
+            if i:
+                hold = self.hold_cost(dataclasses.replace(state, turn=turn), layer)
+                if hold > fuel:
+                    stop = "fuel"
+                    break
+                fuel -= hold
+            minute = DAWN_MINUTE + turn * TURN_MINUTES
+            vx, vy = self.weather.frame(state.day, minute, stale + i * TURN_MINUTES, coverage).wind(x, y, layer)
+            nx, ny = x + vx * TURN_HOURS, y + vy * TURN_HOURS
+            need = self.lowest_open(nx, ny)
+            if need > layer:
+                blocked = True
+                if need > top:
+                    stop = "ridge"
+                    break
+                while layer < need:
+                    price = self.climb_cost(state, layer + 1) * 2
+                    if fuel >= price:
+                        fuel -= price
+                        forced += price
+                    elif ballast > 0:
+                        ballast -= 1
+                        sacks += 1
+                    else:
+                        stop = "high_ground"
+                        break
+                    layer += 1
+            x, y = nx, ny
+            points.append((x, y, layer))
+            if stop:
+                break
+        return {"layer": first, "cost": offered[action], "points": points, "blocked": blocked,
+                "forced": forced, "sacks": sacks, "stop": stop}
 
 
 # --------------------------------------------------------------------------

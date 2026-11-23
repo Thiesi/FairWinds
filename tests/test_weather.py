@@ -88,7 +88,7 @@ class Determinism(WeatherCase):
 
     def test_only_the_square_root_comes_from_the_maths_library(self):
         source = DOOR.read_text(encoding="utf-8")
-        section = source[source.index("# Weather: a pure function"):source.index("# Keys: an incremental decoder")]
+        section = source[source.index("# Weather: a pure function"):source.index("# Flight: the turn engine")]
         self.assertEqual(set(re.findall(r"math\.(\w+)", section)), {"sqrt"})
         for word in ("open(", "write", "sqlite", "time.", "random"):
             self.assertNotIn(word, section, "the weather reads and writes nothing")

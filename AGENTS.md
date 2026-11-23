@@ -16,10 +16,15 @@ what the door is. This file says how to work here.
 4. Check the phase trackers on GitHub (issues #1 to #7) for what is done.
 
 **Status:** P0 is complete. S01 (host adapter and terminal lifecycle), S02
-(world generator and terrain cache) and S03 (weather) are built. The door
-opens, shows what the host told it and closes cleanly, and `--world-map <node
-id>` prints a continent. The next slice is S04, the turn engine. There is no
-game yet.
+(world generator and terrain cache), S03 (weather) and S04 (turn engine) are
+built. The door opens, shows what the host told it and closes cleanly, and
+`--world-map <node id>` prints a continent. The engine can fly a whole day, but
+no screen shows it yet. The next slice is S05, the plain flight, which ends in
+the owner's play-test.
+
+For S05's tuning: with the starting balloon, the towns nearest the start town
+are often 150 km and more away, and a simple scripted pilot reaches one only on
+some days. Whether that is a good first flight is for the play-test to judge.
 
 P1 ends in a playtest by the owner (S05). Do not start P2 until the owner has
 said the turn is fun.
