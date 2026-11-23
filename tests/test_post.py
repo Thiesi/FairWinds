@@ -154,6 +154,36 @@ class Carrying(PostCase):
         game.key("1")
         self.assertEqual(len(game.manifest), 1, "and it can be taken again")
 
+    def test_damaged_cargo_does_not_go_back_on_the_shelf(self):
+        game = self.game()
+        self.empty(game)
+        offer = dict(game.offers()[0], kind="fragile")
+        real = fw.contracts_at
+        try:
+            fw.contracts_at = lambda world, ref, day: [offer]
+            game.take(offer)
+            item = game.manifest[0]
+            game.state = dataclasses.replace(game.state, cargo=((item["id"], True, "damaged"),))
+            self.assertEqual(game.take(offer), "That one is damaged: it is yours to deliver now.")
+            self.assertEqual((len(game.manifest), game.state.cargo[0][2]), (1, "damaged"))
+        finally:
+            fw.contracts_at = real
+
+    def test_post_carried_into_a_town_on_foot_is_delivered_there(self):
+        game = self.game()
+        self.empty(game)
+        town = min(game.world.towns, key=lambda t: (t["x"] - game.state.x - 40.0) ** 2 + (t["y"] - game.state.y) ** 2)
+        ref = ("town", game.world.towns.index(town))
+        game._load_cargo({"contract": None, "kind": "mail", "dest": list(ref), "origin": None, "weight": 1,
+                          "payout": 30, "due": 2})
+        game.state = dataclasses.replace(game.state, x=game.state.x + 40.0, status="stranded", fuel=0, turn=30)
+        self.assertEqual(game._nearest(game.world.towns), town)
+        before = game.postmarks
+        game.key("w")
+        self.assertEqual(game.here(), ref)
+        self.assertEqual((game.manifest, game.postmarks), ([], before + int(30 * fw.LATE_SHARE)), "late, after two days")
+        self.assertIn("Delivered to", " ".join(game.log))
+
     def test_the_balloon_lifts_only_so_much(self):
         game = self.game()
         self.empty(game)
@@ -253,13 +283,20 @@ class Carrying(PostCase):
         game.close()
         db = sqlite3.connect(str(next(self.folder.glob("fair_winds-*.db"))))
         career = json.loads(db.execute("SELECT career FROM pilots").fetchone()[0])
-        career["manifest"] = career["manifest"][:1]
-        db.execute("UPDATE pilots SET career=?", (json.dumps(career),))
-        db.commit()
+        whole = json.dumps(career)
         db.close()
-        again = self.game()
-        self.assertFalse(again.saved_ok)
-        self.assertIn("could not be read", again.opening_notice)
+        for spoil in (lambda c: c.update(manifest=c["manifest"][:1]),
+                      lambda c: c["manifest"][0].update(kind="fragile")):
+            career = json.loads(whole)
+            spoil(career)
+            db = sqlite3.connect(str(next(self.folder.glob("fair_winds-*.db"))))
+            db.execute("UPDATE pilots SET career=?", (json.dumps(career),))
+            db.commit()
+            db.close()
+            again = self.game()
+            self.assertFalse(again.saved_ok)
+            self.assertIn("could not be read", again.opening_notice)
+            again.close()
 
     def test_a_pilot_from_before_the_post_office_keeps_their_post_as_mailbags(self):
         game = self.game()
@@ -354,8 +391,44 @@ class Relief(PostCase):
         self.assertFalse(game.relief_due(), "forty postmarks buy the fuel")
         game.postmarks = 24
         self.assertTrue(game.relief_due())
-        game.state = dataclasses.replace(game.state, fuel=fw.RELIEF["fuel"])
-        self.assertFalse(game.relief_due(), "enough fuel to fly a run")
+        game.state = dataclasses.replace(game.state, fuel=fw.RELIEF["below"] - 1)
+        game.postmarks = 0
+        self.assertTrue(game.relief_due())
+        game.state = dataclasses.replace(game.state, fuel=fw.RELIEF["below"])
+        self.assertFalse(game.relief_due(), "enough fuel to fly a short run on: it is not a top-up")
+        self.assertIn("launch", game.offered())
+
+    def test_a_pilot_who_took_the_relief_run_can_come_back_the_same_day(self):
+        game = self.game()
+        game.postmarks = 0
+        game.state = dataclasses.replace(game.state, fuel=0)
+        game.key("o")
+        game.key("r")
+        self.assertEqual(game.state.fuel, fw.RELIEF["fuel"])
+        stored = support.stored(self.folder)
+        self.assertEqual(stored["taken"], [["relief", 0, 1, 0]])
+        game.close()
+        again = self.game()                              # this is what crashed: the line was shaped differently
+        self.assertTrue(again.saved_ok)
+        self.assertEqual((again.state.fuel, again.taken), (fw.RELIEF["fuel"], [["relief", 0, 1, 0]]))
+        again.state = dataclasses.replace(again.state, fuel=0)
+        self.assertFalse(again.relief_due(), "and it is still once a day")
+        again.key("n")
+        self.assertEqual(again.taken, [])
+
+    def test_a_record_with_a_line_cut_short_is_damaged_not_a_crash(self):
+        game = self.game()
+        game.key("ENTER")
+        game.close()
+        db = sqlite3.connect(str(next(self.folder.glob("fair_winds-*.db"))))
+        career = json.loads(db.execute("SELECT career FROM pilots").fetchone()[0])
+        career["taken"] = [["relief", 1]]
+        db.execute("UPDATE pilots SET career=?", (json.dumps(career),))
+        db.commit()
+        db.close()
+        again = self.game()
+        self.assertFalse(again.saved_ok)
+        self.assertIn("could not be read", again.opening_notice)
 
     def test_the_relief_run(self):
         game = self.game()

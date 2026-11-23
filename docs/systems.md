@@ -437,12 +437,14 @@ A town's post office offers three to five contracts on a world day, a station
 two mailbags. Each is for a different one of the six nearest places, so the
 day's wind has several to choose among. The offers are keyed draws on the
 world, the place and the day: the same for every caller, and each pilot may
-carry each once. A contract taken can be put back at the same counter. A new
+carry each once. A contract taken can be put back at the same counter, unless
+the cargo has been damaged since. Cargo carried into a town on foot is
+delivered there, late or not. A new
 pilot has 40 postmarks and a first round already aboard: three mailbags for
 the three nearest places, due in five days. Frontier freight comes with the
 masts (S15), and the licence does not yet shape the offers (S13).
 
-**The relief run.** A pilot at a town or station who has less than 25 fuel, or
+**The relief run.** A pilot at a town or station who has less than 10 fuel, or
 a balloon too worn to fly, and cannot pay to put that right, may ask once a
 day: the postmaster brings the fuel to 25, the wear down to 70 and the ballast
 to one sack, and gives them a mailbag for the nearest place that pays 8. A

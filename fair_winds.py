@@ -2686,7 +2686,7 @@ TOWN_OFFERS = (3, 5)                 # contracts a town offers in a day: at leas
 STATION_OFFERS = 2                   # a station has a little mail and nothing else
 FIRST_ROUND_DAYS = 5                 # a new pilot's first three mailbags are due this many days on
 # The relief run: what the postmaster advances a pilot who cannot pay, so that nobody is ever stuck.
-RELIEF = {"fuel": 25, "wear": WEAR_GROUNDED - 30, "sack": 1, "payout": 8, "days": 5}
+RELIEF = {"below": 10, "fuel": 25, "wear": WEAR_GROUNDED - 30, "sack": 1, "payout": 8, "days": 5}
 
 
 def places_near(world: "World", x: float, y: float, skip=None) -> list[tuple[str, int]]:
@@ -3244,21 +3244,24 @@ class PlainFlight:
         try:
             self._take(json.loads(row[0]), json.loads(row[1]))
             return True
-        except (ValueError, KeyError, TypeError):
+        except (ValueError, KeyError, TypeError, IndexError):
             diagnose(f"the record of pilot {self.launch.user_id} cannot be used")
             return "damaged"
 
     def _take(self, career: dict, state: dict):
-        """Set the game from stored data. Raises ValueError, KeyError or TypeError if it is not a game."""
+        """Set the game from stored data. Raises ValueError, KeyError, TypeError or IndexError if it is not a game."""
         flight = FlightState.from_dict(state)
         deliveries, days_flown, total_km = int(career["deliveries"]), int(career["days_flown"]), float(career["total_km"])
         log = [str(line) for line in career.get("log", [])][-3:]
         if "manifest" in career:
             manifest = [self._cargo_item(item) for item in career["manifest"]]
             postmarks, next_id = max(0, int(career["postmarks"])), int(career["next_id"])
-            taken = [[str(t[0]), int(t[1]), int(t[2]), t[3]] for t in career.get("taken", [])]
+            taken = [[str(t[0]), int(t[1]), int(t[2]), int(t[3])] for t in career.get("taken", [])]
             aboard = {item[0] for item in flight.cargo}
-            if aboard != {item["id"] for item in manifest} or any(item["id"] >= next_id for item in manifest):
+            fragile = {item[0]: bool(item[1]) for item in flight.cargo}
+            if aboard != {item["id"] for item in manifest} or any(
+                    item["id"] >= next_id or fragile[item["id"]] != CARGO_KINDS[item["kind"]]["fragile"]
+                    for item in manifest):
                 raise ValueError("the cargo and its papers do not agree")
         else:
             # A pilot from before the post office carried "post for" up to three places. Each is a mailbag now.
@@ -3303,7 +3306,7 @@ class PlainFlight:
             if data["version"] != PLAIN_SAVE_VERSION or data["seed"] != self.world.seed:
                 raise ValueError("not this world's save")
             self._take(data, data["state"])
-        except (ValueError, KeyError, TypeError):
+        except (ValueError, KeyError, TypeError, IndexError):
             # It is left where it is, and both the pilot and the SysOp are told.
             diagnose(f"the old save file {self.legacy.name} cannot be used; it is left in place")
             self.opening_notice = "An older saved game could not be read. This is a new one; the file is kept."
@@ -3452,6 +3455,8 @@ class PlainFlight:
         """Take a contract, or put back one taken here today. Returns what to tell the pilot."""
         mine = self.held(offer)
         if mine is not None:
+            if any(c[0] == mine["id"] and c[2] != "ok" for c in self.state.cargo):
+                return "That one is damaged: it is yours to deliver now."
             self._unload(mine)
             self.taken = [t for t in self.taken if t != offer["contract"]]
             self.save("post")
@@ -3499,13 +3504,18 @@ class PlainFlight:
 
     def relief_due(self) -> bool:
         """May the pilot ask for the relief run? Only one who cannot fly and cannot pay to."""
-        if not self.at_office() or ["relief", self.state.day] in self.taken:
+        if not self.at_office() or self._relief_mark() in self.taken:
             return False
         state, ref = self.state, self.here()
+        # Too little fuel to fly a run on, or too worn to fly at all; and not the postmarks to put it right.
         need = max(0, RELIEF["fuel"] - state.fuel) * price_of("fuel", ref)
         need += max(0, state.wear - RELIEF["wear"]) * price_of("mend", ref) if state.grounded else 0
-        short = state.fuel < RELIEF["fuel"] or state.grounded
+        short = state.fuel < RELIEF["below"] or state.grounded
         return short and self.postmarks < need
+
+    def _relief_mark(self) -> list:
+        """The line in the list of what was taken that says: the relief run, today. Shaped like any other."""
+        return ["relief", 0, self.state.day, 0]
 
     def relief(self) -> str:
         """The postmaster fuels and patches a pilot who cannot pay, and gives them a mailbag to carry."""
@@ -3513,7 +3523,7 @@ class PlainFlight:
         self.state = dataclasses.replace(state, fuel=max(state.fuel, RELIEF["fuel"]),
                                          wear=min(state.wear, RELIEF["wear"]),
                                          ballast=max(state.ballast, RELIEF["sack"]))
-        self.taken.append(["relief", state.day])
+        self.taken.append(self._relief_mark())
         said = "The postmaster fuels and patches the balloon on account."
         near = places_near(self.world, state.x, state.y, skip=ref)
         if near and self.weight() + CARGO_KINDS["mail"]["weight"] <= LIFT:
@@ -3757,14 +3767,16 @@ class PlainFlight:
         what = self.cargo_text(lost[0], long=False) if len(lost) == 1 else f"{len(lost)} pieces of cargo"
         self._say(f"Lost: {what}. {forfeit} postmarks forfeit.")
 
-    def _landed(self) -> None:
+    def _landed(self, arrived: bool = False) -> None:
+        """Hand over what is aboard for this place. arrived: on foot or by boat, where silence says nothing was."""
         ref = self.here()
         if self.state.status != "ground" or ref is None:
             return
         name = self.place_of(ref)["name"]
         mine = [item for item in self.manifest if tuple(item["dest"]) == ref]
         if not mine:
-            self._say(f"Nothing aboard was for {name}. The post office is open: O.")
+            if not arrived:
+                self._say(f"Nothing aboard was for {name}. The post office is open: O.")
             return
         condition = {item[0]: item[2] for item in self.state.cargo}
         paid, notes = 0, []
@@ -3787,7 +3799,7 @@ class PlainFlight:
     def _new_day(self, days: int, x: float | None = None, y: float | None = None) -> None:
         state = self.state
         self.hub = False
-        self.taken = [t for t in self.taken if t[-2 if t[0] != "relief" else 1] >= state.day + days]
+        self.taken = [t for t in self.taken if t[2] >= state.day + days]
         self.total_km += state.distance        # today's distance joins the total as the day ends
         if state.turn > 0:
             self.days_flown += 1              # a day nothing was flown on is not a flying day
@@ -3817,6 +3829,7 @@ class PlainFlight:
         town = self._nearest(self.world.towns)
         self._new_day(2, town["x"], town["y"])
         self._say(f"Two days on foot to {town['name']}. {self._dawn()}")
+        self._landed(arrived=True)        # the post came along, and some of it may be for here
         self.save("walk")
 
     def _picked_up(self) -> None:
@@ -3824,6 +3837,7 @@ class PlainFlight:
         town = self._nearest(ports)
         self._new_day(1, town["x"], town["y"])
         self._say(f"The packet boat lands you at {town['name']}. {self._dawn()}")
+        self._landed(arrived=True)
         self.save("boat")
 
     # -- the screen ----------------------------------------------------------
