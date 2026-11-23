@@ -5,8 +5,8 @@ One file, standard library only, Python 3.11 or newer. Runs as a native stdio
 door under NetBBS (launch details in the JSON named by NETBBS_DOOR_INFO), or
 standalone in a terminal for development.
 
-This build reaches slice S02 of docs/design.md: the host adapter and terminal
-lifecycle, and the world generator with its terrain cache. The door opens,
+This build reaches slice S03 of docs/design.md: the host adapter and terminal
+lifecycle, the world generator with its terrain cache, and the weather. The door opens,
 shows what the host told it, and closes cleanly. The game arrives in the
 slices that follow.
 """
@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import queue
 import shutil
@@ -26,7 +27,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "0.1.0.dev2"
+VERSION = "0.1.0.dev3"
 DOOR_API = 5
 MIN_WIDTH, MIN_HEIGHT = 80, 24
 MAX_DIMENSION = 1000
@@ -727,6 +728,412 @@ def world_map(world: World, width: int = 80) -> str:
                  f"features {len(world.features)}   # start town   o town   + station   @ the Gyre")
     lines.append("towns: " + ", ".join(t["name"] for t in world.towns))
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
+# Weather: a pure function of the seed, the world day and the minute
+# (docs/systems.md, section 4). Nothing is stored and nothing runs between
+# calls. Like the terrain it avoids the maths library, apart from sqrt,
+# which every platform rounds the same way.
+# --------------------------------------------------------------------------
+
+LAYERS = 6
+LAYER_NAMES = ("Surface", "Low", "Mid", "Upper", "High", "Jet")
+LAYER_BLOCK_M = (500, 1500, 2750, None, None, None)   # terrain this high fills the layer
+BLOCKED_FACTOR = 0.15
+WIND_BASE = (9.0, 24.0, 36.0, 48.0, 68.0, 105.0)      # prevailing speed, km/h
+WIND_CAP = (35.0, 60.0, 80.0, 100.0, 140.0, 200.0)    # never exceeded
+WIND_NOISE = (5.0, 8.0, 10.0, 11.0, 13.0, 15.0)
+SYSTEM_REACH = (0.35, 0.6, 0.85, 1.0, 1.15, 1.3)      # how much of a system each layer feels
+SEASON_DAYS = 28
+SYSTEM_SLOT_DAYS = 1.5
+GYRE_RADIUS, GYRE_SPEED = 150.0, 110.0
+MINUTES_PER_DAY = 1440
+TURN_MINUTES = 15
+
+
+def _unit(tau: float) -> tuple[float, float]:
+    """A unit vector from the tangent of half its angle: no trigonometry needed."""
+    d = 1.0 + tau * tau
+    return (1.0 - tau * tau) / d, 2.0 * tau / d
+
+
+def _bump(v: float, start: float, peak: float, end: float) -> float:
+    """0 at start, 1 at peak, 0 at end, smooth in between."""
+    if v <= start or v >= end:
+        return 0.0
+    return _smooth(v, start, peak) if v < peak else 1.0 - _smooth(v, peak, end)
+
+
+def _noise(seed32: int, channel: int, x: float, y: float) -> float:
+    """One octave of value noise at a point, 0 to 1."""
+    ix, iy = int(x // 1), int(y // 1)
+    fx, fy = x - ix, y - iy
+    u, v = fx * fx * (3.0 - 2.0 * fx), fy * fy * (3.0 - 2.0 * fy)
+    a, b = _lattice(seed32, channel, ix, iy), _lattice(seed32, channel, ix + 1, iy)
+    c, d = _lattice(seed32, channel, ix, iy + 1), _lattice(seed32, channel, ix + 1, iy + 1)
+    top = a + (b - a) * u
+    return top + (c + (d - c) * u - top) * v
+
+
+def lead_error_km(lead_minutes: float) -> float:
+    """How far a forecast may misplace a system, with no station in range."""
+    return min(400.0, max(0.0, lead_minutes) * (400.0 / MINUTES_PER_DAY))
+
+
+class WeatherFrame:
+    """The weather of one moment: everything that does not depend on the place.
+
+    Built once per turn; sampling it at a place is then cheap.
+    """
+
+    __slots__ = ("weather", "day", "minute", "hour", "systems", "base", "noise_know", "drift",
+                 "sea_breeze", "land_breeze", "katabatic", "fog_hour", "icing_layer")
+
+    def __init__(self, weather: "Weather", day: int, minute: int, lead: float, coverage: float):
+        self.weather, self.day, self.minute = weather, day, minute
+        self.hour = hour = minute / 60.0
+        t = day + minute / MINUTES_PER_DAY
+        blur = lead_error_km(lead) * (1.0 - coverage)
+        self.systems = weather._systems(t, blur)
+        self.base = weather._regime(day, minute)
+        # A forecast knows less and less of the small eddies as it looks ahead.
+        self.noise_know = 1.0 - _smooth(lead, 0.0, 180.0) * (1.0 - coverage)
+        self.drift = t * 90.0
+        self.sea_breeze = _bump(hour, 11.0, 15.0, 19.0)
+        night = hour + 24.0 if hour < 12.0 else hour
+        self.land_breeze = _bump(night, 22.0, 27.0, 30.0)
+        self.katabatic = _bump(hour, 3.5, 6.0, 8.5)
+        self.fog_hour = _bump(hour, 4.5, 6.5, 8.5)
+        self.icing_layer = weather._icing(day)
+
+    def wind(self, x: float, y: float, layer: int) -> tuple[float, float]:
+        """Where the air at a place and layer is going, in km/h east and south."""
+        w = self.weather
+        li = layer - 1
+        tau, speed, sign = self.base[li]
+        tau += 0.25 * (y / WORLD_H - 0.5)
+        d = 1.0 + tau * tau
+        vx = sign * speed * (1.0 - tau * tau) / d
+        vy = sign * speed * 2.0 * tau / d
+        reach = SYSTEM_REACH[li]
+        for sx, sy, inv_r, strength, turn in self.systems:
+            dx, dy = (x - sx) * inv_r, (y - sy) * inv_r
+            q2 = dx * dx + dy * dy
+            if q2 > 6.25:
+                continue
+            g = strength * reach * 2.0 / (1.0 + q2 * q2 * q2)
+            vx += g * (turn * dy - 0.25 * turn * dx)
+            vy += g * (-turn * dx - 0.25 * turn * dy)
+        amp = WIND_NOISE[li] * self.noise_know
+        if amp:
+            nx, ny = (x + self.drift) / 140.0, y / 140.0
+            vx += amp * (2.0 * _noise(w.noise_seed, li * 2, nx, ny) - 1.0)
+            vy += amp * (2.0 * _noise(w.noise_seed, li * 2 + 1, nx, ny) - 1.0)
+        cell = w.cell(x, y)
+        if cell is not None:
+            if li < 2:
+                breeze = (14.0 * self.sea_breeze - 5.0 * self.land_breeze) * (1.0 if li == 0 else 0.5)
+                if breeze:
+                    cx, cy = w.coast[cell]
+                    vx += breeze * cx
+                    vy += breeze * cy
+                if li == 0 and self.katabatic:
+                    sx_, sy_ = w.slope[cell]
+                    vx += 12.0 * self.katabatic * sx_
+                    vy += 12.0 * self.katabatic * sy_
+            if li < 3:
+                gap = w.gap[cell]
+                if gap:
+                    vx *= 1.6
+                    vy *= 1.6
+                if w.world.chart_elevation[cell] >= LAYER_BLOCK_M[li]:
+                    vx *= BLOCKED_FACTOR
+                    vy *= BLOCKED_FACTOR
+        cap = WIND_CAP[li]
+        s2 = vx * vx + vy * vy
+        if s2 > cap * cap:
+            k = cap / math.sqrt(s2)
+            vx *= k
+            vy *= k
+        return vx, vy
+
+    def surface_speed(self, x: float, y: float) -> float:
+        vx, vy = self.wind(x, y, 1)
+        return math.sqrt(vx * vx + vy * vy)
+
+    def pressure(self, x: float, y: float) -> float:
+        """Sea-level pressure in hPa, from the same systems that turn the wind."""
+        p = 1013.0
+        for sx, sy, inv_r, strength, turn in self.systems:
+            dx, dy = (x - sx) * inv_r, (y - sy) * inv_r
+            f = 1.0 + dx * dx + dy * dy
+            p -= turn * strength * 0.9 / (f * f)
+        return p
+
+    def _low(self, x: float, y: float) -> tuple[float, float]:
+        """How strongly a low is felt here, and how near its squall ring this is."""
+        near = ring = 0.0
+        for sx, sy, inv_r, strength, turn in self.systems:
+            if turn < 0:
+                continue
+            dx, dy = (x - sx) * inv_r, (y - sy) * inv_r
+            q2 = dx * dx + dy * dy
+            f = 1.0 + q2
+            felt = min(1.0, strength / 20.0) / (f * f)
+            near = max(near, felt)
+            off = (q2 - 0.45) / 0.45
+            ring = max(ring, min(1.0, strength / 20.0) * (1.0 - min(1.0, off if off >= 0 else -off)))
+        return near, ring
+
+    def cloud(self, x: float, y: float) -> tuple[float, int]:
+        """Cloud cover from 0 to 1, and the layer its deck sits in."""
+        near, _ = self._low(x, y)
+        patch = _noise(self.weather.noise_seed, 40, (x + self.drift) / 180.0, y / 180.0)
+        cover = near * 0.9 + patch * 0.9 - 0.35
+        return (0.0 if cover < 0.0 else 1.0 if cover > 1.0 else cover), (3 if near > 0.3 else 4)
+
+    def squall(self, x: float, y: float) -> float:
+        """Squall strength from 0 to 1: a broken ring around each low."""
+        _, ring = self._low(x, y)
+        if ring <= 0.0:
+            return 0.0
+        return ring * _smooth(_noise(self.weather.noise_seed, 41, (x + self.drift) / 45.0, y / 45.0), 0.45, 0.7)
+
+    def fog(self, x: float, y: float) -> float:
+        """Dawn fog from 0 to 1: calm lowland only."""
+        if not self.fog_hour:
+            return 0.0
+        cell = self.weather.cell(x, y)
+        if cell is None or not 0 <= self.weather.world.chart_elevation[cell] < 250:
+            return 0.0
+        calm = 1.0 - _smooth(self.surface_speed(x, y), 6.0, 14.0)
+        patch = _smooth(_noise(self.weather.noise_seed, 42, x / 60.0, y / 60.0 + self.day * 0.37), 0.5, 0.7)
+        return self.fog_hour * calm * patch
+
+
+class Weather:
+    """The weather of one world.
+
+    `frame(day, minute)` is the truth. `frame(day, minute, lead, coverage)`
+    is what a forecast made `lead` minutes earlier says, with `coverage`
+    from 0 (no station in range) to 1 (at a station).
+    """
+
+    FRAMES_KEPT = 64
+
+    def __init__(self, world: World):
+        self.world = world
+        self.seed = world.seed
+        self.noise_seed = draw(world.seed, "noise", "weather") & 0xFFFFFFFF
+        self._frames: dict[tuple, WeatherFrame] = {}
+        self._seasons: dict[int, tuple] = {}
+        self._slots: dict[int, tuple | None] = {}
+        self._chart_fields()
+
+    # -- fields worked out once from the chart ------------------------------
+
+    def cell(self, x: float, y: float) -> int | None:
+        if not (0.0 <= x < WORLD_W and 0.0 <= y < WORLD_H):
+            return None
+        return int(y / CHART_KM) * CHART_W + int(x / CHART_KM)
+
+    def _chart_fields(self) -> None:
+        w, h = CHART_W, CHART_H
+        elevation, biome = self.world.chart_elevation, self.world.chart_biome
+        land = [1.0 if b >= SHORE else 0.0 for b in biome]
+        # A wide blur of land and sea: its slope points inland, and it is
+        # steepest at the coast.
+        rows = [0.0] * (w * h)
+        for y in range(h):
+            for x in range(w):
+                total = 0.0
+                for xx in range(x - 2, x + 3):
+                    total += land[y * w + (0 if xx < 0 else w - 1 if xx >= w else xx)]
+                rows[y * w + x] = total
+        blur = [0.0] * (w * h)
+        for y in range(h):
+            for x in range(w):
+                total = 0.0
+                for yy in range(y - 2, y + 3):
+                    total += rows[(0 if yy < 0 else h - 1 if yy >= h else yy) * w + x]
+                blur[y * w + x] = total / 25.0
+        self.coast, self.slope, self.gap = [], [], bytearray(w * h)
+        for y in range(h):
+            for x in range(w):
+                k = y * w + x
+                xl, xr = max(0, x - 1), min(w - 1, x + 1)
+                yu, yd = max(0, y - 1), min(h - 1, y + 1)
+                gx, gy = blur[y * w + xr] - blur[y * w + xl], blur[yd * w + x] - blur[yu * w + x]
+                size = math.sqrt(gx * gx + gy * gy)
+                weight = 4.0 * blur[k] * (1.0 - blur[k])
+                self.coast.append((gx / size * weight, gy / size * weight) if size > 1e-9 else (0.0, 0.0))
+                hx = max(0, elevation[y * w + xr]) - max(0, elevation[y * w + xl])
+                hy = max(0, elevation[yd * w + x]) - max(0, elevation[yu * w + x])
+                steep = math.sqrt(hx * hx + hy * hy)
+                pull = min(1.0, steep / 1200.0)
+                self.slope.append((-hx / steep * pull, -hy / steep * pull) if steep > 1e-9 else (0.0, 0.0))
+                if 0 <= elevation[k] < 500:
+                    def high(dx, dy):
+                        return any(0 <= x + dx * n < w and 0 <= y + dy * n < h
+                                   and elevation[(y + dy * n) * w + x + dx * n] >= 700 for n in (1, 2, 3))
+                    if (high(-1, 0) and high(1, 0)) or (high(0, -1) and high(0, 1)):
+                        self.gap[k] = 1
+
+    # -- the season's regime ---------------------------------------------------
+
+    def _season(self, season: int) -> tuple:
+        found = self._seasons.get(season)
+        if found is None:
+            seed = self.seed
+            lean = (draw_unit(seed, "regime", season, "lean") - 0.5) * 0.6
+            trades = draw_unit(seed, "regime", season, "trades") < 0.35
+            layers = []
+            for li in range(LAYERS):
+                swing = 0.2 + 0.4 * draw_unit(seed, "regime", season, "swing", li)
+                if li == LAYERS - 1:
+                    tau = lean * 0.3
+                else:
+                    tau = lean + (swing if li % 2 == 0 else -swing)
+                speed = WIND_BASE[li] * (0.8 + 0.4 * draw_unit(seed, "regime", season, "speed", li))
+                layers.append((tau, speed, -1.0 if trades and li < 2 else 1.0))
+            pulse = 0.85 + 0.3 * draw_unit(seed, "regime", season, "gyre")
+            cold = draw_unit(seed, "regime", season, "cold") < 0.3
+            found = self._seasons[season] = (tuple(layers), pulse, cold)
+        return found
+
+    def _blend(self, day: int, minute: int):
+        """This season and the last, and how far the change between them has gone.
+
+        A season's first day eases from the old regime to the new one, so
+        the wind never jumps at midnight.
+        """
+        season = (day - 1) // SEASON_DAYS
+        into = ((day - 1) % SEASON_DAYS) + minute / MINUTES_PER_DAY
+        return self._season(season), self._season(season - 1), _smooth(into, 0.0, 1.0)
+
+    def _regime(self, day: int, minute: int) -> tuple:
+        now, before, w = self._blend(day, minute)
+        hour = minute / 60.0
+        veer = 0.12 * (_bump(hour, 6.0, 15.0, 24.0) - 0.5)       # winds veer a little through the day
+        out = []
+        for (tau, speed, sign), (tau0, speed0, sign0) in zip(now[0], before[0]):
+            if sign != sign0:      # a layer turning round passes through calm, not through a jump
+                speed_now = speed0 * (1.0 - 2.0 * w) if w < 0.5 else speed * (2.0 * w - 1.0)
+                out.append(((tau0 if w < 0.5 else tau) + veer, speed_now, sign0 if w < 0.5 else sign))
+            else:
+                out.append((tau0 + (tau - tau0) * w + veer, speed0 + (speed - speed0) * w, sign))
+        return tuple(out)
+
+    def _icing(self, day: int) -> int:
+        return 4 if self._season((day - 1) // SEASON_DAYS)[2] else 5
+
+    # -- travelling highs and lows, and the Gyre ------------------------------
+
+    def _slot(self, slot: int):
+        if slot not in self._slots:
+            seed = self.seed
+            if draw_unit(seed, "system", slot, "exists") >= 0.85:
+                self._slots[slot] = None
+            else:
+                low = draw_unit(seed, "system", slot, "kind") < 0.55
+                self._slots[slot] = (
+                    3.0 + 3.0 * draw_unit(seed, "system", slot, "life"),
+                    200.0 + 120.0 * draw_unit(seed, "system", slot, "radius"),
+                    (12.0 + 12.0 * draw_unit(seed, "system", slot, "strength")) if low
+                    else (10.0 + 6.0 * draw_unit(seed, "system", slot, "strength")),
+                    1.0 if low else -1.0,
+                    100.0 + 800.0 * draw_unit(seed, "system", slot, "y"),
+                    -60.0 + 120.0 * draw_unit(seed, "system", slot, "vy"),
+                    80.0 * draw_unit(seed, "system", slot, "wobble"),
+                    2.0 * draw_unit(seed, "forecast", slot, "x") - 1.0,
+                    2.0 * draw_unit(seed, "forecast", slot, "y") - 1.0,
+                    2.0 * draw_unit(seed, "forecast", slot, "strength") - 1.0,
+                )
+            if len(self._slots) > 4096:
+                self._slots.clear()
+        return self._slots[slot]
+
+    def _systems(self, t: float, blur: float) -> tuple:
+        """(x, y, 1/radius, strength, turn) for every system alive at time t.
+
+        `blur` is how many km a forecast misplaces each system; the direction
+        of the error is fixed per system, so every caller sees the same
+        forecast and it closes on the truth as the lead shrinks.
+        """
+        out = []
+        last = int(t // SYSTEM_SLOT_DAYS)
+        for slot in range(last - 4, last + 1):
+            system = self._slot(slot)
+            if system is None:
+                continue
+            life, radius, strength, turn, y0, vy, wobble, ex, ey, es = system
+            age = t - slot * SYSTEM_SLOT_DAYS
+            if not 0.0 <= age <= life:
+                continue
+            x = -radius + (WORLD_W + 2.0 * radius) * age / life
+            y = y0 + vy * age + wobble * (2.0 * _noise(self.noise_seed, 50 + (slot & 0xFF), age * 0.7, 0.5) - 1.0)
+            fade = _smooth(age, 0.0, 0.5) * (1.0 - _smooth(age, life - 0.5, life))
+            out.append((x + ex * blur, y + ey * blur, 1.0 / radius,
+                        strength * fade * (1.0 + es * blur / 400.0), turn))
+        day = int(t // 1)
+        now, before, w = self._blend(day, int((t - day) * MINUTES_PER_DAY))
+        pulse = before[1] + (now[1] - before[1]) * w
+        gyre = self.world.gyre
+        out.append((gyre["x"], gyre["y"], 1.0 / GYRE_RADIUS, GYRE_SPEED * pulse, 1.0))
+        return tuple(out)
+
+    # -- sampling ------------------------------------------------------------
+
+    def frame(self, day: int, minute: int, lead: float = 0.0, coverage: float = 1.0) -> WeatherFrame:
+        day, minute = day + minute // MINUTES_PER_DAY, minute % MINUTES_PER_DAY
+        coverage = 0.0 if coverage < 0.0 else 1.0 if coverage > 1.0 else coverage
+        if lead <= 0.0 or coverage >= 1.0:
+            lead, coverage = 0.0, 1.0
+        key = (day, minute, lead, coverage)
+        found = self._frames.get(key)
+        if found is None:
+            if len(self._frames) >= self.FRAMES_KEPT:
+                self._frames.clear()
+            found = self._frames[key] = WeatherFrame(self, day, minute, lead, coverage)
+        return found
+
+    def wind(self, day: int, minute: int, x: float, y: float, layer: int) -> tuple[float, float]:
+        """The true wind."""
+        return self.frame(day, minute).wind(x, y, layer)
+
+    def forecast(self, day: int, minute: int, x: float, y: float, layer: int,
+                 lead: float, coverage: float) -> tuple[float, float]:
+        """The wind a forecast made `lead` minutes before this moment expects."""
+        return self.frame(day, minute, lead, coverage).wind(x, y, layer)
+
+
+def compass(vx: float, vy: float) -> str:
+    """The sixteen-point name of where a wind comes from."""
+    names = ("N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW")
+    if vx == 0.0 and vy == 0.0:
+        return "calm"
+    fx, fy = -vx, -vy                        # where it comes from; north is -y
+    # Walk the sixteen directions without trigonometry: compare against the
+    # tangents of the sector edges.
+    ax, ay = (fx if fx >= 0 else -fx), (fy if fy >= 0 else -fy)
+    t1, t3 = 0.19891236737965800, 0.66817863791929892       # tan 11.25, tan 33.75 degrees
+    if ax <= ay * t1:
+        step = 0
+    elif ax <= ay * t3:
+        step = 1
+    elif ay > ax * t3:
+        step = 2
+    elif ay > ax * t1:
+        step = 3
+    else:
+        step = 4
+    # step counts sixteenths from the north-south axis toward the east-west axis
+    if fy < 0:                               # from the north half
+        index = step if fx >= 0 else (16 - step) % 16
+    else:                                    # from the south half
+        index = 8 - step if fx >= 0 else 8 + step
+    return names[index]
 
 
 # --------------------------------------------------------------------------

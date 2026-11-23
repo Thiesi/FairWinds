@@ -123,8 +123,9 @@ plain, hills and range, cut where they cross an 80 km block so that no feature
 is too large to chart in a few flights. The largest are kept. Features are
 unnamed until charted (section 7). Passes, bays and capes are left for S14.
 
-**Local winds.** The generator defines 12 to 20 recurring local winds (section
-4). They are the almanac's content.
+**Local winds.** Sea breezes, downslope winds and pass winds come from the
+shape of the land (section 4). S18 picks 12 to 20 of the places where they
+recur and makes them the almanac's content.
 
 **Wonders.** Forty sites or conditions (section 9).
 
@@ -136,58 +137,90 @@ characters, with its towns, stations and the Gyre.
 
 ## 4. Weather
 
-Weather is a pure function. It is never stored and nothing advances while
-nobody plays.
+Weather is a pure function of the seed, the world day and the minute. It is
+never stored and nothing advances while nobody plays. Like the terrain it uses
+no maths library apart from the square root, so every platform agrees.
 
-`wind(seed, day, minute, x, y, layer) -> (vx, vy)` is the sum of:
+`Weather.frame(day, minute)` gathers everything that does not depend on the
+place, once per turn. `frame.wind(x, y, layer)` is then the sum of:
 
-1. **Prevailing flow.** A base vector per layer that turns slowly with the
-   season's regime and with latitude.
-2. **Travelling systems.** Highs and lows spawn at the upwind edge in numbered
-   slots, about one every 1.5 world days, decided by the keyed source. Each has
-   a path, a speed of 250 to 500 km per day, a radius of 200 to 320 km, a
-   strength and a life of 3 to 6 days. The systems alive at a moment are found
-   by checking the last few slots. Lows turn anticlockwise with inflow, highs
-   clockwise with outflow. A system's wind peaks at its radius and falls off
-   quickly beyond it.
-3. **The Gyre.** The same shape, larger and stronger, fixed in place, pulsing
-   with the season.
-4. **Local winds.** Sea breeze onshore in the afternoon in layers 1 and 2 near
-   coasts; downslope wind at dawn in layer 1 near high ground; acceleration
-   through passes in layers 1 to 3.
-5. **Noise.** The curl of a low-resolution field that drifts with time.
+1. **Prevailing flow.** Each season draws a regime: a lean for the whole
+   column, and for each layer a swing to one side or the other, alternating
+   with height, so neighbouring layers blow different ways. Speeds are drawn
+   within 20 percent of the layer's base. In about a third of seasons the two
+   lowest layers run the other way, as trades. The flow veers a little through
+   the day and with latitude. A season's first day eases from the old regime
+   to the new one, and a layer that turns round passes through calm, so the
+   wind never jumps at midnight.
+2. **Travelling systems.** Highs and lows are drawn in numbered slots, one
+   every 1.5 world days, of which 85 percent hold a system. Each has a life of
+   3 to 6 days and a radius of 200 to 320 km, enters at the west edge, and
+   crosses to the east edge in exactly its life, on a course that drifts and
+   wobbles. It fades in over its first half day and out over its last. Lows
+   turn anticlockwise with inflow, highs clockwise with outflow. A system's
+   wind is `2q / (1 + q^6)` of its strength at `q` radii from its centre: calm
+   at the centre, strongest at about three quarters of a radius, gone by two
+   and a half. Higher layers feel systems more.
+3. **The Gyre.** The same shape, fixed in place, 150 km in radius and far
+   stronger, pulsing by season.
+4. **Local winds.** Sea breeze in layers 1 and 2 near a coast: onshore from
+   11:00 to 19:00, strongest at 15:00, and a weaker offshore breeze at night.
+   Downslope wind in layer 1 from 03:30 to 08:30 near steep ground. Wind in
+   layers 1 to 3 runs 1.6 times as fast through a pass: low ground with high
+   ground within 30 km on both sides.
+5. **Noise.** Two drifting fields of small eddies per layer.
 
-A layer is **blocked** where terrain reaches into it. Wind there falls to a
-fraction and a balloon cannot be in that layer at that place.
+A layer is **blocked** where terrain reaches into it: the wind there falls to
+15 percent and a balloon cannot be in that layer at that place. Terrain at or
+above 500 m fills layer 1, 1,500 m layer 2 and 2,750 m layer 3. The weather
+reads terrain from the chart grid.
 
-| Layer | Name | Band | Typical speed | Needs |
-| --- | --- | --- | --- | --- |
-| 1 | Surface | 0 to 0.5 km | 5 to 20 km/h | |
-| 2 | Low | 0.5 to 1.5 km | 15 to 40 km/h | |
-| 3 | Mid | 1.5 to 2.75 km | 25 to 55 km/h | |
-| 4 | Upper | 2.75 to 4.25 km | 35 to 70 km/h | Envelope II |
-| 5 | High | 4.25 to 6 km | 50 to 100 km/h | Envelope III |
-| 6 | Jet | 6 to 8 km | 80 to 160 km/h | Envelope III and oxygen |
+| Layer | Name | Band | Base speed | Never above | Needs |
+| --- | --- | --- | --- | --- | --- |
+| 1 | Surface | 0 to 0.5 km | 9 km/h | 35 km/h | |
+| 2 | Low | 0.5 to 1.5 km | 24 km/h | 60 km/h | |
+| 3 | Mid | 1.5 to 2.75 km | 36 km/h | 80 km/h | |
+| 4 | Upper | 2.75 to 4.25 km | 48 km/h | 100 km/h | Envelope II |
+| 5 | High | 4.25 to 6 km | 68 km/h | 140 km/h | Envelope III |
+| 6 | Jet | 6 to 8 km | 105 km/h | 200 km/h | Envelope III and oxygen |
 
-**Other fields**, from the same systems: pressure (for isobars), cloud decks by
-layer, squalls near lows and fronts, fog in valleys at dawn, the icing level,
-and surface wind for landing.
+Mean speeds over a year sit near the base. The caps are reached only around
+the Gyre.
 
-**Forecast.** `forecast(..., lead)` is the same function with the systems'
-positions and strengths perturbed. The perturbation is drawn from the keyed
-source per system and day, so every pilot sees the same forecast and it
-converges on the truth as the lead shrinks to zero. Its size is
-`lead_error(lead) * (1 - coverage(x, y))`. Coverage is the best nearby station:
-1 at the station, falling to 0 at 150 km, scaled by the station's stock. Towns
-and masts count as full stations. Inside the Gyre's bands coverage is capped.
+**Continuity.** At one place the wind changes by less than 6 km/h from one
+turn to the next, across midnight and across a season's turn as well. Between
+places 10 km apart in open air it differs by less than 35 km/h. The edge of
+blocked terrain and the mouth of a pass are sharp on purpose.
+
+**Other fields**, from the same frame: pressure in hPa (for isobars); cloud
+cover from 0 to 1 with its deck in layer 3 near a low and layer 4 elsewhere;
+squalls as a broken ring around each low; fog from 04:30 to 08:30 over calm
+ground below 250 m; the icing level, layer 5, or layer 4 in a cold season; and
+the surface wind for landing.
+
+**Forecast.** `frame(day, minute, lead, coverage)` is what a forecast made
+`lead` minutes earlier expects. Each system is misplaced by up to
+`lead_error * (1 - coverage)` in a direction drawn once per system, so every
+pilot sees the same forecast and it closes on the truth as the lead shrinks.
+`lead_error` is 400 km per day of lead, capped at 400 km. A forecast also
+knows less of the small eddies the further ahead it looks, and nothing of them
+beyond three hours without a station. With no lead, or at a station, the
+forecast is the truth. Measured with no station: about 0.5 km/h of error half
+an hour ahead, 6 km/h at three hours, 11 km/h at a day.
+
+Coverage is the best nearby station: 1 at the station, falling to 0 at 150 km,
+scaled by the station's stock. Towns and masts count as full stations. Inside
+the Gyre's bands coverage is capped. Stations arrive in S15; until then the
+caller of the weather passes the coverage in.
 
 **What the pilot knows.** The true wind in the current layer at the current
 place. Forecast wind everywhere else, out to the instrument's horizon: 6, 10 or
 16 turns. A pibal shows true wind in every layer at the current place for four
 turns.
 
-**Cost.** One wind sample must stay under 60 microseconds. Screens sample wind
-on a coarse grid (10 km) and interpolate.
+**Cost.** One wind sample takes about 20 microseconds on the development host
+(target: under 60). Screens sample wind on a coarse grid (10 km) and
+interpolate.
 
 ## 5. Flight
 
