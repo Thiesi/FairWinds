@@ -15,10 +15,11 @@ what the door is. This file says how to work here.
    constants.
 4. Check the phase trackers on GitHub (issues #1 to #7) for what is done.
 
-**Status:** P0 is complete. S01 (host adapter and terminal lifecycle) and S02
-(world generator and terrain cache) are built. The door opens, shows what the
-host told it and closes cleanly, and `--world-map <node id>` prints a continent.
-The next slice is S03, the weather. There is no game yet.
+**Status:** P0 is complete. S01 (host adapter and terminal lifecycle), S02
+(world generator and terrain cache) and S03 (weather) are built. The door
+opens, shows what the host told it and closes cleanly, and `--world-map <node
+id>` prints a continent. The next slice is S04, the turn engine. There is no
+game yet.
 
 P1 ends in a playtest by the owner (S05). Do not start P2 until the owner has
 said the turn is fun.
