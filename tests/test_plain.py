@@ -423,6 +423,28 @@ class Saving(PlainCase):
         third = self.game()
         self.assertEqual(third.state.turn, 4, "the database is what is read from then on")
 
+    def test_an_old_save_file_that_cannot_be_opened_is_waited_for(self):
+        game = self.game()
+        self.press(game, "ENTER", "ENTER")
+        seed, text = game.world.seed, json.dumps(dict(game._career(), version=1, seed=game.world.seed,
+                                                      state=game.state.to_dict()))
+        game.close()
+        for path in self.folder.glob("fair_winds-*"):
+            path.unlink()
+        old = self.folder / f"pilot-{seed:016x}-12.json"
+        old.mkdir()                                      # there, and not a file that opens
+        fresh = self.game()
+        self.assertIn("This game is not saved", self.screen(fresh))
+        self.press(fresh, "ENTER")
+        fresh.close()
+        db = sqlite3.connect(str(next(self.folder.glob("fair_winds-*.db"))))
+        self.assertEqual(db.execute("SELECT count(*) FROM pilots").fetchone()[0], 0, "no new career shuts the old one out")
+        db.close()
+        old.rmdir()
+        old.write_text(text, encoding="utf-8")           # the SysOp has put it right
+        again = self.game()
+        self.assertEqual(again.state.turn, 2, "and the pilot flies on where they were")
+
     def test_an_earlier_imported_file_is_never_written_over(self):
         game = self.game()
         self.press(game, "ENTER")

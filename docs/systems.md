@@ -774,7 +774,8 @@ turn costs one synced write.
 **Backup.** `python fair_winds.py --backup FOLDER` copies every world in the
 data directory to FOLDER through SQLite's online backup, checks each copy and
 removes the leases from it. It is safe while callers are playing. It refuses
-to copy into the data directory itself, or onto a database in use. To restore,
+to copy into the data directory itself, or onto a database in use. A refusal
+comes before the first copy, so a refused backup has copied nothing. To restore,
 stop the door, put the copies in the data directory and remove any `-wal` and
 `-shm` files left beside the old ones.
 
@@ -784,6 +785,9 @@ has one is taken over from it, once, and the file is renamed with `.imported`
 added, unless a file of that name is already there. One that cannot be read
 is left where it is: the pilot starts anew and is told, and the reason goes to
 standard error.
+One that is there and cannot be opened is waited for: the pilot plays
+that call unsaved, so that no new career shuts the old one out, and the file is
+taken over once the SysOp has put it right.
 
 **Guests.** A guest call opens the world read-only and keeps its own state in
 memory.

@@ -2791,22 +2791,26 @@ def backup_worlds(source: Path, target: Path) -> list[str]:
     if source.exists() and target.resolve() == source.resolve():
         raise OSError("the backup folder is the data folder: a copy there would replace the live records")
     done = []
-    for path in sorted(source.glob("fair_winds-*.db")):
+    worlds = sorted(source.glob("fair_winds-*.db"))
+    for path in worlds:                         # every refusal comes before the first copy
         if any((target / (path.name + suffix)).exists() for suffix in ("-wal", "-shm", "-journal")):
             raise OSError(f"{target} holds a database in use under the name {path.name}")
+    for path in worlds:
         temp = target / (path.name + ".tmp")
         temp.unlink(missing_ok=True)
-        src = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=BUSY_TIMEOUT_SECONDS)
-        dst = sqlite3.connect(str(temp))
+        src = dst = None
         try:
+            src = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=BUSY_TIMEOUT_SECONDS)
+            dst = sqlite3.connect(str(temp))
             src.backup(dst)
             dst.execute("DELETE FROM sessions")     # nobody is flying in a copy: a restore keeps no caller out
             dst.commit()
             if dst.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 raise sqlite3.DatabaseError(f"the copy of {path.name} did not pass its check")
         except BaseException:
-            src.close()
-            dst.close()
+            for db in (src, dst):
+                if db is not None:
+                    db.close()
             temp.unlink(missing_ok=True)        # no half copy is left behind
             raise
         src.close()
@@ -2949,8 +2953,13 @@ class PlainFlight:
             text = self.legacy.read_text(encoding="utf-8")
         except (FileNotFoundError, NotADirectoryError):
             return False                  # a new pilot
-        except (OSError, UnicodeDecodeError):
+        except UnicodeDecodeError:
             text = ""
+        except OSError as error:
+            # It is there and cannot be opened: a matter of minutes for the SysOp.
+            # A new game saved now would shut the old one out for good, so nothing is saved this call.
+            diagnose(f"the old save file {self.legacy.name} cannot be opened: {error}")
+            return "unreachable"
         try:
             data = json.loads(text)
             if data["version"] != PLAIN_SAVE_VERSION or data["seed"] != self.world.seed:

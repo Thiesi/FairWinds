@@ -414,6 +414,20 @@ class Backup(StoreCase):
             fw.backup_worlds(self.folder, other)
         self.assertEqual([p.name for p in other.glob("*.tmp")], [])
 
+    def test_a_refused_backup_copies_nothing_at_all(self):
+        names = []
+        for node in ("one", "two"):
+            game = support.new_game(launch(node_id=node), self.folder)
+            game.key("ENTER")
+            names.append(fw.db_name(game.world.seed))
+            game.close()
+        other = self.folder / "other"
+        other.mkdir()
+        (other / (sorted(names)[1] + "-wal")).write_bytes(b"")           # the second world is the one in the way
+        with self.assertRaises(OSError):
+            fw.backup_worlds(self.folder, other)
+        self.assertEqual([p.name for p in other.glob("*.db")] + [p.name for p in other.glob("*.tmp")], [])
+
     def test_nothing_to_back_up_says_so(self):
         env = dict(os.environ, DOOR_FW_DATA_DIR=str(self.folder / "empty"))
         done = subprocess.run([sys.executable, str(ROOT / "fair_winds.py"), "--backup", str(self.folder / "c")],
