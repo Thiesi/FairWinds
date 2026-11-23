@@ -506,7 +506,9 @@ callers' maps. Each design has a sixteen-colour reading.
 
 Points: 8 for a mailbag delivered, 14 for a parcel, 20 for instruments, 3 for
 a clean landing that ends a flight at least 25 km from where it launched, and
-one for every ten km flown. Charting will add to them
+one for every ten km flown. A flight already in the air when this rule
+arrived has no launch point on record, and its landing earns no landing
+points. Charting will add to them
 (S14). A town's first offer of the day is always a mailbag, so there is
 something for a pilot of any grade; an offer above the pilot's grade is shown
 and refused with the grade it wants.

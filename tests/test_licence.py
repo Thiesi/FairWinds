@@ -557,7 +557,8 @@ class Others(LicenceCase):
         whole = db.execute("SELECT career FROM pilots").fetchone()[0]
         db.close()
         for spoil in (lambda c: c.update(gear=[1, 2]), lambda c: c.update(points=float("inf")),
-                      lambda c: c.update(postmarks=float("inf")), lambda c: c.update(lift_off=[float("nan")])):
+                      lambda c: c.update(postmarks=float("inf")), lambda c: c.update(lift_off=[float("nan")]),
+                      lambda c: c.update(lift_off=[float("inf"), 0.0]), lambda c: c.update(lift_off=[0.0, float("nan")])):
             career = json.loads(whole)
             spoil(career)
             db = sqlite3.connect(path)

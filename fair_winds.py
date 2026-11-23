@@ -3405,6 +3405,8 @@ class PlainFlight:
         self.gear, self.points, self.design = gear, max(0, points), design_of(career.get("design"))
         spot = career.get("lift_off")
         self.lift_off = [float(spot[0]), float(spot[1])] if spot else None
+        if self.lift_off is not None and not all(math.isfinite(v) for v in self.lift_off):
+            raise ValueError("a flight began nowhere")
         self._fit()
 
     def _cargo_item(self, item: dict) -> dict:
