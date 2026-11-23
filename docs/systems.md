@@ -543,10 +543,37 @@ at another layer about 220 bytes, and a turn about 1.6 KB (most of it the map
 moving under the balloon). A paint takes 10 ms at 80 by 24 and 34 ms at 168 by
 46.
 
-**The map.** Composed in order: terrain from tiles with hillshade; the uncharted
-veil; cloud and squall; wind streaks; tracks; markers; labels. A half-block cell
-holds two pixels. A glyph over the map takes the cell: its background becomes
-the darkened mean of the two pixels beneath.
+**The map.** A window on the world: each cell is 5 km wide and 10 km tall, so
+half a cell is a square pixel of 5 km. Where the terminal has colour enough and
+a half block (truecolor or 256 colours, UTF-8 or CP437) the map is relief in
+pixels. Sixteen colours and plain ASCII get the character map, a reading made
+for them. `DOOR_FW_PIXELS` overrides: `half` forces pixels, `shade` characters.
+
+The relief is composed in order: terrain from the tiles, coloured by biome and
+height and lit from the north-west; the veil over what nobody has charted;
+cloud and squall, sampled every fourth pixel and blended between; and night,
+which darkens it. The lit colours of a tile are worked out once and kept. A
+moment's map is composed once and reused while the pilot looks at other
+layers. Then, on top: the balloon, places, tracks and names. A marker takes
+its cell on the darkened mean of the two pixels beneath. A name goes to the
+right of its marker if it fits, else to the left, else it is left out: it
+never runs off the map and never covers a marker, the balloon or another name.
+
+**The window holds still.** It moves only when the balloon leaves its middle
+half, and then by half a window, so the balloon is always in the middle half.
+A window that followed the balloon would be a whole screen to send every turn.
+Cloud is blended in steps for the same reason: drifting a little, it does not
+re-send every cell under it.
+
+Measured: a map of 140 by 38 cells composes in 19 ms from warm tiles (52 by
+16 in 3 ms). A truecolor frame at 168 by 46 is 139 KB once, and a turn then
+sends about 2.6 KB; at 80 by 24 it is 23 KB and 1.4 KB. In 256 colours a turn
+is 0.9 to 1.4 KB. Looking at another layer is about 370 bytes at any size.
+
+**256 colours.** The nearest palette entry by distance alone turns dark greens
+and deep blues grey, because each axis of the colour cube rounds to the same
+step. The match looks at the cube entries around a colour and counts a loss of
+saturation against them, and it uses the grey ramp only for greys.
 
 **Wind.** A few hundred particles advected on the interpolated wind of the
 viewed layer, drawn as short fading streaks. Animation runs for a burst after
@@ -625,7 +652,7 @@ memory.
 | `DOOR_FW_GUEST_IDS` | Comma-separated `user_id`s to treat as guest calls |
 | `DOOR_FW_GUESTBOOK` | `on`, `canned` or `off` |
 | `DOOR_FW_MOTION` | `auto`, `burst` or `off` |
-| `DOOR_FW_PIXELS` | `auto`, `half` or `shade` |
+| `DOOR_FW_PIXELS` | `auto` (relief in pixels where the terminal can show it), `half` (always pixels) or `shade` (always the character map) |
 | `DOOR_SPLASH`, `DOOR_SCENES` | `0` switches the splash, or the scenes, off |
 | `DOOR_FW_NODE_ID` | Classic hosts: names this BBS and seeds its world (default `classic`). Keep it once set. |
 | `DOOR_FW_BBS_NAME` | Classic hosts: the name in "Return to ..." (default "BBS") |

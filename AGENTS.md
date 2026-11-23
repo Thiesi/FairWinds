@@ -18,9 +18,14 @@ what the door is. This file says how to work here.
 **Status:** P0 and P1 are built: S01 (host adapter and terminal lifecycle), S02
 (world generator and terrain cache), S03 (weather), S04 (turn engine) and S05
 (the plain flight). Of P2, S06 (the cell buffer, the colour and charset
-readings, layouts that fill the terminal) is built. The game can be played in
-plain text: `python fair_winds.py` in a terminal, or as a door under NetBBS.
-The next slice is S07, the relief map.
+readings, layouts that fill the terminal) and S07 (the relief map) are built.
+The game can be played: `python fair_winds.py` in a terminal, or as a door
+under NetBBS. The next slice is S08, the wind animation and the sounding panel.
+
+To look at a screen, run `python scripts/capture.py`: it writes each size and
+colour depth as an HTML page under `.test-tmp/captures`, which headless Edge
+can turn into a picture. Look at the pictures before saying a screen is right.
+Pictures kept as evidence go on an `evidence/<topic>` branch.
 
 Every screen draws onto a `Screen` and the session sends only what changed.
 Draw with `Session._line` or straight onto `session.frame`; never write escape

@@ -157,6 +157,9 @@ class Colours(unittest.TestCase):
         self.assertEqual(fw.nearest256((255, 255, 255)), 231)
         self.assertEqual(fw.nearest256((128, 128, 128)), 244, "a grey takes the grey ramp")
         self.assertEqual(fw.nearest256((255, 0, 0)), 196)
+        forest, deep = fw.nearest256((52, 112, 72)), fw.nearest256((9, 32, 70))
+        self.assertLess(forest, 232, "a dark green stays a green, not a grey")
+        self.assertLess(deep, 232, "and deep water stays blue")
         self.assertTrue(all(16 <= fw.nearest256((r, g, b)) <= 255 for r in (0, 90, 200) for g in (10, 130) for b in (0, 255)))
 
     def test_ascii_frames_are_ascii(self):
@@ -331,19 +334,14 @@ class SessionPainting(unittest.TestCase):
             lines = apply(self.paint(), width, height).text().split("\n")
             you = next((row, line.index("@")) for row, line in enumerate(lines) if "@" in line)
             return lines, you
-        small, at_small = layout(80, 24)
-        self.assertEqual(at_small, (9, 27), "the balloon sits in the middle of a 52 x 16 map")
-        self.assertIn("LAYER", small[1][54:])
-        self.assertIn("[Enter] Launch", small[23])
-        medium, at_medium = layout(132, 40)
-        self.assertEqual(at_medium, (17, 53), "132 x 40: the middle of a 104 x 32 map")
-        self.assertIn("LAYER", medium[1][106:])
-        self.assertIn("[Enter] Launch", medium[39])
-        wide, at_wide = layout(168, 46)
-        self.assertEqual(at_wide, (20, 71))
-        self.assertIn("[Enter] Launch", wide[45])
-        self.assertGreater(sum(c in '~.,":n^A' for line in wide[1:39] for c in line[:141]),
-                           3 * sum(c in '~.,":n^A' for line in small[1:17] for c in line[:53]), "far more world to see")
+        for width, height in ((80, 24), (132, 40), (168, 46)):
+            lines, (row, col) = layout(width, height)
+            cols, rows = width - 28, height - 8
+            self.assertTrue(1 + rows // 4 <= row <= 1 + rows * 3 // 4, "the balloon is in the middle half of the map")
+            self.assertTrue(1 + cols // 4 <= col <= 1 + cols * 3 // 4)
+            self.assertIn("LAYER", lines[1][width - 26:])
+            self.assertIn("[Enter] Launch", lines[height - 1])
+            self.assertEqual((self.game.map.cols, self.game.map.rows), (cols, rows), "the map takes what the window gives")
 
     def test_ctrl_l_redraws_the_whole_screen(self):
         first = self.paint()
@@ -358,13 +356,16 @@ class SessionPainting(unittest.TestCase):
         self.session._handle("CTRL-L")
         self.assertTrue(self.session.notice, "and it does not dismiss a notice")
 
-    def test_every_depth_and_charset_paints_the_same_text(self):
+    def test_every_depth_and_charset_says_the_same_thing(self):
+        # The map is drawn differently for each reading. Everything written
+        # beside and below it must read the same in all of them.
         texts = set()
         for depth in fw.COLOR_DEPTHS:
             for charset in fw.CHARSETS:
                 self.session.launch = dataclasses.replace(self.session.launch, color_depth=depth, charset=charset)
                 self.session.shown = None
-                texts.add(apply(self.paint(), 80, 24).text())
+                lines = apply(self.paint(), 80, 24).text().split("\n")
+                texts.add("\n".join([lines[0]] + [line[54:] for line in lines[1:17]] + lines[17:]))
         self.assertEqual(len(texts), 1, "colour and charset change how it is drawn, never what it says")
 
 

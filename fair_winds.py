@@ -29,7 +29,7 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "0.1.0.dev7"
+VERSION = "0.1.0.dev8"
 DOOR_API = 5
 MIN_WIDTH, MIN_HEIGHT = 80, 24
 MAX_DIMENSION = 1000
@@ -1812,16 +1812,27 @@ def nearest256(rgb) -> int:
         r, g, b = rgb
         steps = (0, 95, 135, 175, 215, 255)
 
-        def axis(v):
-            return min(range(6), key=lambda i: abs(steps[i] - v))
-        ri, gi, bi = axis(r), axis(g), axis(b)
+        def off(c):
+            return (c[0] - r) ** 2 + (c[1] - g) ** 2 + (c[2] - b) ** 2
+
+        def around(v):
+            low = max(i for i in range(6) if steps[i] <= v)
+            return (low, min(5, low + 1))
+        # The cube entry nearest by distance to a dark green is a grey: each
+        # axis rounds to the same step. So look at the entries around the
+        # colour and count a loss of saturation against them too.
+        chroma = max(r, g, b) - min(r, g, b)
+        ri, gi, bi = min(((i, j, k) for i in around(r) for j in around(g) for k in around(b)),
+                         key=lambda c: off((steps[c[0]], steps[c[1]], steps[c[2]]))
+                         + (max(steps[c[0]], steps[c[1]], steps[c[2]]) - min(steps[c[0]], steps[c[1]], steps[c[2]])
+                            - chroma) ** 2)
         cube = (steps[ri], steps[gi], steps[bi])
         grey_i = min(23, max(0, round(((r + g + b) / 3 - 8) / 10)))
         grey = 8 + 10 * grey_i
-
-        def off(c):
-            return (c[0] - r) ** 2 + (c[1] - g) ** 2 + (c[2] - b) ** 2
-        found = 232 + grey_i if off((grey, grey, grey)) < off(cube) else 16 + 36 * ri + 6 * gi + bi
+        # The grey ramp is for greys. A dark green or a deep blue is nearer to a
+        # grey by distance, but a forest drawn grey is no longer a forest.
+        neutral = max(r, g, b) - min(r, g, b) < 24
+        found = 232 + grey_i if neutral and off((grey, grey, grey)) < off(cube) else 16 + 36 * ri + 6 * gi + bi
         if len(_near256) > 8192:
             _near256.clear()
         _near256[rgb] = found
@@ -2042,6 +2053,260 @@ class Screen:
 
 
 # --------------------------------------------------------------------------
+# The map (S07): a window on the world, drawn as relief in half-block pixels
+# where the terminal can show it and in characters where it cannot.
+#
+# The window holds still. It moves only when the balloon leaves its middle
+# half, and then by half a window: a window that followed the balloon would
+# be a whole screen to send for every turn.
+# --------------------------------------------------------------------------
+
+MAP_CELL_KM = (5.0, 10.0)            # a character is twice as tall as it is wide
+MAP_PIXEL_KM = 5.0                   # so half a cell is a square of 5 km
+CLOUD_GRID = 4                       # cloud and squall are sampled every fourth pixel and blended between
+_MAP_GLYPHS = ("~", "~", ".", ",", '"', ":", "n", "^", "A")
+_MAP_ROLES = ("sea", "sea", "text", "land", "land", "text", "dim", "text", "text")
+_SEA_RAMP = ((62, 158, 168), (28, 106, 150), (14, 58, 108), (9, 32, 70))
+_OFF_WORLD = (9, 32, 70)
+_VEIL = ((15, 20, 31), (25, 31, 46))
+_CLOUD_RGB, _SQUALL_RGB = (244, 247, 252), (58, 60, 84)
+
+
+def _mix(a, b, t: float):
+    return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t)
+
+
+def terrain_rgb(m: int, biome: int):
+    """The colour of a piece of ground before the light falls on it."""
+    if biome <= SEA_SHALLOW:
+        t = min(1.0, -m / 2500.0) * (len(_SEA_RAMP) - 1)
+        i = min(len(_SEA_RAMP) - 2, int(t))
+        return _mix(_SEA_RAMP[i], _SEA_RAMP[i + 1], t - i)
+    if biome == SHORE:
+        return _mix((218, 204, 146), (150, 176, 98), min(1.0, m / 30.0))       # sand at the water, green behind it
+    if biome == GRASS:
+        return _mix((104, 164, 86), (134, 172, 90), min(1.0, m / 500.0))
+    if biome == FOREST:
+        return _mix((52, 112, 72), (70, 128, 78), min(1.0, m / 500.0))
+    if biome == DRY:
+        return _mix((204, 168, 104), (186, 142, 92), min(1.0, m / 500.0))
+    if biome == HILLS:
+        return _mix((164, 152, 98), (138, 116, 92), min(1.0, (m - 500) / 1000.0))
+    if biome == MOUNTAIN:
+        return _mix((128, 122, 124), (180, 180, 186), min(1.0, (m - 1500) / 1300.0))
+    return (244, 247, 250)
+
+
+class MapView:
+    """Draws a window on the world onto a Screen, and says where things are in it."""
+
+    def __init__(self, world: World, weather: Weather, pixels: bool):
+        self.world, self.weather, self.pixels = world, weather, pixels
+        self._lit: dict[tuple[int, int], list] = {}     # shaded colours per terrain tile
+        self._base_key = None
+        self._base: tuple[list, list] | None = None
+        self.x0 = self.y0 = 0.0
+        self.cols = self.rows = 0
+        self.left = self.top = 0
+        self._taken: set[tuple[int, int]] = set()
+
+    # -- the window ------------------------------------------------------------
+
+    @staticmethod
+    def origin(x: float, y: float, cols: int, rows: int) -> tuple[float, float]:
+        """The window's corner for a balloon at (x, y): it moves by half windows."""
+        half_w, half_h = cols * MAP_CELL_KM[0] / 2, rows * MAP_CELL_KM[1] / 2
+        return (x // half_w) * half_w - half_w / 2, (y // half_h) * half_h - half_h / 2
+
+    def cell_of(self, wx: float, wy: float) -> tuple[int, int] | None:
+        """The map cell that holds a place, as (column, row) on the screen, or None outside the window."""
+        col, row = int((wx - self.x0) // MAP_CELL_KM[0]), int((wy - self.y0) // MAP_CELL_KM[1])
+        if 0 <= col < self.cols and 0 <= row < self.rows:
+            return self.left + col, self.top + row
+        return None
+
+    # -- terrain in the light --------------------------------------------------
+
+    def _tile(self, tx: int, ty: int) -> list:
+        """A tile's colours with the light on them: slopes facing north-west are bright."""
+        found = self._lit.get((tx, ty))
+        if found is None:
+            tile, world, n = self.world.tile(tx, ty), self.world, TILE_N
+            elevation, biome = tile.elevation, tile.biome
+            bx, by = tx * TILE_KM + SAMPLE_KM / 2, ty * TILE_KM + SAMPLE_KM / 2
+
+            def height(i: int, j: int) -> int:
+                if 0 <= i < n and 0 <= j < n:
+                    return elevation[j * n + i]
+                return world.sample(bx + i * SAMPLE_KM, by + j * SAMPLE_KM)[0]      # over the edge: the neighbour's
+
+            found = []
+            for j in range(n):
+                for i in range(n):
+                    k = j * n + i
+                    m = elevation[k]
+                    c = terrain_rgb(m, biome[k])
+                    if biome[k] >= SHORE:
+                        if 0 < i < n - 1 and 0 < j < n - 1:
+                            rise = (elevation[k + n + 1] if elevation[k + n + 1] > 0 else 0) \
+                                - (elevation[k - n - 1] if elevation[k - n - 1] > 0 else 0)
+                        else:
+                            rise = max(0, height(i + 1, j + 1)) - max(0, height(i - 1, j - 1))
+                        shade = 1.0 + (0.36 if rise > 180 else -0.44 if rise < -220 else rise / 500.0)
+                        c = (c[0] * shade, c[1] * shade, c[2] * shade)
+                    found.append((int(c[0]) if c[0] < 255 else 255, int(c[1]) if c[1] < 255 else 255,
+                                  int(c[2]) if c[2] < 255 else 255))
+            if len(self._lit) > 96:
+                self._lit.clear()
+            self._lit[(tx, ty)] = found
+        return found
+
+    def _compose(self, day: int, minute: int, charted) -> tuple[list, list]:
+        """Top and bottom pixel rows for every map cell: terrain, veil, cloud, squall, night."""
+        cols, rows, x0, y0 = self.cols, self.rows, self.x0, self.y0
+        step, n = MAP_PIXEL_KM, TILE_N
+        frame = self.weather.frame(day, minute)
+        # Weather on a coarse grid, blended between: cloud and squall are soft things.
+        g = CLOUD_GRID
+        gw, gh = cols // g + 2, (rows * 2) // g + 2
+        cloud, squall = [], []
+        for gy in range(gh):
+            wy = y0 + gy * g * step
+            for gx in range(gw):
+                wx = x0 + gx * g * step
+                cover = frame.cloud(wx, wy)[0]
+                cloud.append(0.0 if cover < 0.35 else min(1.0, (cover - 0.35) / 0.5) * 0.72)
+                squall.append(frame.squall(wx, wy))
+        # Most of the sky is clear most of the time: note where there is any weather at all.
+        busy = bytearray(gw * gh)
+        for gy in range(gh - 1):
+            for gx in range(gw - 1):
+                k = gy * gw + gx
+                if cloud[k] or cloud[k + 1] or cloud[k + gw] or cloud[k + gw + 1] or max(
+                        squall[k], squall[k + 1], squall[k + gw], squall[k + gw + 1]) > 0.05:
+                    busy[k] = 1
+        night = 0.0
+        if minute >= DUSK_MINUTE:
+            night = min(1.0, (minute - DUSK_MINUTE) / 60.0 + 0.4)
+        tiles: dict[tuple[int, int], list] = {}
+        out: list[list] = []
+        for py in range(rows * 2):
+            wy = y0 + (py + 0.5) * step
+            sy = int(wy // SAMPLE_KM)
+            in_y = 0.0 <= wy < WORLD_H
+            fy = py / g
+            gy0 = int(fy)
+            ty_ = fy - gy0
+            row = []
+            for px in range(cols):
+                wx = x0 + (px + 0.5) * step
+                if in_y and 0.0 <= wx < WORLD_W:
+                    sx = int(wx // SAMPLE_KM)
+                    key = (sx // n, sy // n)
+                    lit = tiles.get(key)
+                    if lit is None:
+                        lit = tiles[key] = self._tile(*key)
+                    c = lit[(sy % n) * n + sx % n]
+                    if charted is not None and not charted(wx, wy):
+                        c = _VEIL[1] if (px + py * 3) % 7 == 0 else _VEIL[0]
+                else:
+                    c = _OFF_WORLD
+                k = gy0 * gw + px // g
+                if busy[k]:
+                    tx_ = px / g - px // g
+                    left_a, right_a = cloud[k] * (1 - tx_) + cloud[k + 1] * tx_, cloud[k + gw] * (1 - tx_) + cloud[k + gw + 1] * tx_
+                    left_q, right_q = squall[k] * (1 - tx_) + squall[k + 1] * tx_, squall[k + gw] * (1 - tx_) + squall[k + gw + 1] * tx_
+                    # In steps, so that cloud drifting a little does not re-send every cell under it.
+                    a = int((left_a * (1 - ty_) + right_a * ty_) * 8) / 8
+                    q = left_q * (1 - ty_) + right_q * ty_
+                    if a:
+                        c = _mix(c, _CLOUD_RGB, a)
+                    if q > 0.15:
+                        c = _mix(c, _SQUALL_RGB, int(min(0.92, q * 1.6) * 6) / 6)
+                    c = (int(c[0]), int(c[1]), int(c[2]))
+                if night:
+                    c = (int(c[0] * (1 - 0.55 * night)), int(c[1] * (1 - 0.5 * night)), int(c[2] * (1 - 0.3 * night)))
+                row.append(c)
+            out.append(row)
+        return out[0::2], out[1::2]
+
+    # -- drawing -----------------------------------------------------------------
+
+    def draw(self, screen: Screen, left: int, top: int, cols: int, rows: int,
+             x: float, y: float, day: int, minute: int, charted=None) -> None:
+        """Draw the ground and the weather. Markers go on afterwards with `mark` and `label`."""
+        self.left, self.top, self.cols, self.rows = left, top, cols, rows
+        self.x0, self.y0 = self.origin(x, y, cols, rows)
+        self._taken = set()
+        if self.pixels:
+            key = (day, minute, self.x0, self.y0, cols, rows, charted is not None)
+            if key != self._base_key or charted is not None:
+                self._base, self._base_key = self._compose(day, minute, charted), key
+            tops, bottoms = self._base
+            width = screen.width
+            for r in range(rows):
+                sy = top + r
+                if not 0 <= sy < screen.height:
+                    continue
+                k = sy * width + left
+                t_row, b_row = tops[r], bottoms[r]
+                for c in range(cols):
+                    if 0 <= left + c < width:
+                        screen.ch[k + c], screen.fg[k + c], screen.bg[k + c] = HALF_BLOCK, t_row[c], b_row[c]
+                        screen.split[k + c] = 1
+            screen._cells = None
+            return
+        frame = self.weather.frame(day, minute)
+        cw, ch = MAP_CELL_KM
+        for r in range(rows):
+            wy = self.y0 + (r + 0.5) * ch
+            for c in range(cols):
+                wx = self.x0 + (c + 0.5) * cw
+                if charted is not None and not charted(wx, wy):
+                    glyph, role = ("?" if (c + r * 3) % 7 == 0 else " "), "dim"
+                elif frame.squall(wx, wy) > SQUALL_THRESHOLD:
+                    glyph, role = "%", "warn"
+                else:
+                    biome = self.world.sample(wx, wy)[1]
+                    glyph, role = _MAP_GLYPHS[biome], _MAP_ROLES[biome]
+                screen.put(left + c, top + r, glyph, role)
+
+    def mark(self, screen: Screen, wx: float, wy: float, glyph: str, ink, force: bool = False):
+        """Put a glyph on the place. Returns its cell, or None if it is off the map or the cell is taken."""
+        cell = self.cell_of(wx, wy)
+        if cell is None or (cell in self._taken and not force):
+            return None
+        self._taken.add(cell)
+        if self.pixels:
+            screen.over(cell[0], cell[1], glyph, ink, 0.7)
+        else:
+            screen.put(cell[0], cell[1], glyph, ink)
+        return cell
+
+    def label(self, screen: Screen, cell: tuple[int, int], text: str, ink) -> bool:
+        """Write a name beside a marker: to its right if it fits, else to its left, else not at all.
+
+        A label never runs off the map and never covers a marker, the
+        balloon or another label.
+        """
+        row = cell[1]
+        for start in (cell[0] + 1, cell[0] - len(text)):
+            span = [(start + i, row) for i in range(len(text))]
+            if start < self.left or start + len(text) > self.left + self.cols:
+                continue
+            if any(c in self._taken for c in span):
+                continue
+            for (cx, cy), letter in zip(span, text):
+                self._taken.add((cx, cy))
+                if self.pixels:
+                    screen.over(cx, cy, letter, ink, 0.7)
+                else:
+                    screen.put(cx, cy, letter, ink)
+            return True
+        return False
+
+
+# --------------------------------------------------------------------------
 # The plain flight (S05): the whole turn on an 80 x 24 text screen, to find
 # out whether choosing a layer is fun before anything is drawn. Its save is
 # one small file per pilot; the world database replaces it in S10.
@@ -2051,10 +2316,6 @@ PLAIN_SAVE_VERSION = 1
 PLAIN_HORIZON = 6                    # turns a track looks ahead: the first instruments
 POST_CHOICES = 3                     # destinations on offer at once
 STATION_REACH_KM = 150.0             # a town or station sharpens the forecast this far out
-MAP_COLS, MAP_ROWS = 52, 16
-MAP_CELL_KM = (5.0, 10.0)            # a character is twice as tall as it is wide
-_MAP_GLYPHS = ("~", "~", ".", ",", '"', ":", "n", "^", "A")
-_MAP_ROLES = ("sea", "sea", "text", "land", "land", "text", "dim", "text", "text")
 _TRACK_ROLES = {"sink": "cool", "hold": "accent", "climb": "warm", "launch": "accent", "jettison": "warm"}
 
 
@@ -2062,6 +2323,22 @@ def data_dir(environ) -> Path:
     """Where this installation keeps its world."""
     named = environ.get("DOOR_FW_DATA_DIR")
     return Path(named) if named else Path(__file__).resolve().parent / "data"
+
+
+def want_pixels(launch: Launch, environ) -> bool:
+    """Relief in half-block pixels, or the character map?
+
+    Pixels need colour to tell land from sea and a charset with the half
+    block. Sixteen colours and plain ASCII get the character map, which is a
+    reading made for them, not a degraded picture. DOOR_FW_PIXELS overrides:
+    `half` forces pixels, `shade` forces characters.
+    """
+    choice = environ.get("DOOR_FW_PIXELS", "auto").strip().lower()
+    if choice == "half":
+        return launch.charset != "ascii"
+    if choice == "shade":
+        return False
+    return launch.color_depth != "16" and launch.charset != "ascii"
 
 
 def clock_text(minute: int) -> str:
@@ -2081,11 +2358,12 @@ class PlainFlight:
     can end at any moment and resume on the same turn.
     """
 
-    def __init__(self, launch: Launch, folder: Path | None):
+    def __init__(self, launch: Launch, folder: Path | None, environ=None):
         self.launch = launch
         node = launch.node_id or "standalone"
         self.world = World(world_seed(node), folder)
         self.weather = Weather(self.world)
+        self.map = MapView(self.world, self.weather, want_pixels(launch, environ or {}))
         self.engine = Flight(self.world, self.weather, f"{node}/{launch.user_id}")
         self.path = None
         if folder is not None and not launch.guest:
@@ -2499,57 +2777,34 @@ class PlainFlight:
         return text, "accent"
 
     def _draw_map(self, s: "Session") -> list[str]:
-        state = self.state
-        cw, ch = MAP_CELL_KM
-        x0, y0 = state.x - self.map_cols / 2 * cw, state.y - self.map_rows / 2 * ch
-        frame = self.weather.frame(state.day, state.minute)
-        cells: dict[tuple[int, int], tuple[str, str]] = {}
-
-        def put(wx: float, wy: float, glyph: str, role: str) -> tuple[int, int] | None:
-            col, row = int((wx - x0) // cw), int((wy - y0) // ch)
-            if 0 <= col < self.map_cols and 0 <= row < self.map_rows:
-                cells[(col, row)] = (glyph, role)
-                return col, row
-            return None
-
-        out = []
-        for row in range(self.map_rows):
-            run, run_role, start = [], None, 0
-            for col in range(self.map_cols):
-                wx, wy = x0 + (col + 0.5) * cw, y0 + (row + 0.5) * ch
-                biome = self.world.sample(wx, wy)[1]
-                glyph, role = _MAP_GLYPHS[biome], _MAP_ROLES[biome]
-                if frame.squall(wx, wy) > SQUALL_THRESHOLD:
-                    glyph, role = "%", "warn"
-                if role != run_role:
-                    if run:
-                        out.append(s._line(1 + row, 1 + start, "".join(run), run_role))
-                    run, run_role, start = [], role, col
-                run.append(glyph)
-            if run:
-                out.append(s._line(1 + row, 1 + start, "".join(run), run_role))
-        for kind, group, glyph, role in (("town", self.world.towns, "o", "text"),
-                                         ("station", self.world.stations, "+", "cool")):
+        state, view, screen = self.state, self.map, s.frame
+        view.draw(screen, 1, 1, self.map_cols, self.map_rows, state.x, state.y, state.day, state.minute)
+        # The balloon first: nothing may cover it, and names keep clear of it.
+        view.mark(screen, state.x, state.y, "@", "bright", force=True)
+        wanted, others = [], []
+        for kind, group, glyph, ink in (("town", self.world.towns, "o", "text"),
+                                        ("station", self.world.stations, "+", "cool")):
             for i, place in enumerate(group):
-                wanted = (kind, i) in self.targets
-                where = put(place["x"], place["y"], "#" if wanted else glyph, "accent" if wanted else role)
-                if where and wanted:
-                    name = place["name"][:self.map_cols - where[0] - 2]
-                    for j, letter in enumerate(name):
-                        cells[(where[0] + 1 + j, where[1])] = (letter, "accent")
+                (wanted if (kind, i) in self.targets else others).append((place, glyph, ink))
+        cells = []
+        for place, _, _ in wanted:
+            cell = view.mark(screen, place["x"], place["y"], "#", "accent")
+            cells.append((cell, place))
+        for place, glyph, ink in others:
+            view.mark(screen, place["x"], place["y"], glyph, ink)
         if state.status in ("aloft", "ground") and self.engine.actions(state):
             order = [a for a in self.choices() if a != self.choice]
             if self.choice in ("sink", "hold", "climb", "launch", "jettison"):
-                order.append(self.choice)           # the chosen track is drawn last, on top
+                order.insert(0, self.choice)        # the chosen track first: where tracks share a cell, it shows
             for action in order:
                 look = self.preview(action)
-                role = _TRACK_ROLES[action] if action == self.choice else "dim"
+                ink = _TRACK_ROLES[action] if action == self.choice else "dim"
                 for px, py, layer in look["points"]:
-                    put(px, py, str(layer), role)
-        cells[(self.map_cols // 2, self.map_rows // 2)] = ("@", "bright")
-        for (col, row), (glyph, role) in cells.items():
-            out.append(s._line(1 + row, 1 + col, glyph, role))
-        return out
+                    view.mark(screen, px, py, str(layer), ink)
+        for cell, place in cells:                    # names last, where there is room left for them
+            if cell is not None:
+                view.label(screen, cell, place["name"], "accent")
+        return []
 
     def _draw_panel(self, s: "Session", phase: str) -> list[str]:
         state, col = self.state, self.panel_col
@@ -2893,7 +3148,7 @@ def main(argv=None) -> int:
     if launch.host == "standalone":
         local.enter()
     session = Session(launch, Input(sys.stdin.fileno(), console=local.console), out,
-                      game=PlainFlight(launch, data_dir(os.environ)))
+                      game=PlainFlight(launch, data_dir(os.environ), os.environ))
 
     def on_terminate(signum, frame):
         session.terminated = True
