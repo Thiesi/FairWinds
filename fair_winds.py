@@ -2375,7 +2375,9 @@ class Session:
         self.resized = False                  # set from a signal handler
         self.terminated = False               # set from a signal handler
         self.view = "front"
-        self.notice = getattr(game, "opening_notice", "")
+        self.notice = ""
+        if game is not None and game.opening_notice:
+            self.notice, game.opening_notice = game.opening_notice, ""      # said once, on the first screen
         self._warned: set[float] = set()
         self._dirty = True
         self._next_poll = self.started + GEOMETRY_POLL
