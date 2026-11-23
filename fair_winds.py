@@ -2064,12 +2064,29 @@ class Screen:
 MAP_CELL_KM = (5.0, 10.0)            # a character is twice as tall as it is wide
 MAP_PIXEL_KM = 5.0                   # so half a cell is a square of 5 km
 CLOUD_GRID = 4                       # cloud and squall are sampled every fourth pixel and blended between
+LABEL_MIN = 4                        # a name shortened to fewer letters than this says nothing
 _MAP_GLYPHS = ("~", "~", ".", ",", '"', ":", "n", "^", "A")
 _MAP_ROLES = ("sea", "sea", "text", "land", "land", "text", "dim", "text", "text")
 _SEA_RAMP = ((62, 158, 168), (28, 106, 150), (14, 58, 108), (9, 32, 70))
 _OFF_WORLD = (9, 32, 70)
 _VEIL = ((15, 20, 31), (25, 31, 46))
 _CLOUD_RGB, _SQUALL_RGB = (244, 247, 252), (58, 60, 84)
+
+
+NIGHT_STEPS = ((DUSK_MINUTE - 30, 1 / 3), (DUSK_MINUTE, 2 / 3), (DUSK_MINUTE + 45, 1.0))
+
+
+def night_level(minute: int) -> float:
+    """How dark the map is, from 0 to 1.
+
+    Night falls in three steps around dusk, not smoothly: every change of
+    light re-sends the whole map, so there are three of them and no more.
+    """
+    level = 0.0
+    for start, value in NIGHT_STEPS:
+        if minute >= start:
+            level = value
+    return level
 
 
 def _mix(a, b, t: float):
@@ -2156,8 +2173,10 @@ class MapView:
                         c = (c[0] * shade, c[1] * shade, c[2] * shade)
                     found.append((int(c[0]) if c[0] < 255 else 255, int(c[1]) if c[1] < 255 else 255,
                                   int(c[2]) if c[2] < 255 else 255))
-            if len(self._lit) > 96:
-                self._lit.clear()
+            # Room for every tile of the world, so the biggest window never
+            # throws away what it is in the middle of drawing. Oldest out first.
+            while len(self._lit) >= TILES_X * TILES_Y:
+                del self._lit[next(iter(self._lit))]
             self._lit[(tx, ty)] = found
         return found
 
@@ -2185,9 +2204,7 @@ class MapView:
                 if cloud[k] or cloud[k + 1] or cloud[k + gw] or cloud[k + gw + 1] or max(
                         squall[k], squall[k + 1], squall[k + gw], squall[k + gw + 1]) > 0.05:
                     busy[k] = 1
-        night = 0.0
-        if minute >= DUSK_MINUTE:
-            night = min(1.0, (minute - DUSK_MINUTE) / 60.0 + 0.4)
+        night = night_level(minute)
         tiles: dict[tuple[int, int], list] = {}
         out: list[list] = []
         for py in range(rows * 2):
@@ -2284,26 +2301,43 @@ class MapView:
         return cell
 
     def label(self, screen: Screen, cell: tuple[int, int], text: str, ink) -> bool:
-        """Write a name beside a marker: to its right if it fits, else to its left, else not at all.
+        """Write a name beside a marker: to its right if it fits, else to its left,
+        else shortened on the roomier side, else not at all.
 
-        A label never runs off the map and never covers a marker, the
-        balloon or another label.
+        A name never runs off the map, never covers a marker, the balloon or
+        another name, and keeps a cell clear of the next thing along.
         """
-        row = cell[1]
-        for start in (cell[0] + 1, cell[0] - len(text)):
-            span = [(start + i, row) for i in range(len(text))]
-            if start < self.left or start + len(text) > self.left + self.cols:
-                continue
-            if any(c in self._taken for c in span):
-                continue
-            for (cx, cy), letter in zip(span, text):
-                self._taken.add((cx, cy))
-                if self.pixels:
-                    screen.over(cx, cy, letter, ink, 0.7)
-                else:
-                    screen.put(cx, cy, letter, ink)
-            return True
-        return False
+        row, edge_l, edge_r = cell[1], self.left, self.left + self.cols
+
+        def room(step: int) -> int:
+            """Free cells beside the marker in one direction, not counting a gap kept before the next thing."""
+            n, x = 0, cell[0] + step
+            while edge_l <= x < edge_r and (x, row) not in self._taken:
+                n, x = n + 1, x + step
+            return n if not (edge_l <= x < edge_r) else n - 1      # leave one cell clear of whatever stopped it
+
+        right, left = room(1), room(-1)
+        if right >= len(text):
+            start = cell[0] + 1
+        elif left >= len(text):
+            start = cell[0] - len(text)
+        else:
+            # It fits on neither side whole. A shortened name is better than none.
+            side = right if right >= left else left
+            if side < LABEL_MIN:
+                return False
+            text = text[:side]
+            start = cell[0] + 1 if right >= left else cell[0] - side
+        for i, letter in enumerate(text):
+            self._taken.add((start + i, row))
+            if self.pixels:
+                screen.over(start + i, row, letter, ink, 0.7)
+            else:
+                screen.put(start + i, row, letter, ink)
+        for pad in (start - 1, start + len(text)):                    # the gap, so two names never run together
+            if pad != cell[0]:
+                self._taken.add((pad, row))
+        return True
 
 
 # --------------------------------------------------------------------------

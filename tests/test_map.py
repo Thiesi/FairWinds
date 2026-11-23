@@ -104,6 +104,17 @@ class Readings(unittest.TestCase):
 
 
 class Weatherly(unittest.TestCase):
+    def test_night_falls_in_three_steps(self):
+        levels = [fw.night_level(m) for m in range(fw.DAWN_MINUTE, fw.MINUTES_PER_DAY, fw.TURN_MINUTES)]
+        self.assertEqual(levels[0], 0.0)
+        self.assertEqual(levels[-1], 1.0)
+        self.assertEqual(levels, sorted(levels))
+        self.assertEqual(len(set(levels)), 4, "day, and three steps of dusk")
+        changes = sum(a != b for a, b in zip(levels, levels[1:]))
+        self.assertEqual(changes, 3, "so the whole map is re-sent three times at dusk, not every turn")
+        self.assertEqual(fw.night_level(fw.DUSK_MINUTE - 45), 0.0)
+        self.assertGreater(fw.night_level(fw.DUSK_MINUTE - 30), 0.0, "the light starts to go before dusk")
+
     def test_night_is_darker(self):
         v = view()
         v.draw(fw.Screen(80, 24), 1, 1, 52, 16, 400.0, 300.0, 1, 720)       # sets the window
@@ -129,6 +140,22 @@ class Weatherly(unittest.TestCase):
         v.draw(screen, 1, 1, 52, 16, 2.0, 2.0, 1, 600)
         self.assertLess(v.x0, 0)
         self.assertEqual(tuple(screen.fg[1 * 80 + 1]), (9, 32, 70))
+        for x, y in ((fw.WORLD_W - 1.0, fw.WORLD_H - 1.0), (0.0, fw.WORLD_H - 1.0), (fw.WORLD_W - 1.0, 0.0),
+                     (-400.0, -400.0), (fw.WORLD_W + 400.0, fw.WORLD_H + 400.0)):
+            far = fw.Screen(80, 24)
+            v.draw(far, 1, 1, 52, 16, x, y, 1, 600)
+            self.assertTrue(all(far.split[r * 80 + c] for r in range(1, 17) for c in range(1, 53)))
+        for key in ((0, 0), (fw.TILES_X - 1, 0), (0, fw.TILES_Y - 1), (fw.TILES_X - 1, fw.TILES_Y - 1)):
+            self.assertEqual(len(v._tile(*key)), fw.TILE_N * fw.TILE_N, "a tile on the world's border lights like any other")
+
+    def test_the_biggest_window_keeps_its_tiles(self):
+        v = view()
+        for ty in range(fw.TILES_Y):
+            for tx in range(fw.TILES_X):
+                v._tile(tx, ty)
+        first = v._lit[(0, 0)]
+        self.assertEqual(len(v._lit), fw.TILES_X * fw.TILES_Y, "there is room for the whole world")
+        self.assertIs(v._tile(0, 0), first, "and nothing drawn a moment ago was thrown away")
 
     def test_the_same_moment_is_composed_once(self):
         v = view()
@@ -183,10 +210,35 @@ class Markers(unittest.TestCase):
         self.assertFalse(self.view.label(self.screen, again, "Somewhere Long", "accent"), "no room either side: no name")
         self.assertEqual(self.row_text(3)[15], "@")
 
-    def test_a_name_too_long_for_the_map_is_left_out(self):
+    def test_a_name_too_long_is_shortened_not_dropped(self):
         cell = self.view.mark(self.screen, *self.at(25, 9), "#", "accent")
-        self.assertFalse(self.view.label(self.screen, cell, "N" * 60, "accent"))
-        self.assertEqual(self.row_text(9).count("N"), 0)
+        self.assertTrue(self.view.label(self.screen, cell, "N" * 60, "accent"))
+        text = self.row_text(9)
+        self.assertEqual(text.count("N"), 26, "it takes the roomier side, to the edge of the map")
+        self.assertEqual(text[53:].strip(), "")
+        self.assertEqual(text[0], " ")
+
+    def test_a_name_with_no_room_at_all_is_left_out(self):
+        self.view.mark(self.screen, *self.at(22, 9), "o", "text")
+        self.view.mark(self.screen, *self.at(28, 9), "o", "text")
+        cell = self.view.mark(self.screen, *self.at(25, 9), "#", "accent")
+        self.assertFalse(self.view.label(self.screen, cell, "Thistle Cairn", "accent"), "two cells either side says nothing")
+        self.assertNotIn("Th", self.row_text(9))
+
+    def test_two_names_never_run_together(self):
+        first = self.view.mark(self.screen, *self.at(10, 4), "#", "accent")
+        self.assertTrue(self.view.label(self.screen, first, "Foo", "accent"))
+        second = self.view.mark(self.screen, *self.at(17, 4), "#", "accent")
+        self.assertTrue(self.view.label(self.screen, second, "Bar", "accent"))
+        text = self.row_text(4)
+        self.assertNotIn("FooBar", text)
+        self.assertIn("#Foo", text)
+        self.assertIn("#Bar", text, "there was room on the right, so it did not crowd the first name")
+        third = self.view.mark(self.screen, *self.at(30, 4), "#", "accent")
+        fourth = self.view.mark(self.screen, *self.at(36, 4), "#", "accent")
+        self.assertTrue(self.view.label(self.screen, third, "Gull", "accent"))
+        self.assertTrue(self.view.label(self.screen, fourth, "Wren Rock", "accent"))
+        self.assertRegex(self.row_text(4), r"#Gull[^#G]#Wren Rock", "a cell is kept clear between a name and the next marker")
 
 
 class Out:

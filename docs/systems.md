@@ -552,12 +552,15 @@ for them. `DOOR_FW_PIXELS` overrides: `half` forces pixels, `shade` characters.
 The relief is composed in order: terrain from the tiles, coloured by biome and
 height and lit from the north-west; the veil over what nobody has charted;
 cloud and squall, sampled every fourth pixel and blended between; and night,
-which darkens it. The lit colours of a tile are worked out once and kept. A
+which darkens it in three steps (a third at 19:30, two thirds at 20:00, full at
+20:45), because every change of light re-sends the whole map. The lit colours of a tile are worked out once and kept. A
 moment's map is composed once and reused while the pilot looks at other
 layers. Then, on top: the balloon, places, tracks and names. A marker takes
 its cell on the darkened mean of the two pixels beneath. A name goes to the
-right of its marker if it fits, else to the left, else it is left out: it
-never runs off the map and never covers a marker, the balloon or another name.
+right of its marker if it fits, else to the left, else shortened on the roomier
+side down to four letters, else it is left out. It never runs off the map,
+never covers a marker, the balloon or another name, and keeps a cell clear of
+the next thing along its row.
 
 **The window holds still.** It moves only when the balloon leaves its middle
 half, and then by half a window, so the balloon is always in the middle half.
