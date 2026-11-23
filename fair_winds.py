@@ -28,7 +28,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "0.1.0.dev5"
+VERSION = "0.1.0.dev6"
 DOOR_API = 5
 MIN_WIDTH, MIN_HEIGHT = 80, 24
 MAX_DIMENSION = 1000
@@ -2033,7 +2033,7 @@ class PlainFlight:
         if code in ("hold", "climb", "sink", "jettison"):
             return ""                      # the drift line says it
         if code == "drift":
-            return f"Layer {self.state.layer if self.state.layer else '-'}: {event[1]:g} km on a {event[2]} wind."
+            return f"Layer {self.state.layer if self.state.layer else '-'}: {event[1]:g} km, wind {event[2]}."
         if code == "forced_climb":
             return f"High ground: forced up into layer {event[1]} for {event[2]} fuel."
         if code == "forced_jettison":
