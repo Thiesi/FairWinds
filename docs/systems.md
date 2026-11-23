@@ -268,7 +268,8 @@ a pibal is for. At a station the forecast is exact either way.
 
 A track follows fuel and ballast as the flight would, so it never shows
 somewhere the balloon cannot get to. It reports the fuel and the ballast sacks
-that forced climbs would cost, and it ends early where the flight would: at ground above the
+that forced climbs would cost, and it ends early where the flight would: at
+ground above the
 ceiling, at a forced climb that cannot be paid for, or where the fuel for
 holding runs out.
 
@@ -498,19 +499,38 @@ get an art-directed reading, never a nearest-colour fallback.
 
 **Layout tiers.** By the caller's geometry, changing live on resize.
 
-| Tier | From | What it adds |
+| Tier | From | The panel |
 | --- | --- | --- |
-| Small | 80 by 24 | Map, the layer table, stores, three log lines, keys |
-| Medium | 132 by 40 | Relief map, the sky column, layer rows, a longer log |
-| Wide | 168 by 46 | Forecast strip, pilots in the air, cargo |
+| Small | 80 by 24 | 26 columns: a table of the layers within reach, stores as numbers, the post |
+| Medium | 132 by 40 | 40 columns: the sounding, stores as bars, the landing named, the post |
+| Wide | 168 by 46 | The same, and the forecast for the layer in view, hour by hour for six hours |
 
 Within a tier the layout follows the terminal cell for cell: the panel keeps
 its width, the log and keys keep their rows, and the map takes everything
-else. 80 by 24 gives a map of 52 by 16 cells, 132 by 40 one of 104 by 32, and
-168 by 46 one of 140 by 38, so a bigger window shows more of the world. What
-each tier adds beyond a bigger map arrives with S07 and S08.
+else. 80 by 24 gives a map of 52 by 16 cells, 132 by 40 one of 90 by 32, and
+168 by 46 one of 126 by 38, so a bigger window shows more of the world.
 
-A terminal 200 columns or wider may later show the map and chart side by side.
+**The sounding.** All six layers from the jet down, two rows each: the layer's
+name, its wind as the pilot knows it (`~` marks a forecast), and the fuel to
+get there: a number for a step that is on offer, `--` for a step that cannot be
+paid for, nothing for a layer more than a step away (or when nothing at all is
+on offer, as at midnight). Under that is a bar of its
+speed, ten km/h to a block for every layer so that bars can be compared, with a
+word where there is one to say: `you`, `icing`, `cloud deck`, `out of reach`,
+`needs oxygen`, or `ground` where the land fills the layer. The layer the
+balloon is in says what is in it too: `you, icing`.
+Beside the rows, where the map is drawn in pixels, stands a slice of sky eight
+cells wide: darker with height, the ground filling the layers it reaches, the
+cloud deck in its layer, and the balloon hanging in the layer it is in. On the
+character map there is no sky column and the rows start at the panel's edge.
+
+Stores are bars for fuel, wear and daylight, and a row of marks for ballast
+sacks and pibals. The ground wind is the lowest layer's wind and is known only
+as well as that layer is: read from within it or by a pibal, a forecast marked
+`~` from above. The landing it would give is named when it can be made, from
+the lowest open layer. Bars and marks use only the full block, the middle dot
+and the
+black square, which CP437 has; an ASCII caller gets `#` and `-`.
 
 **Screens.** Briefing, flight, station, post office, stores, rigging loft,
 chart, almanac, album, guestbook, Daily Drift, Trials, gazette, hall, help.
