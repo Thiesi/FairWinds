@@ -224,56 +224,89 @@ interpolate.
 
 ## 5. Flight
 
-**State.** Position, layer (0 on the ground), fuel, ballast, pibals, wear,
-cargo, the world day and the turn number.
+**State.** Position, layer (0 on the ground), status (ground, aloft, stranded,
+ditched), fuel, ballast, pibals, wear, cargo, the world day and the turn
+number, and what the balloon is fitted with: its ceiling, oxygen, night gear,
+an ice-proof envelope, its burner's climb cost. A state is never changed; a
+turn makes a new one, and a state can be written down and read back exactly.
 
-**A turn.** The pilot picks an action. The action applies, the balloon drifts
-for 15 minutes on the true wind of the layer it is now in, hazards resolve, the
-turn is committed, and only then is the result shown.
+**A turn.** The pilot picks an action from those on offer. The action applies,
+the balloon drifts for 15 minutes on the true wind of the layer it is now in,
+the ground ahead and the hazards resolve, and the new state is returned for the
+caller to commit before anything is shown. Turns are numbered from dawn at
+06:00; turn 72 is midnight.
 
 | Action | Fuel | Effect |
 | --- | --- | --- |
-| Launch | 2 | Ground to layer 1 |
-| Hold | 1 by day, 0 from 11:00 to 15:00, 2 at night | Stay in the layer |
+| Launch | 2 | From the ground into the lowest open layer |
+| Hold | 1 by day, 0 from 11:00 to 15:00, 2 from 20:00 | Stay in the layer |
 | Climb | 3, plus 1 into layer 5, plus 2 into layer 6 | Up one layer |
 | Sink | 0 | Down one layer |
-| Jettison | 0, one ballast sack | Up one layer at once, no fuel |
+| Jettison | 0, one ballast sack | Up one layer, no fuel |
 | Pibal | 0, one pibal, no turn | True wind in every layer here, four turns |
-| Land | 0 | From layer 1 to the ground, if the surface allows |
+| Land | 0 | From the lowest open layer to the ground; takes the turn, no drift |
 
-Starting stores: 60 fuel, 5 sacks, 3 pibals. Fuel, sacks and pibals are bought
-at towns and masts.
+Starting stores: 60 fuel, 5 sacks, 3 pibals. The first envelope reaches layer
+3. Fuel, sacks and pibals are bought at towns and masts.
+
+**The lowest open layer** is the lowest one the ground here does not fill: 1
+over lowland, 2 over hills, 3 over high mountain, 4 over the highest peaks. A
+balloon launches into it, lands from it and cannot sink below it.
 
 **Preview.** Before committing, the pilot steps through the layers within one
-step. For each, the screen draws the forecast track for the instrument's
-horizon and the cost. This is the core of the interface.
+step. For each, `preview` returns the forecast track for the instrument's
+horizon (the action, then holding) and the cost. The first step is the true
+wind in the pilot's own layer, and in any layer while a pibal's reading lasts.
+This is the core of the interface.
 
-**Terrain.** If the drift would carry the balloon into a blocked layer, it
-climbs one layer automatically at double cost. With no fuel and no ballast it
-comes down on the high ground: a hard landing and a stranding.
+**Terrain.** If the drift carries the balloon to ground that fills its layer,
+it climbs over at double the climb cost per layer, spending a ballast sack for
+any layer the fuel cannot pay for. With neither it comes down on the high
+ground: a hard landing and a stranding. Ground that rises above the envelope's
+ceiling cannot be crossed at all: the balloon is held in its lee for the turn,
+does not move, and takes 2 wear. A previewed track shows a forced climb and
+stops at ground it cannot cross.
 
-**Landing.** By surface wind: up to 15 km/h is clean; up to 30 is rough (wear,
-and a check on fragile cargo); above 30 is refused unless fuel is gone, and is
-then hard (heavy wear, half the cargo lost). A night landing away from a lit
-mast is one class worse. Fog is one class worse without a mast.
+**Landing.** By surface wind: up to 15 km/h is clean; up to 30 is rough (10
+wear, and fragile cargo is damaged); above 30 is hard (30 wear, about half the
+cargo lost, the fragile survivors damaged). At night away from a town or
+station it is one class worse, unless the balloon has night gear. In fog away
+from a town or station it is one class worse again. A hard landing is refused
+while the pilot has any other way to stay up. A town or station counts as
+reached within 7.5 km of it.
 
-**Out of fuel.** The balloon sinks one layer a turn and lands where it is.
+**Out of fuel.** Only free actions remain: sinking, landing, a jettison, and
+holding in the midday sun. So the balloon sinks a layer a turn and lands where
+it is.
+
+**Midnight.** A balloon still aloft at turn 72 is put down where it is.
 
 **Stranded.** Down in the wild with no fuel. The pilot may walk out to the
-nearest town (two days, section 2) or wait for a rescue (section 7).
+nearest town (two days, section 2) or wait for a rescue (section 7). Out of
+fuel at a town or station is not a stranding.
 
 **At sea.** A landing on water is a ditching: the packet boat returns the pilot
 to the nearest port, cargo is lost, one day passes.
 
-**Wear.** 0 to 100. Rough and hard landings, squalls and icing add to it. At 100
-the balloon is grounded until repaired at a town or mast. Nothing is ever
-destroyed and no career ends.
+**Wear.** 0 to 100. Rough and hard landings, squalls, rotor and ridges add to
+it. At 100 the balloon cannot launch until repaired at a town or mast. Nothing
+is ever destroyed and no career ends.
 
-**Hazards.** Squall: each turn inside one moves the balloon a layer up or down
-by the keyed source and adds wear. Icing: above the icing level without an
-upgraded envelope, holding costs double. Rotor: in the lee of a ridge in layers
-1 and 2, a keyed chance of losing a layer. Every hazard is visible on the map or
-named in the forecast before the pilot enters it.
+**Hazards.** Each is a keyed draw for the pilot, the day and the turn.
+
+- *Squall.* In layers 1 to 4, where the squall field is above 0.4: the balloon
+  is shoved up or down a layer, within the ground and its ceiling, and takes up
+  to 6 wear.
+- *Rotor.* In layers 1 and 2, with ground within 15 km upwind that reaches the
+  balloon's layer: a 35 percent chance each turn of 2 wear, and of dropping a
+  layer where there is one below. (The plan had rotor only drop a layer; real
+  terrain almost never puts lowland that close behind a range, so it could not
+  happen.)
+- *Icing.* At or above the icing level without an ice-proof envelope, holding
+  costs double, and at least 2.
+
+Every hazard is visible on the map or named in the forecast before the pilot
+enters it.
 
 ## 6. Economy and progress
 
