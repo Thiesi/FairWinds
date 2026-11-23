@@ -2879,7 +2879,8 @@ class Store:
         """
         meta = dict(self.db.execute("SELECT key, value FROM meta"))
         cal = read_calendar(meta)
-        if cal is not None and calendar_day(cal, local) == cal["high_day"]                 and (not zone or meta.get("timezone") == zone):
+        if (cal is not None and calendar_day(cal, local) == cal["high_day"]
+                and (not zone or meta.get("timezone") == zone)):
             return cal["high_day"], cal
 
         def work():
