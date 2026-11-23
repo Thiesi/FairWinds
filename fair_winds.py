@@ -2580,7 +2580,9 @@ class PlainFlight:
         self.motion = want_motion(launch, environ or {}) and self.map.pixels      # the character map's wind holds still
         self.frames_left = 0              # frames of moving wind still to show
         self.pending_scene: dict | None = None    # a scene the last turn earned, for the session to play
-        self.heard: list = []             # what the last turn said, each line whole (the log keeps three, wrapped)
+        # What the last turn said, each line whole (the log keeps three, wrapped).
+        # A turn empties it first; lines said between turns sit here unread.
+        self.heard: list = []
         self.opening_notice = ""          # shown on the first screen, where it cannot scroll away
         loaded = self._load()
         if loaded is not True:
@@ -2825,7 +2827,8 @@ class PlainFlight:
             lines = [line.split("  ", 1)[-1] if line[:2].isdigit() else line for line in self.heard]
             caption = next((line for line in lines if line.startswith(("Down ", "Midnight"))),
                            lines[0] if lines else "Down.")
-            sub = next((line for line in lines if line != caption and ("delivered" in line or "no post" in line)), "")
+            sub = next((line for line in lines if line != caption
+                        and ("delivered" in line or "no post" in line or "stranded" in line)), "")
         return {"kind": kind, "hour": minute / 60.0, "cloud": frame.cloud(state.x, state.y)[0],
                 "biome": self.world.sample(state.x, state.y)[1], "place": place is not None,
                 "seed": int(state.x) * 7919 + int(state.y) * 104729 + 17, "caption": caption, "sub": sub}

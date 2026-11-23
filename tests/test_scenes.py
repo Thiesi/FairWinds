@@ -210,6 +210,23 @@ class InSession(GameCase):
         self.assertEqual(game.frames_left, 0)
         self.assertGreaterEqual(len(writes), fw.BURST_FRAMES - 2, "nearly every frame was painted, not one lump")
 
+    def test_a_stranding_and_a_ditching_are_said_under_the_picture(self):
+        game, session, clock = self.start()
+        game.heard = []
+        game._say("21:15  " + game._describe(("land", "hard", None)))
+        game._say("21:15  " + game._describe(("stranded",)))
+        asked = game._scene_for("landing")
+        self.assertEqual(asked["caption"], "Down in the wild: a hard landing.")
+        self.assertIn("stranded", asked["sub"])
+        game.heard = []
+        game._say("09:30  " + game._describe(("ditch",)))
+        asked = game._scene_for("landing")
+        self.assertTrue(asked["caption"].startswith("Down on the water"))
+        self.assertEqual(asked["sub"], "")
+        game.heard = []
+        game._say("23:45  " + game._describe(("midnight",)))
+        self.assertTrue(game._scene_for("landing")["caption"].startswith("Midnight"))
+
     def test_a_landing_caption_is_the_landing_however_much_else_was_said(self):
         game, session, clock = self.start()
         game.heard = []
