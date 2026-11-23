@@ -29,7 +29,7 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "0.1.0.dev8"
+VERSION = "0.1.0.dev9"
 DOOR_API = 5
 MIN_WIDTH, MIN_HEIGHT = 80, 24
 MAX_DIMENSION = 1000
@@ -2065,6 +2065,17 @@ MAP_CELL_KM = (5.0, 10.0)            # a character is twice as tall as it is wid
 MAP_PIXEL_KM = 5.0                   # so half a cell is a square of 5 km
 CLOUD_GRID = 4                       # cloud and squall are sampled every fourth pixel and blended between
 LABEL_MIN = 4                        # a name shortened to fewer letters than this says nothing
+WIND_GRID_KM = 20.0                  # the wind shown is sampled this far apart and blended between
+STREAK_CELLS_EACH = 50               # one streak of wind for this many map cells
+STREAKS_MIN = 12
+STREAK_TRAIL = 5                     # pixels in a streak's tail
+STREAK_LIFE = 60                     # frames before a streak starts again somewhere else
+STREAK_PX_PER_KMH = 0.02             # 40 km/h moves a streak most of a pixel a frame
+STREAK_FAINT, STREAK_BRIGHT = 0.12, 0.6
+FRAME_SECONDS = 1 / 7                # the wind moves at seven frames a second
+BURST_FRAMES = 10                    # after a turn, and
+LOOK_FRAMES = 6                      # after looking at another layer; then it holds still
+BURST_BYTES_PER_SECOND = 44 * 1024   # while the wind moves, no more than this goes out in any one second
 _MAP_GLYPHS = ("~", "~", ".", ",", '"', ":", "n", "^", "A")
 _MAP_ROLES = ("sea", "sea", "text", "land", "land", "text", "dim", "text", "text")
 _SEA_RAMP = ((62, 158, 168), (28, 106, 150), (14, 58, 108), (9, 32, 70))
@@ -2126,6 +2137,11 @@ class MapView:
         self.cols = self.rows = 0
         self.left = self.top = 0
         self._taken: set[tuple[int, int]] = set()
+        self._wind_key = None
+        self._wind: list | None = None
+        self._wgw = 0
+        self._streaks: list = []
+        self._lcg = 1
 
     # -- the window ------------------------------------------------------------
 
@@ -2288,6 +2304,111 @@ class MapView:
                     glyph, role = _MAP_GLYPHS[biome], _MAP_ROLES[biome]
                 screen.put(left + c, top + r, glyph, role)
 
+    # -- the wind ----------------------------------------------------------------
+
+    def set_wind(self, key, sampler) -> bool:
+        """Take the wind to show: `sampler(wx, wy)` gives where the air goes, in km/h.
+
+        Sampled on a coarse grid and blended between, once per `key`. Returns
+        True when the wind shown has changed.
+        """
+        key = (key, self.x0, self.y0, self.cols, self.rows)
+        if key == self._wind_key:
+            return False
+        step = WIND_GRID_KM
+        self._wgw = int(self.cols * MAP_CELL_KM[0] / step) + 2
+        gh = int(self.rows * MAP_CELL_KM[1] / step) + 2
+        self._wind = [sampler(self.x0 + gx * step, self.y0 + gy * step) for gy in range(gh) for gx in range(self._wgw)]
+        fresh = self._wind_key is None or self._wind_key[1:] != key[1:]
+        self._wind_key = key
+        if fresh or not self._streaks:
+            self._seed_streaks()
+        return True
+
+    def _wind_at(self, px: float, py: float) -> tuple[float, float]:
+        """The wind at a pixel, blended from the grid."""
+        f = MAP_PIXEL_KM / WIND_GRID_KM
+        fx, fy = px * f, py * f
+        gx, gy = int(fx), int(fy)
+        tx, ty = fx - gx, fy - gy
+        w, k = self._wind, gy * self._wgw + gx
+        a, b, c, d = w[k], w[k + 1], w[k + self._wgw], w[k + self._wgw + 1]
+        return ((a[0] * (1 - tx) + b[0] * tx) * (1 - ty) + (c[0] * (1 - tx) + d[0] * tx) * ty,
+                (a[1] * (1 - tx) + b[1] * tx) * (1 - ty) + (c[1] * (1 - tx) + d[1] * tx) * ty)
+
+    def _next(self) -> float:
+        """A small generator of its own, seeded per window: the streaks are decoration, not chance."""
+        self._lcg = (self._lcg * 1103515245 + 12345) & 0x7FFFFFFF
+        return self._lcg / 2147483648.0
+
+    def _seed_streaks(self) -> None:
+        self._lcg = (int(self.x0) * 7919 + int(self.y0) * 104729 + self.cols * 31 + self.rows) & 0x7FFFFFFF
+        count = max(STREAKS_MIN, self.cols * self.rows // STREAK_CELLS_EACH)
+        self._streaks = [[self._next() * self.cols, self._next() * self.rows * 2,
+                          int(self._next() * STREAK_LIFE), []] for _ in range(count)]
+        for _ in range(STREAK_TRAIL * 3):         # run in, so the first picture already shows the flow
+            self.advance()
+
+    def advance(self) -> None:
+        """Move every streak one frame along the wind."""
+        if self._wind is None:
+            return
+        width, height = self.cols, self.rows * 2
+        for streak in self._streaks:
+            x, y, age, trail = streak
+            vx, vy = self._wind_at(x, y)
+            x, y, age = x + vx * STREAK_PX_PER_KMH, y + vy * STREAK_PX_PER_KMH, age + 1
+            if not (0.0 <= x < width and 0.0 <= y < height) or age > STREAK_LIFE:
+                x, y, age = self._next() * width, self._next() * height, 0
+                trail.clear()
+            cell = (int(x), int(y))
+            if not trail or trail[-1] != cell:
+                trail.append(cell)
+                del trail[:-STREAK_TRAIL]
+            streak[0], streak[1], streak[2] = x, y, age
+
+    def draw_wind(self, screen: Screen) -> None:
+        """Lay the streaks over the ground: brightest at the head, fading along the tail."""
+        if self._wind is None:
+            return
+        if not self.pixels:
+            self._draw_wind_glyphs(screen)
+            return
+        tops, bottoms = self._base
+        width, left, top = screen.width, self.left, self.top
+        for _, _, _, trail in self._streaks:
+            n = len(trail)
+            for i, (px, py) in enumerate(trail):
+                sx, sy = left + px, top + (py >> 1)
+                if not (0 <= sx < width and 0 <= sy < screen.height):
+                    continue
+                base = (bottoms if py & 1 else tops)[py >> 1][px]
+                t = STREAK_FAINT + (STREAK_BRIGHT - STREAK_FAINT) * (i + 1) / n
+                c = (int(base[0] + (240 - base[0]) * t), int(base[1] + (247 - base[1]) * t),
+                     int(base[2] + (255 - base[2]) * t))
+                k = sy * width + sx
+                if py & 1:
+                    screen.bg[k] = c
+                else:
+                    screen.fg[k] = c
+        screen._cells = None
+
+    def _draw_wind_glyphs(self, screen: Screen) -> None:
+        """The character map's reading of the wind: a line along it, here and there. It holds still."""
+        for r in range(1, self.rows, 3):
+            for c in range(2 + (r // 3 % 2) * 3, self.cols, 6):
+                vx, vy = self._wind_at(c + 0.5, r * 2 + 1.0)
+                ax, ay = abs(vx), abs(vy)
+                if ax + ay < 4.0:
+                    continue                      # nearly calm: say nothing
+                if ay * 2.4 < ax:
+                    glyph = "-"
+                elif ax * 2.4 < ay:
+                    glyph = "|"
+                else:
+                    glyph = "\\" if (vx > 0) == (vy > 0) else "/"
+                screen.put(self.left + c, self.top + r, glyph, "bright")
+
     def mark(self, screen: Screen, wx: float, wy: float, glyph: str, ink, force: bool = False):
         """Put a glyph on the place. Returns its cell, or None if it is off the map or the cell is taken."""
         cell = self.cell_of(wx, wy)
@@ -2375,6 +2496,13 @@ def want_pixels(launch: Launch, environ) -> bool:
     return launch.color_depth != "16" and launch.charset != "ascii"
 
 
+def want_motion(launch: Launch, environ) -> bool:
+    """Does the wind move? DOOR_FW_MOTION says: `auto` and `burst` yes, `off` no. DOOR_SCENES=0 means no too."""
+    if environ.get("DOOR_SCENES", "").strip() == "0":
+        return False
+    return environ.get("DOOR_FW_MOTION", "auto").strip().lower() != "off"
+
+
 def clock_text(minute: int) -> str:
     minute %= MINUTES_PER_DAY
     return f"{minute // 60:02d}:{minute % 60:02d}"
@@ -2405,6 +2533,8 @@ class PlainFlight:
         self.saved_ok = True
         self.log: list[str] = []
         self.typed_ahead = False          # set when a turn was committed: later keys in the same read are dropped
+        self.motion = want_motion(launch, environ or {}) and self.map.pixels      # the character map's wind holds still
+        self.frames_left = 0              # frames of moving wind still to show
         self.opening_notice = ""          # shown on the first screen, where it cannot scroll away
         loaded = self._load()
         if loaded is not True:
@@ -2563,6 +2693,7 @@ class PlainFlight:
 
     def key(self, key: str) -> str | None:
         """Handle a key. Returns "quit" to leave, "help" for help, else None."""
+        self.frames_left = 0              # the pilot has moved on: the wind holds still until something changes
         k = key.lower() if len(key) == 1 else key
         if k in ("q", "CTRL-C"):
             return "quit"
@@ -2624,6 +2755,8 @@ class PlainFlight:
         self.save()                       # before anything is shown
         if action != "pibal":
             self.typed_ahead = True
+            if self.motion:
+                self.frames_left = BURST_FRAMES
         self._choose_default()
 
     def _describe(self, event: tuple) -> str:
@@ -2810,9 +2943,41 @@ class PlainFlight:
             return text + f" High ground will force a climb: {price}.", "warn"
         return text, "accent"
 
+    def shown_layer(self) -> int:
+        """The layer whose wind the map shows: the one the pilot is choosing, else the one they are in."""
+        state = self.state
+        if self.choice in ("hold", "climb", "sink", "launch", "jettison") and self.choice in self.engine.actions(state):
+            return self.engine.preview(state, self.choice, 1)["layer"]
+        return state.layer or self.engine.lowest_open(state.x, state.y)
+
+    def _show_wind(self) -> bool:
+        """Give the map the wind of the layer in view, as far as the pilot knows it. True if it changed."""
+        state, layer = self.state, self.shown_layer()
+        here = state.layer if state.status == "aloft" else 0
+        low = self.engine.lowest_open(state.x, state.y)
+        read = layer == here or (here == 0 and layer == low) or state.pibal_until >= state.turn
+        if read:
+            frame = self.weather.frame(state.day, state.minute)
+        else:
+            frame = self.weather.frame(state.day, state.minute, UNREAD_LEAD, self.coverage(state.x, state.y))
+        return self.map.set_wind((state.day, state.minute, layer, read), lambda wx, wy: frame.wind(wx, wy, layer))
+
+    def tick(self) -> None:
+        """One frame of moving wind."""
+        if self.frames_left > 0:
+            self.frames_left -= 1
+            self.map.advance()
+
     def _draw_map(self, s: "Session") -> list[str]:
         state, view, screen = self.state, self.map, s.frame
         view.draw(screen, 1, 1, self.map_cols, self.map_rows, state.x, state.y, state.day, state.minute)
+        if self._show_wind():
+            if self.motion:
+                self.frames_left = max(self.frames_left, LOOK_FRAMES)
+            else:
+                for _ in range(STREAK_TRAIL):     # no motion: a new still pattern for the new wind
+                    view.advance()
+        view.draw_wind(screen)
         # The balloon first: nothing may cover it, and names keep clear of it.
         view.mark(screen, state.x, state.y, "@", "bright", force=True)
         wanted, others = [], []
@@ -2950,6 +3115,8 @@ class Session:
         self._dirty = True
         self.frame = Screen(self.width, self.height, launch.color_depth, launch.charset)
         self.shown: Screen | None = None      # what the caller's terminal holds; None means unknown
+        self._next_frame: float | None = None # when the next frame of moving wind is due
+        self._sent: list = []                 # (when, bytes) for what was sent in the last second
         self._next_poll = self.started + GEOMETRY_POLL
 
     # -- time ---------------------------------------------------------------
@@ -3007,11 +3174,14 @@ class Session:
         else:
             self._front()
         if self.shown is None:
-            self.out.write("\x1b[0m\x1b[2J" + self.frame.render(None))
+            changed = "\x1b[0m\x1b[2J" + self.frame.render(None)
         else:
             changed = self.frame.render(self.shown)
-            if changed:
-                self.out.write(changed)
+        if changed:
+            self.out.write(changed)
+            now = self.clock()
+            self._sent = [(when, size) for when, size in self._sent if when > now - 1.0]
+            self._sent.append((now, len(changed)))
         self.shown = self.frame
         self._dirty = False
 
@@ -3084,6 +3254,8 @@ class Session:
             # Redraw: only differences are sent, so if a line was garbled on
             # the way, or the host wrote over the screen, this puts it right.
             self.shown = None
+            if self.game is not None:
+                self.game.frames_left = 0       # any key ends a burst, this one too
             return
         self.notice = ""
         lower = key.lower() if len(key) == 1 else key
@@ -3114,7 +3286,19 @@ class Session:
         self._check_geometry()
         if self._dirty:
             self.paint()
-        data = self.inp.read(ESCAPE_TIMEOUT if self.keys.pending else IDLE_TIMEOUT)
+        moving = self.game is not None and self.view == "front" and self.game.frames_left > 0
+        if moving:
+            # Frames are due at fixed moments, counted from when the burst began.
+            # Whatever makes a frame late (a slow paint, bytes that were not a
+            # key) the next one is still due when it was due.
+            now = self.clock()
+            if self._next_frame is None:
+                self._next_frame = now + FRAME_SECONDS
+            wait = max(0.01, self._next_frame - now)
+        else:
+            self._next_frame = None
+            wait = IDLE_TIMEOUT
+        data = self.inp.read(ESCAPE_TIMEOUT if self.keys.pending else wait)
         if data is None:
             keys = self.keys.flush() if self.keys.pending else []
         elif data == b"":
@@ -3122,6 +3306,10 @@ class Session:
             return
         else:
             keys = self.keys.feed(data)
+        if moving and not keys:
+            self._frames_due()
+        if keys:
+            self._next_frame = None             # a key starts whatever moves next afresh
         for key in keys:
             if self.stop:
                 break
@@ -3132,6 +3320,25 @@ class Session:
                 self.game.typed_ahead = False
                 self.keys.flush()
                 break
+
+    def _frames_due(self) -> None:
+        """Move the wind by as many frames as are due, and paint once if the line can take it.
+
+        Late frames are skipped, never queued. And the bytes sent in any one
+        second are capped: a pipe to the host takes a whole burst without
+        blocking, so how long a write took says nothing about how far behind
+        the caller's line is. A cap on what is sent is the only brake there is.
+        """
+        now = self.clock()
+        if now < self._next_frame - 1e-6:
+            return                              # woken early, by bytes that were not a key
+        due = min(self.game.frames_left, 1 + int((now - self._next_frame) / FRAME_SECONDS))
+        for _ in range(due):
+            self.game.tick()
+        self._next_frame += due * FRAME_SECONDS
+        recent = sum(size for when, size in self._sent if when > now - 1.0)
+        if recent < BURST_BYTES_PER_SECOND or self.game.frames_left == 0:
+            self._dirty = True                  # the last frame is always painted: it is the one that stays
 
     def run(self) -> str:
         try:
