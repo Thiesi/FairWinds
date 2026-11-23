@@ -25,12 +25,17 @@ class Out:
 
 
 class Keys:
+    """Input that hands over what it was given. A read that gets nothing has waited its whole timeout."""
+
     def __init__(self, *chunks):
-        self.chunks, self.waits = list(chunks), []
+        self.chunks, self.waits, self.clock = list(chunks), [], None
 
     def read(self, timeout):
         self.waits.append(timeout)
-        return self.chunks.pop(0) if self.chunks else None
+        data = self.chunks.pop(0) if self.chunks else None
+        if data is None and self.clock is not None:
+            self.clock.now += timeout
+        return data
 
 
 class Clock:
@@ -138,6 +143,7 @@ class GameCase(unittest.TestCase):
         game = fw.PlainFlight(info, Path(self._dir.name), environ or {})
         clock = Clock()
         session = fw.Session(info, Keys(*keys), Out(), clock=clock, game=game)
+        session.inp.clock = clock
         return game, session, clock
 
     def paint(self, session):
@@ -223,36 +229,77 @@ class Motion(GameCase):
 
 
 class Loop(GameCase):
+    def burst_steps(self, game, session, limit=60):
+        steps = 0
+        while game.frames_left > 0 and steps < limit:
+            session.step()
+            steps += 1
+        return steps
+
     def test_while_the_wind_moves_the_loop_runs_at_the_frame_rate(self):
         game, session, clock = self.start(keys=[b"\r"])
         session.step()                                  # paints, reads Enter, flies the turn
         self.assertEqual(game.frames_left, fw.BURST_FRAMES)
-        steps = 0
-        while game.frames_left > 0 and steps < 50:
-            session.step()
-            steps += 1
+        began = clock.now
+        steps = self.burst_steps(game, session)
         self.assertEqual(steps, fw.BURST_FRAMES, "one frame a step")
+        self.assertAlmostEqual(clock.now - began, fw.BURST_FRAMES * fw.FRAME_SECONDS, places=6)
         waits = session.inp.waits[1:1 + fw.BURST_FRAMES]
-        self.assertTrue(all(abs(w - fw.FRAME_SECONDS) < 1e-9 for w in waits), waits)
+        self.assertTrue(all(abs(w - fw.FRAME_SECONDS) < 1e-6 for w in waits), waits)
         session.step()
         self.assertEqual(session.inp.waits[-1], fw.IDLE_TIMEOUT, "then back to idling")
 
-    def test_a_slow_line_drops_frames_and_never_queues_them(self):
+    def test_a_slow_paint_skips_frames_and_the_burst_ends_on_time(self):
         game, session, clock = self.start(keys=[b"\r"])
         session.step()
+        began = clock.now
         real_paint = session.paint
 
         def slow_paint():
             real_paint()
-            clock.now += fw.FRAME_SECONDS * 3.2          # this frame took more than three slots to send
+            clock.now += fw.FRAME_SECONDS * 3.2          # this frame took more than three slots
         session.paint = slow_paint
-        steps = 0
-        while game.frames_left > 0 and steps < 50:
-            session.step()
-            steps += 1
+        steps = self.burst_steps(game, session)
         self.assertLess(steps, fw.BURST_FRAMES / 2, "it skipped ahead")
-        self.assertEqual(game.frames_left, 0, "and the burst still ends on time")
+        self.assertEqual(game.frames_left, 0)
+        self.assertLess(clock.now - began, (fw.BURST_FRAMES + 5) * fw.FRAME_SECONDS, "about when it would have: one slow frame late at most")
         self.assertTrue(all(w >= 0.01 for w in session.inp.waits))
+
+    def test_no_more_than_the_byte_budget_goes_out_in_a_second(self):
+        # A pipe takes a whole burst without blocking, so timing a write says
+        # nothing. Count what is sent instead.
+        game, session, clock = self.start(keys=[b"\r"])
+        session.step()
+        session.out.text = ""
+        sent = []
+        real_write = session.out.write
+
+        def write(text):
+            sent.append((clock.now, len(text)))
+            real_write(text)
+        session.out.write = write
+        real_render = fw.Screen.render
+        try:
+            fw.Screen.render = lambda self, previous=None: (real_render(self, previous) or "") + "x" * 20000
+            steps = self.burst_steps(game, session)
+            session.step()                               # the frame that stays
+        finally:
+            fw.Screen.render = real_render
+        self.assertEqual(game.frames_left, 0)
+        self.assertLess(len(sent), fw.BURST_FRAMES, "frames were held back")
+        for when, _ in sent:
+            window = sum(size for at, size in sent if when - 1.0 < at <= when)
+            self.assertLess(window, fw.BURST_BYTES_PER_SECOND + 21000, "never more than the budget and one frame")
+        self.assertGreaterEqual(len(sent), 2, "but the wind still moved, and its last frame was sent")
+
+    def test_bytes_that_are_not_a_key_do_not_stall_the_wind(self):
+        focus = b"\x1b[I"                                # a terminal's focus report: a sequence, no key
+        game, session, clock = self.start(keys=[b"\r"] + [focus, None] * 40)
+        session.step()
+        began = clock.now
+        steps = self.burst_steps(game, session, limit=200)
+        self.assertEqual(game.frames_left, 0, "the burst ran to its end")
+        self.assertAlmostEqual(clock.now - began, fw.BURST_FRAMES * fw.FRAME_SECONDS, places=6)
 
     def test_a_key_during_a_burst_is_obeyed_at_once(self):
         game, session, clock = self.start(keys=[b"\r", None, None, b"w"])
@@ -261,6 +308,15 @@ class Loop(GameCase):
         self.assertEqual(game.choice, "climb")
         self.assertEqual(game.state.turn, 1, "looking is still not flying")
 
+    def test_ctrl_l_ends_a_burst_and_redraws(self):
+        game, session, clock = self.start(keys=[b"\r", None, b"\x0c"])
+        for _ in range(3):
+            session.step()
+        self.assertEqual(game.frames_left, 0)
+        session.out.text = ""
+        session.step()
+        self.assertTrue(session.out.text.startswith("\x1b[0m\x1b[2J"))
+
     def test_help_stops_the_wind(self):
         game, session, clock = self.start(keys=[b"\r", b"?"])
         session.step()
@@ -268,6 +324,17 @@ class Loop(GameCase):
         self.assertEqual(session.view, "help")
         session.step()
         self.assertEqual(session.inp.waits[-1], fw.IDLE_TIMEOUT)
+
+    def test_a_still_screen_sends_nothing_however_long_it_idles(self):
+        game, session, clock = self.start(keys=[b"\r"])
+        session.step()
+        self.burst_steps(game, session)
+        session.step()
+        session.out.text = ""
+        for _ in range(200):
+            session.step()
+        self.assertEqual(session.out.text, "")
+        self.assertTrue(all(w == fw.IDLE_TIMEOUT for w in session.inp.waits[-200:]))
 
 
 class Budget(GameCase):

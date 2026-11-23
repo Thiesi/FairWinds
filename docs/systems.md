@@ -594,8 +594,13 @@ frame sends nothing. Any key ends a burst at once. With `DOOR_FW_MOTION=off` or
 The character map shows wind as short lines along it (`-`, `|`, `/`, `\`),
 which always hold still.
 
-If a frame takes longer to send than its slot, the line is behind: the next
-frames are skipped, never queued, and the burst still ends on time.
+Frames are due at fixed moments counted from when the burst began. A frame
+that is late skips the frames whose moments have passed; none is queued, and
+the burst ends when it would have. And while the wind moves, no more than 44 KB
+goes out in any one second: when that is reached the wind advances unpainted,
+except for a burst's last frame, which is the one that stays. The cap is there
+because a pipe to the host takes a whole burst without blocking, so the time a
+write took says nothing about how far behind the caller's line is.
 
 **Scenes.** Splash, launch, landing, station vista, wonders. A scene plays only
 after what it shows has been saved, never waits for a key, ends on any key and

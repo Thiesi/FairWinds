@@ -2075,6 +2075,7 @@ STREAK_FAINT, STREAK_BRIGHT = 0.12, 0.6
 FRAME_SECONDS = 1 / 7                # the wind moves at seven frames a second
 BURST_FRAMES = 10                    # after a turn, and
 LOOK_FRAMES = 6                      # after looking at another layer; then it holds still
+BURST_BYTES_PER_SECOND = 44 * 1024   # while the wind moves, no more than this goes out in any one second
 _MAP_GLYPHS = ("~", "~", ".", ",", '"', ":", "n", "^", "A")
 _MAP_ROLES = ("sea", "sea", "text", "land", "land", "text", "dim", "text", "text")
 _SEA_RAMP = ((62, 158, 168), (28, 106, 150), (14, 58, 108), (9, 32, 70))
@@ -3114,7 +3115,8 @@ class Session:
         self._dirty = True
         self.frame = Screen(self.width, self.height, launch.color_depth, launch.charset)
         self.shown: Screen | None = None      # what the caller's terminal holds; None means unknown
-        self._paint_cost = 0.0                # seconds the last paint took to draw and send
+        self._next_frame: float | None = None # when the next frame of moving wind is due
+        self._sent: list = []                 # (when, bytes) for what was sent in the last second
         self._next_poll = self.started + GEOMETRY_POLL
 
     # -- time ---------------------------------------------------------------
@@ -3172,11 +3174,14 @@ class Session:
         else:
             self._front()
         if self.shown is None:
-            self.out.write("\x1b[0m\x1b[2J" + self.frame.render(None))
+            changed = "\x1b[0m\x1b[2J" + self.frame.render(None)
         else:
             changed = self.frame.render(self.shown)
-            if changed:
-                self.out.write(changed)
+        if changed:
+            self.out.write(changed)
+            now = self.clock()
+            self._sent = [(when, size) for when, size in self._sent if when > now - 1.0]
+            self._sent.append((now, len(changed)))
         self.shown = self.frame
         self._dirty = False
 
@@ -3249,6 +3254,8 @@ class Session:
             # Redraw: only differences are sent, so if a line was garbled on
             # the way, or the host wrote over the screen, this puts it right.
             self.shown = None
+            if self.game is not None:
+                self.game.frames_left = 0       # any key ends a burst, this one too
             return
         self.notice = ""
         lower = key.lower() if len(key) == 1 else key
@@ -3278,30 +3285,31 @@ class Session:
             return
         self._check_geometry()
         if self._dirty:
-            started = self.clock()
             self.paint()
-            self._paint_cost = self.clock() - started
         moving = self.game is not None and self.view == "front" and self.game.frames_left > 0
         if moving:
-            # A frame that took longer than its slot to send means the line is
-            # behind. Skip frames to catch up; never queue them.
-            behind = int(self._paint_cost / FRAME_SECONDS)
-            for _ in range(min(behind, self.game.frames_left - 1)):
-                self.game.tick()
-            wait = max(0.01, FRAME_SECONDS - self._paint_cost)
+            # Frames are due at fixed moments, counted from when the burst began.
+            # Whatever makes a frame late (a slow paint, bytes that were not a
+            # key) the next one is still due when it was due.
+            now = self.clock()
+            if self._next_frame is None:
+                self._next_frame = now + FRAME_SECONDS
+            wait = max(0.01, self._next_frame - now)
         else:
+            self._next_frame = None
             wait = IDLE_TIMEOUT
         data = self.inp.read(ESCAPE_TIMEOUT if self.keys.pending else wait)
         if data is None:
             keys = self.keys.flush() if self.keys.pending else []
-            if moving and not keys:
-                self.game.tick()
-                self._dirty = True
         elif data == b"":
             self.stop = "eof"
             return
         else:
             keys = self.keys.feed(data)
+        if moving and not keys:
+            self._frames_due()
+        if keys:
+            self._next_frame = None             # a key starts whatever moves next afresh
         for key in keys:
             if self.stop:
                 break
@@ -3312,6 +3320,25 @@ class Session:
                 self.game.typed_ahead = False
                 self.keys.flush()
                 break
+
+    def _frames_due(self) -> None:
+        """Move the wind by as many frames as are due, and paint once if the line can take it.
+
+        Late frames are skipped, never queued. And the bytes sent in any one
+        second are capped: a pipe to the host takes a whole burst without
+        blocking, so how long a write took says nothing about how far behind
+        the caller's line is. A cap on what is sent is the only brake there is.
+        """
+        now = self.clock()
+        if now < self._next_frame - 1e-6:
+            return                              # woken early, by bytes that were not a key
+        due = min(self.game.frames_left, 1 + int((now - self._next_frame) / FRAME_SECONDS))
+        for _ in range(due):
+            self.game.tick()
+        self._next_frame += due * FRAME_SECONDS
+        recent = sum(size for when, size in self._sent if when > now - 1.0)
+        if recent < BURST_BYTES_PER_SECOND or self.game.frames_left == 0:
+            self._dirty = True                  # the last frame is always painted: it is the one that stays
 
     def run(self) -> str:
         try:
