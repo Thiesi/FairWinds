@@ -2464,6 +2464,7 @@ PLAIN_SAVE_VERSION = 1
 PLAIN_HORIZON = 6                    # turns a track looks ahead: the first instruments
 PANEL_SMALL, PANEL_WIDE = 26, 40     # columns the panel takes: at 80 x 24, and from 132 x 40 up
 SKY_COLS = 8                         # the sky column of the sounding: this wide, two rows a layer
+BAR_FULL_KMH = 100.0                 # a full speed bar, the same for every layer
 _SKY_RAMP = ((18, 28, 74), (40, 88, 168), (100, 160, 224), (172, 210, 242))
 _BAR_RAMP = ((90, 170, 220), (120, 220, 170), (250, 210, 110), (250, 130, 90))
 POST_CHOICES = 3                     # destinations on offer at once
@@ -3091,6 +3092,10 @@ class PlainFlight:
         for action in ("sink", "hold", "climb", "launch"):
             if action in offered:
                 costs[self.engine.preview(state, action, 1)["layer"]] = offered[action]
+        if here:
+            for layer in (here - 1, here, here + 1):
+                if low <= layer <= top and layer not in costs:
+                    costs[layer] = None             # a step away, but not on offer: it cannot be paid for
         cover, deck = frame.cloud(state.x, state.y)
         s._line(1, col, "SOUNDING", "accent")
         s._line(1, col + 9, "the wind above you", "dim")
@@ -3132,27 +3137,25 @@ class PlainFlight:
                 continue
             vx, vy, read = wind
             speed = math.sqrt(vx * vx + vy * vy)
-            cost = f"{costs[layer]:>3}" if layer in costs else "   "
-            s._line(row, text, f"{mark}{layer} {LAYER_NAMES[layer - 1]:<8}{' ' if read else '~'}{compass(vx, vy):>3}"
-                               f"{speed:>4.0f}{cost}", ink)
-            cap = WIND_CAP[layer - 1]
-            filled = max(1, min(10, round(speed / cap * 10)))
+            cost = "   " if layer not in costs else " --" if costs[layer] is None else f"{costs[layer]:>3}"
+            point = compass(vx, vy)
+            s._line(row, text, f"{mark}{layer} {LAYER_NAMES[layer - 1]:<8}{' ' if read else '~'}"
+                               f"{'--' if point == 'calm' else point:>3}{speed:>4.0f}{cost}", ink)
+            # One scale for every layer, so bars can be compared: full is 100 km/h.
+            filled = max(1, min(10, round(speed / BAR_FULL_KMH * 10)))
             t = min(1.0, speed / 100.0) * (len(_BAR_RAMP) - 1)
             i = min(len(_BAR_RAMP) - 2, int(t))
             bar = _mix(_BAR_RAMP[i], _BAR_RAMP[i + 1], t - i)
             for n in range(10):
                 screen.put(text + 2 + n, row + 1, "\u2588" if n < filled else "\u00b7",
                            (bar if layer <= top else (70, 80, 100)) if n < filled else "dim")
-            if layer == here:
-                note = "you"
-            elif layer > top:
+            if layer > top:
                 note = "needs oxygen" if layer == LAYERS and state.ceiling >= LAYERS - 1 else "out of reach"
-            elif layer == deck and cover > 0.2:
-                note = "cloud deck"
-            elif layer >= frame.icing_layer and not state.iceproof:
-                note = "icing"
             else:
-                note = ""
+                # Icing first: it costs fuel. The layer you are in says so too.
+                hazard = "icing" if layer >= frame.icing_layer and not state.iceproof else \
+                    "cloud deck" if layer == deck and cover > 0.2 else ""
+                note = ", ".join(word for word in ("you" if layer == here else "", hazard) if word)
             s._line(row + 1, text + 13, note[:PANEL_WIDE - 15 - (SKY_COLS + 1 if self.map.pixels else 0)],
                     "accent" if layer == here else "dim")
         row = first + LAYERS * 2
@@ -3178,19 +3181,22 @@ class PlainFlight:
         for n in range(PIBALS_START):
             screen.put(col + 9 + n * 2, row + 3, "\u25a0" if n < state.pibals else "\u00b7",
                        "cool" if n < state.pibals else "dim")
-        reading = state.pibal_until - state.turn + 1
-        s._line(row + 3, col + 24, f"read: {reading} turns" if reading > 0 and state.status == "aloft"
-                else f"{state.pibals} left", "cool" if reading > 0 and state.status == "aloft" else "text")
+        reading = state.pibal_until - state.turn + 1      # the same test layer_winds uses
+        s._line(row + 3, col + 24, f"read: {reading} turns" if reading > 0 else f"{state.pibals} left",
+                "cool" if reading > 0 else "text")
         bar(row + 4, "Wear", state.wear, WEAR_GROUNDED, "warn", f"{state.wear}")
         left = max(0, DUSK_MINUTE - state.minute)
         bar(row + 5, "Daylight", left, DUSK_MINUTE - DAWN_MINUTE, (255, 224, 140),
             f"{left // 60}h{left % 60:02d}" if left else "night")
 
         row += 7
-        ground = frame.surface_speed(state.x, state.y)
-        landing = self.engine.landing_class(state) if state.status == "aloft" else ""
-        s._line(row, col, f"Ground wind {ground:.0f} km/h" + (f": a {landing} landing" if landing and landing != "ditch"
-                                                                else ": water below" if landing else ""),
+        # The ground wind is the lowest layer's wind, known only as well as that layer is.
+        # The landing is named when it can be made: from the lowest layer, which is then read.
+        lowest = winds[low]
+        ground = math.sqrt(lowest[0] * lowest[0] + lowest[1] * lowest[1])
+        landing = self.engine.landing_class(state) if state.status == "aloft" and here == low else ""
+        s._line(row, col, f"Ground wind {'' if lowest[2] else '~'}{ground:.0f} km/h"
+                + (f": a {landing} landing" if landing and landing != "ditch" else ": water below" if landing else ""),
                 "warn" if landing in ("hard", "ditch") else "text")
         sky = "clear" if cover < 0.2 else "broken cloud" if cover < 0.6 else "overcast"
         if frame.fog(state.x, state.y) > FOG_THRESHOLD:
@@ -3210,7 +3216,7 @@ class PlainFlight:
             # The wide tier has room to look ahead: the wind of the layer in view, hour by hour.
             layer = self.shown_layer()
             s._line(row, col, "FORECAST", "accent")
-            s._line(row, col + 9, f"layer {layer} here, by the hour", "dim")
+            s._line(row, col + 9, f"{LAYER_NAMES[layer - 1]} here, hour by hour", "dim")
             reach = self.coverage(state.x, state.y)
             for n in range(6):
                 minute = state.minute + (n + 1) * 60
@@ -3218,8 +3224,9 @@ class PlainFlight:
                     break
                 vx, vy = self.weather.frame(state.day, minute, (n + 1) * 60.0, reach).wind(state.x, state.y, layer)
                 x = col + n * 6
-                s._line(row + 1, x, f"{minute // 60:02d}h", "dim")
-                s._line(row + 2, x, f"{compass(vx, vy):<4}", "text")
+                s._line(row + 1, x, clock_text(minute), "dim")
+                point = compass(vx, vy)
+                s._line(row + 2, x, f"{'--' if point == 'calm' else point:<4}", "text")
                 s._line(row + 3, x, f"{math.sqrt(vx * vx + vy * vy):<4.0f}", "text")
         return []
 

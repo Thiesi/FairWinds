@@ -104,6 +104,63 @@ class Sounding(PanelCase):
         self.assertNotRegex("\n".join(panel[2:14]), r"(Mid|Low|Surface)\s+~", "a pibal reads every layer within reach")
         self.assertIn("read: 4 turns", "\n".join(panel))
 
+    def test_your_own_layer_still_says_what_is_in_it(self):
+        game, session = self.start()
+        game.key("ENTER")
+        state = game.state
+        frame = game.weather.frame(state.day, state.minute)
+        real_cloud, real_icing = type(frame).cloud, frame.icing_layer
+        try:
+            type(frame).cloud = lambda self, x, y: (0.9, 1)
+            panel = self.panel(session, game)
+            self.assertIn("you, cloud deck", panel[2 + 5 * 2 + 1])
+            frame.icing_layer = 1
+            panel = self.panel(session, game)
+            self.assertIn("you, icing", panel[2 + 5 * 2 + 1], "icing costs fuel, so it is said first")
+            self.assertIn("icing", panel[2 + 4 * 2 + 1])
+            self.assertNotIn("you", panel[2 + 4 * 2 + 1])
+        finally:
+            type(frame).cloud, frame.icing_layer = real_cloud, real_icing
+
+    def test_a_step_that_cannot_be_paid_for_says_so(self):
+        game, session = self.start()
+        game.key("ENTER")
+        panel = self.panel(session, game)
+        self.assertRegex(panel[2 + 4 * 2], r"\s3$", "climbing to layer 2 is on offer: 3 fuel")
+        self.assertRegex(panel[2 + 3 * 2], r"\d$", "layer 3 is two steps away: its row ends with its speed, no cost")
+        self.assertNotRegex(panel[2 + 3 * 2], r"--$")
+        game.state = dataclasses.replace(game.state, fuel=2, ballast=0)
+        game._choose_default()
+        panel = self.panel(session, game)
+        self.assertRegex(panel[2 + 4 * 2], r"--$", "a step away, and not affordable")
+
+    def test_bars_share_one_scale(self):
+        game, session = self.start()
+        game.key("ENTER")
+        session.paint()
+        frame, col = session.frame, game.panel_col + fw.SKY_COLS + 1
+        winds = game.layer_winds()
+        for layer in range(1, 4):
+            row = 2 + (6 - layer) * 2 + 1
+            filled = sum(frame.ch[row * 132 + col + 2 + n] == "\u2588" for n in range(10))
+            speed = (winds[layer][0] ** 2 + winds[layer][1] ** 2) ** 0.5
+            self.assertEqual(filled, max(1, min(10, round(speed / 10))), "ten km/h to a block, whatever the layer")
+
+    def test_the_ground_wind_is_known_only_as_well_as_the_lowest_layer(self):
+        game, session = self.start()
+        game.key("ENTER")
+        text = "\n".join(self.panel(session, game))
+        self.assertRegex(text, r"Ground wind \d+ km/h: ", "in the lowest layer it is read, and the landing is named")
+        game.key("w")
+        game.key("ENTER")
+        self.assertEqual(game.state.layer, 2)
+        text = "\n".join(self.panel(session, game))
+        self.assertRegex(text, r"Ground wind ~\d+ km/h", "from above it is a forecast, like the Surface row")
+        self.assertNotRegex(text, r"Ground wind ~?\d+ km/h: ", "and no landing is promised from up here")
+        game.key("p")
+        text = "\n".join(self.panel(session, game))
+        self.assertRegex(text, r"Ground wind \d+ km/h", "a pibal reads it")
+
     def test_what_the_pilot_knows_of_each_layer(self):
         game, session = self.start()
         game.key("ENTER")
@@ -217,19 +274,20 @@ class ForecastStrip(PanelCase):
         game, session = self.start(168, 46)
         game.key("ENTER")
         head, hours, bearings, speeds = self.strip(session, game)
-        self.assertIn("layer 1 here, by the hour", head)
-        self.assertEqual(hours.split(), ["07h", "08h", "09h", "10h", "11h", "12h"])
+        self.assertIn("Surface here, hour by hour", head)
+        self.assertEqual(hours.split(), ["07:15", "08:15", "09:15", "10:15", "11:15", "12:15"],
+                         "each column says the minute it means: the first turn left at 06:15")
         self.assertEqual(len(bearings.split()), 6)
         self.assertTrue(all(v.isdigit() for v in speeds.split()))
         game.key("w")
-        self.assertIn("layer 2 here", self.strip(session, game)[0], "it follows the layer being looked at")
+        self.assertIn("Low here", self.strip(session, game)[0], "it follows the layer being looked at")
 
     def test_it_stops_at_midnight(self):
         game, session = self.start(168, 46)
         game.state = dataclasses.replace(game.state, status="aloft", layer=1, turn=66, night_gear=True)     # 22:30
         game._choose_default()
         hours = self.strip(session, game)[1].split()
-        self.assertEqual(hours, ["23h"])
+        self.assertEqual(hours, ["23:30"])
 
 
 class Everywhere(PanelCase):

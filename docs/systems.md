@@ -510,18 +510,23 @@ else. 80 by 24 gives a map of 52 by 16 cells, 132 by 40 one of 90 by 32, and
 168 by 46 one of 126 by 38, so a bigger window shows more of the world.
 
 **The sounding.** All six layers from the jet down, two rows each: the layer's
-name, its wind as the pilot knows it (`~` marks a forecast), the fuel to get
-there, and under that a bar of its speed against the most that layer ever
-blows, with a word where there is one to say: `you`, `cloud deck`, `icing`,
-`out of reach`, `needs oxygen`, or `ground` where the land fills the layer.
+name, its wind as the pilot knows it (`~` marks a forecast), and the fuel to
+get there: a number for a step that is on offer, `--` for a step that cannot be
+paid for, nothing for a layer more than a step away. Under that is a bar of its
+speed, ten km/h to a block for every layer so that bars can be compared, with a
+word where there is one to say: `you`, `icing`, `cloud deck`, `out of reach`,
+`needs oxygen`, or `ground` where the land fills the layer. The layer the
+balloon is in says what is in it too: `you, icing`.
 Beside the rows, where the map is drawn in pixels, stands a slice of sky eight
 cells wide: darker with height, the ground filling the layers it reaches, the
 cloud deck in its layer, and the balloon hanging in the layer it is in. On the
 character map there is no sky column and the rows start at the panel's edge.
 
 Stores are bars for fuel, wear and daylight, and a row of marks for ballast
-sacks and pibals. While aloft the panel names the landing the ground wind
-would give now. Bars and marks use only the full block, the middle dot and the
+sacks and pibals. The ground wind is the lowest layer's wind and is known only
+as well as that layer is: read from within it or by a pibal, a forecast marked
+`~` from above. The landing it would give is named when it can be made, from
+the lowest open layer. Bars and marks use only the full block, the middle dot and the
 black square, which CP437 has; an ASCII caller gets `#` and `-`.
 
 **Screens.** Briefing, flight, station, post office, stores, rigging loft,
