@@ -161,6 +161,27 @@ class Sounding(PanelCase):
         text = "\n".join(self.panel(session, game))
         self.assertRegex(text, r"Ground wind \d+ km/h", "a pibal reads it")
 
+    def test_the_small_panel_says_the_same_about_the_ground_wind(self):
+        game, session = self.start(80, 24)
+        game.key("ENTER")
+        self.assertRegex("\n".join(self.panel(session, game)), r"Ground wind \d+ km/h")
+        game.key("w")
+        game.key("ENTER")
+        text = "\n".join(self.panel(session, game))
+        self.assertRegex(text, r"Ground wind ~\d+ km/h", "a forecast from above, at 80 x 24 as at any size")
+        self.assertRegex(text, r"1 Surface~", "as its Surface row says")
+        game.key("p")
+        text = "\n".join(self.panel(session, game))
+        self.assertRegex(text, r"Ground wind \d+ km/h")
+        self.assertIn("Pibal read: 4 turns", text)
+
+    def test_when_nothing_is_on_offer_no_step_is_called_unaffordable(self):
+        game, session = self.start()
+        game.state = dataclasses.replace(game.state, status="aloft", layer=2, turn=fw.DAY_TURNS)
+        game._choose_default()
+        self.assertEqual(game.engine.actions(game.state), {})
+        self.assertNotIn("--", "\n".join(line[-4:] for line in self.panel(session, game)[2:14:2]))
+
     def test_what_the_pilot_knows_of_each_layer(self):
         game, session = self.start()
         game.key("ENTER")

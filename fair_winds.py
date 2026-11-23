@@ -3060,13 +3060,15 @@ class PlainFlight:
         row += 2
         out.append(s._line(row, col, f"Fuel {state.fuel:>3}   Sacks {state.ballast}", "text"))
         out.append(s._line(row + 1, col, f"Pibals {state.pibals}   Wear {state.wear}", "text"))
-        if state.pibal_until >= state.turn and state.status == "aloft":
+        if state.pibal_until >= state.turn:
             out.append(s._line(row + 2, col, f"Pibal read: {state.pibal_until - state.turn + 1} turns", "cool"))
         left = max(0, DUSK_MINUTE - state.minute)
         light = f"Dusk in {left // 60}h{left % 60:02d}" if left else "Night"
         out.append(s._line(row + 3, col, light, "text" if left > 90 else "warn"))
-        ground = frame.surface_speed(state.x, state.y)
-        out.append(s._line(row + 4, col, f"Ground wind {ground:.0f} km/h", "text"))
+        # The ground wind is the lowest layer's wind, known only as well as that layer is.
+        lowest = self.layer_winds()[low]
+        ground = math.sqrt(lowest[0] * lowest[0] + lowest[1] * lowest[1])
+        out.append(s._line(row + 4, col, f"Ground wind {'' if lowest[2] else '~'}{ground:.0f} km/h", "text"))
         cloud, _ = frame.cloud(state.x, state.y)
         sky = "clear" if cloud < 0.2 else "broken cloud" if cloud < 0.6 else "overcast"
         if frame.fog(state.x, state.y) > FOG_THRESHOLD:
@@ -3092,7 +3094,7 @@ class PlainFlight:
         for action in ("sink", "hold", "climb", "launch"):
             if action in offered:
                 costs[self.engine.preview(state, action, 1)["layer"]] = offered[action]
-        if here:
+        if here and offered:                        # with nothing on offer at all, fuel is not the reason
             for layer in (here - 1, here, here + 1):
                 if low <= layer <= top and layer not in costs:
                     costs[layer] = None             # a step away, but not on offer: it cannot be paid for

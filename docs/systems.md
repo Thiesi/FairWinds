@@ -268,7 +268,8 @@ a pibal is for. At a station the forecast is exact either way.
 
 A track follows fuel and ballast as the flight would, so it never shows
 somewhere the balloon cannot get to. It reports the fuel and the ballast sacks
-that forced climbs would cost, and it ends early where the flight would: at ground above the
+that forced climbs would cost, and it ends early where the flight would: at
+ground above the
 ceiling, at a forced climb that cannot be paid for, or where the fuel for
 holding runs out.
 
@@ -512,7 +513,8 @@ else. 80 by 24 gives a map of 52 by 16 cells, 132 by 40 one of 90 by 32, and
 **The sounding.** All six layers from the jet down, two rows each: the layer's
 name, its wind as the pilot knows it (`~` marks a forecast), and the fuel to
 get there: a number for a step that is on offer, `--` for a step that cannot be
-paid for, nothing for a layer more than a step away. Under that is a bar of its
+paid for, nothing for a layer more than a step away (or when nothing at all is
+on offer, as at midnight). Under that is a bar of its
 speed, ten km/h to a block for every layer so that bars can be compared, with a
 word where there is one to say: `you`, `icing`, `cloud deck`, `out of reach`,
 `needs oxygen`, or `ground` where the land fills the layer. The layer the
@@ -526,7 +528,8 @@ Stores are bars for fuel, wear and daylight, and a row of marks for ballast
 sacks and pibals. The ground wind is the lowest layer's wind and is known only
 as well as that layer is: read from within it or by a pibal, a forecast marked
 `~` from above. The landing it would give is named when it can be made, from
-the lowest open layer. Bars and marks use only the full block, the middle dot and the
+the lowest open layer. Bars and marks use only the full block, the middle dot
+and the
 black square, which CP437 has; an ASCII caller gets `#` and `-`.
 
 **Screens.** Briefing, flight, station, post office, stores, rigging loft,
