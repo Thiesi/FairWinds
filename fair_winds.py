@@ -2643,7 +2643,10 @@ def calendar_opens(cal: dict, day: int) -> datetime.datetime:
 def retimed(cal: dict, tempo: int, local: datetime.datetime) -> dict:
     """The calendar with another tempo from today on. Today stays today; no day is skipped or repeated."""
     today = calendar_day(cal, local)
-    return {"epoch_date": local.date().isoformat(), "epoch_day": today, "tempo": tempo, "high_day": today}
+    # Counted so that the slot the clock is in now is today: the next day
+    # opens at the next slot, never at the moment of the change.
+    slot = world_day(local, local.date(), 0, tempo)
+    return {"epoch_date": local.date().isoformat(), "epoch_day": today - slot, "tempo": tempo, "high_day": today}
 
 
 def when_text(opens: datetime.datetime, local: datetime.datetime, date_format: str) -> str:
@@ -2874,8 +2877,9 @@ class Store:
         Reading is the common case and takes no lock. The write happens once
         for each day that opens, by whichever caller sees it first.
         """
-        cal = read_calendar(dict(self.db.execute("SELECT key, value FROM meta")))
-        if cal is not None and calendar_day(cal, local) == cal["high_day"]:
+        meta = dict(self.db.execute("SELECT key, value FROM meta"))
+        cal = read_calendar(meta)
+        if cal is not None and calendar_day(cal, local) == cal["high_day"]                 and (not zone or meta.get("timezone") == zone):
             return cal["high_day"], cal
 
         def work():

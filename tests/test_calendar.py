@@ -196,6 +196,33 @@ class StoredCalendar(CalendarCase):
         self.clock.hours(12)
         self.assertEqual(store.today(self.local())[0], 13)
 
+    def test_a_change_of_tempo_at_any_hour_opens_no_day_early(self):
+        for hour, old, new in ((15, 1, 2), (15, 1, 4), (23, 1, 4), (23, 4, 2), (13, 2, 3), (3, 4, 1), (0, 1, 4)):
+            cal = {"epoch_date": "2027-01-01", "epoch_day": 1, "tempo": old, "high_day": 1}
+            local = datetime.datetime(2027, 1, 20, hour, 30)
+            today = fw.calendar_day(cal, local)
+            after = fw.retimed(dict(cal, high_day=today), new, local)
+            case = f"{old} to {new} at {hour}:30"
+            self.assertEqual(fw.calendar_day(after, local), today, f"{case}: today stays today")
+            opens = fw.calendar_opens(after, today + 1)
+            self.assertGreater(opens, local, f"{case}: the next day opens later, not already")
+            self.assertLessEqual(opens - local, datetime.timedelta(days=1) / new, f"{case}: at the next slot")
+            self.assertEqual(fw.calendar_day(after, opens - datetime.timedelta(seconds=1)), today, case)
+            self.assertEqual(fw.calendar_day(after, opens), today + 1, case)
+            self.assertIsNotNone(fw.read_calendar(after), f"{case}: and it reads back")
+
+    def test_a_change_of_zone_is_recorded_at_once(self):
+        store = self.store()
+        store.today(self.local(), "UTC")
+        store.today(self.local(), "Europe/Berlin")
+        self.assertEqual(dict(store.db.execute("SELECT key, value FROM meta"))["timezone"], "Europe/Berlin")
+        writes = []
+        real = store._write
+        store._write = lambda work: (writes.append(1), real(work))[1]
+        store.today(self.local(), "Europe/Berlin")
+        store.today(self.local())
+        self.assertEqual(writes, [], "and then it is a read again")
+
     def test_the_command_line_sets_the_tempo_of_every_world(self):
         for node in ("one", "two"):
             game = support.new_game(launch(node_id=node), self.folder)

@@ -92,8 +92,9 @@ The node's zone is looked up by its IANA name. A host without data for that
 name uses its own zone and says so on standard error; a door started from a
 shell uses the host's zone. `python fair_winds.py --tempo N` sets the tempo of
 every world in the data directory from today on: today stays today, the
-calendar is counted afresh from this date, and the next day opens at the next
-slot. It will move into the SysOp tool.
+calendar is counted afresh from this date so that the slot the clock is in is
+today, and the next day opens at the next slot, never at the moment of the
+change. An empty zone name means UTC. It will move into the SysOp tool.
 
 A pilot from before the calendar counted days of their own (a new day at a key
 press). On their first call under the calendar a day number ahead of the
