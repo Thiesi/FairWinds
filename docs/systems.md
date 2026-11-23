@@ -745,7 +745,9 @@ Winds is refused: the door says so to the caller, writes the reason to
 standard error, exits with status 3 and changes nothing. Nothing is ever moved
 aside or replaced. A data directory that cannot be written is different: the
 caller plays, is told on the first screen that the game cannot be saved, and
-nothing is kept.
+nothing is kept. Records that are only out of reach when the pilot is read
+(locked by another caller past the five seconds) are treated the same way and
+said to be busy, not damaged.
 
 **The turn commit.** One transaction writes the new flight state, the journal
 row, any chart cells, and any world change the turn caused. A process killed at
@@ -763,19 +765,25 @@ pilot (the transport and how long ago it opened) and may press T to take over
 or Q to leave. Taking over ends the other session at its next turn or its next
 heartbeat, whichever comes first: its commit is refused, having written
 nothing, and it shows that the pilot is now flying elsewhere. Leaving the door
-gives the pilot up. A session that is killed does not, so a caller who comes
-straight back after one is asked, and takes over.
+gives the pilot up, and so does a line that drops (`SIGHUP`, `SIGTERM`, end
+of input). A session that is killed outright does not, so a caller who comes
+straight back after one is asked, and takes over. Before a turn is worked out
+the lease is read; the commit checks it again inside its transaction, so a
+turn costs one synced write.
 
 **Backup.** `python fair_winds.py --backup FOLDER` copies every world in the
 data directory to FOLDER through SQLite's online backup, checks each copy and
-removes the leases from it. It is safe while callers are playing. To restore,
+removes the leases from it. It is safe while callers are playing. It refuses
+to copy into the data directory itself, or onto a database in use. To restore,
 stop the door, put the copies in the data directory and remove any `-wal` and
 `-shm` files left beside the old ones.
 
 **Save files from before the database.** The plain flight kept one JSON file
 per pilot, `pilot-<seed>-<user>.json`. A pilot the database has never seen who
 has one is taken over from it, once, and the file is renamed with `.imported`
-added. One that cannot be read is left where it is and the pilot starts anew.
+added, unless a file of that name is already there. One that cannot be read
+is left where it is: the pilot starts anew and is told, and the reason goes to
+standard error.
 
 **Guests.** A guest call opens the world read-only and keeps its own state in
 memory.

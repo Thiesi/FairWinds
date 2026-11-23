@@ -423,6 +423,22 @@ class Saving(PlainCase):
         third = self.game()
         self.assertEqual(third.state.turn, 4, "the database is what is read from then on")
 
+    def test_an_earlier_imported_file_is_never_written_over(self):
+        game = self.game()
+        self.press(game, "ENTER")
+        old = self.folder / f"pilot-{game.world.seed:016x}-12.json"
+        old.write_text(json.dumps(dict(game._career(), version=1, seed=game.world.seed, state=game.state.to_dict())),
+                       encoding="utf-8")
+        aside = old.with_name(old.name + ".imported")
+        aside.write_text("an earlier one", encoding="utf-8")
+        game.close()
+        for path in self.folder.glob("fair_winds-*"):
+            path.unlink()
+        again = self.game()
+        self.assertEqual(again.state.turn, 1)
+        self.assertEqual(aside.read_text(encoding="utf-8"), "an earlier one")
+        self.assertTrue(old.exists(), "the newer file stays where it is")
+
     def test_an_old_save_file_that_cannot_be_used_is_left_alone(self):
         seed = fw.world_seed("relink-test")
         probe = self.game()
@@ -436,6 +452,8 @@ class Saving(PlainCase):
             fresh = self.game()
             self.assertEqual((fresh.state.turn, fresh.saved_ok), (0, True), "a new pilot, and saved")
             self.assertEqual(old.read_text(encoding="utf-8"), bad)
+            self.assertIn("An older saved game could not be read. This is a new one; the file is kept.", self.screen(fresh))
+            self.assertFalse(old.with_name(old.name + ".imported").exists())
             fresh.close()
             for path in self.folder.glob("fair_winds-*"):
                 path.unlink()

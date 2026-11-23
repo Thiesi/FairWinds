@@ -2587,6 +2587,16 @@ MIGRATIONS = {
     ),
 }
 _NO_PLACE_TO_WRITE = ("readonly", "read-only", "unable to open", "locked", "disk i/o", "full", "busy")
+_NO_PLACE_CODES = (5, 6, 8, 10, 13, 14)     # SQLITE_BUSY, LOCKED, READONLY, IOERR, FULL, CANTOPEN
+
+
+def unreachable(error: sqlite3.Error) -> bool:
+    """Is this the records being out of reach (busy, read-only, full), as against being damaged?"""
+    code = getattr(error, "sqlite_errorcode", None)
+    if code is not None:
+        return code & 0xFF in _NO_PLACE_CODES
+    text = str(error).lower()
+    return isinstance(error, sqlite3.OperationalError) and any(word in text for word in _NO_PLACE_TO_WRITE)
 
 
 class StoreError(Exception):
@@ -2625,8 +2635,7 @@ class Store:
             self._prepare(seed, node)
         except sqlite3.DatabaseError as error:
             self.close()
-            text = str(error).lower()
-            if isinstance(error, sqlite3.OperationalError) and any(word in text for word in _NO_PLACE_TO_WRITE):
+            if unreachable(error):
                 raise StoreUnavailable(str(error)) from None
             raise StoreError(f"{self.path.name} is damaged or is not a database ({error})") from None
         except StoreError:
@@ -2674,10 +2683,16 @@ class Store:
         self.db.execute("BEGIN IMMEDIATE")
         try:
             result = work()
+            self.db.execute("COMMIT")
         except BaseException:
-            self.db.execute("ROLLBACK")
+            # Whatever failed, the commit itself included, nothing stays open:
+            # an open transaction would hold the write lock against every caller.
+            if self.db.in_transaction:
+                try:
+                    self.db.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass                        # the first error is the one worth hearing
             raise
-        self.db.execute("COMMIT")
         return result
 
     # -- the lease -----------------------------------------------------------
@@ -2700,6 +2715,11 @@ class Store:
         return self._write(lambda: self.db.execute(
             "UPDATE sessions SET heartbeat=? WHERE user_id=? AND token=?",
             (self.clock(), user_id, self.token)).rowcount == 1)
+
+    def holds(self, user_id: int) -> bool:
+        """Is the pilot this session's? A read: it costs no write."""
+        row = self.db.execute("SELECT token FROM sessions WHERE user_id=?", (user_id,)).fetchone()
+        return row is not None and row[0] == self.token
 
     def release(self, user_id: int) -> None:
         self._write(lambda: self.db.execute("DELETE FROM sessions WHERE user_id=? AND token=?",
@@ -2766,9 +2786,14 @@ class Store:
 
 def backup_worlds(source: Path, target: Path) -> list[str]:
     """Copy every world's records in a data folder to another folder. Safe while callers are playing."""
+    source, target = Path(source), Path(target)
     target.mkdir(parents=True, exist_ok=True)
+    if source.exists() and target.resolve() == source.resolve():
+        raise OSError("the backup folder is the data folder: a copy there would replace the live records")
     done = []
-    for path in sorted(Path(source).glob("fair_winds-*.db")):
+    for path in sorted(source.glob("fair_winds-*.db")):
+        if any((target / (path.name + suffix)).exists() for suffix in ("-wal", "-shm", "-journal")):
+            raise OSError(f"{target} holds a database in use under the name {path.name}")
         temp = target / (path.name + ".tmp")
         temp.unlink(missing_ok=True)
         src = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=BUSY_TIMEOUT_SECONDS)
@@ -2779,9 +2804,13 @@ def backup_worlds(source: Path, target: Path) -> list[str]:
             dst.commit()
             if dst.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 raise sqlite3.DatabaseError(f"the copy of {path.name} did not pass its check")
-        finally:
+        except BaseException:
             src.close()
             dst.close()
+            temp.unlink(missing_ok=True)        # no half copy is left behind
+            raise
+        src.close()
+        dst.close()
         temp.replace(target / path.name)
         done.append(path.name)
     return done
@@ -2848,14 +2877,19 @@ class PlainFlight:
         loaded = self._load()
         if loaded is not True:
             self._new_game()
-        if loaded == "damaged":
+        if loaded in ("damaged", "unreachable"):
             # Saving now would destroy a record somebody might still want back.
-            self.opening_notice = "Your saved game could not be read. This game is not saved. Tell the SysOp."
+            self.opening_notice = ("Your saved game could not be read. This game is not saved. Tell the SysOp."
+                                   if loaded == "damaged" else
+                                   "The records are busy. This game is not saved; yours is safe. Try again soon.")
             self._drop_store()
         self.save()                       # so a game that cannot be saved says so before the first turn
-        if self._imported and self.saved_ok:
+        if self._imported and self.saved_ok and self.store is not None and not self.ended:
+            # Only once the database has the pilot. And never over an earlier file of that name.
+            aside = self.legacy.with_name(self.legacy.name + ".imported")
             try:
-                self.legacy.replace(self.legacy.with_name(self.legacy.name + ".imported"))
+                if not aside.exists():
+                    self.legacy.replace(aside)
             except OSError:
                 pass                      # it stays; the database has the pilot now and is read first
         self._choose_default()
@@ -2887,7 +2921,7 @@ class PlainFlight:
             row = self.store.pilot(self.launch.user_id)
         except sqlite3.Error as error:
             diagnose(f"the pilot's record cannot be read: {error}")
-            return "damaged"
+            return "unreachable" if unreachable(error) else "damaged"
         if row is None:
             return self._import()
         try:
@@ -2912,12 +2946,21 @@ class PlainFlight:
     def _import(self):
         """A pilot the database has never seen may have a save file from before it. Take that over, once."""
         try:
-            data = json.loads(self.legacy.read_text(encoding="utf-8"))
+            text = self.legacy.read_text(encoding="utf-8")
+        except (FileNotFoundError, NotADirectoryError):
+            return False                  # a new pilot
+        except (OSError, UnicodeDecodeError):
+            text = ""
+        try:
+            data = json.loads(text)
             if data["version"] != PLAIN_SAVE_VERSION or data["seed"] != self.world.seed:
-                return False
+                raise ValueError("not this world's save")
             self._take(data, data["state"])
-        except (OSError, ValueError, KeyError, TypeError):
-            return False                  # none, or not one that can be used: it is left where it is
+        except (ValueError, KeyError, TypeError):
+            # It is left where it is, and both the pilot and the SysOp are told.
+            diagnose(f"the old save file {self.legacy.name} cannot be used; it is left in place")
+            self.opening_notice = "An older saved game could not be read. This is a new one; the file is kept."
+            return False
         self._imported = True
         return True
 
@@ -2948,10 +2991,14 @@ class PlainFlight:
         self._last_beat = now
         return not self._mine()
 
-    def _mine(self) -> bool:
-        """Is the pilot still this session's? If not, this session is over."""
+    def _mine(self, write: bool = True) -> bool:
+        """Is the pilot still this session's? If not, this session is over.
+
+        The heartbeat writes. The look before a turn only reads: the commit
+        that follows checks again inside its transaction and is the heartbeat.
+        """
         try:
-            if self.store.beat(self.launch.user_id):
+            if (self.store.beat if write else self.store.holds)(self.launch.user_id):
                 return True
         except sqlite3.Error:
             return True                   # the records cannot be reached; the commit will say so
@@ -3108,8 +3155,8 @@ class PlainFlight:
         del self.log[:-3]
 
     def _commit(self, action: str) -> None:
-        if self.store is not None and not self._mine():
-            return                        # taken over: nothing is flown from here any more
+        if self.store is not None and not self._mine(write=False):
+            return                        # taken over: nothing is worked out or shown from here any more
         before = self.state
         result = self.engine.step(before, action)
         self.state = result.state
@@ -4406,23 +4453,25 @@ def main(argv=None) -> int:
         except SessionClosed:
             pass
         return 3
-    session = Session(launch, Input(sys.stdin.fileno(), console=local.console), out, game=game)
+    try:                                    # from here the pilot is held: given up whatever happens next
+        session = Session(launch, Input(sys.stdin.fileno(), console=local.console), out, game=game)
 
-    def on_terminate(signum, frame):
-        session.terminated = True
+        def on_terminate(signum, frame):
+            session.terminated = True
 
-    def on_resize(signum, frame):
-        session.resized = True
+        def on_resize(signum, frame):
+            session.resized = True
 
-    signal.signal(signal.SIGTERM, on_terminate)
-    signal.signal(signal.SIGINT, on_terminate)
-    for name in ("SIGUSR1", "SIGWINCH"):     # NetBBS signals a resize; so does a local terminal
-        if hasattr(signal, name):
-            signal.signal(getattr(signal, name), on_resize)
-    session.scenes_on = os.environ.get("DOOR_SCENES", "").strip() != "0"
-    if os.environ.get("DOOR_SPLASH", "").strip() != "0":
-        session.start_splash()              # with the scenes off it is still there, and holds still
-    try:
+        signal.signal(signal.SIGTERM, on_terminate)
+        signal.signal(signal.SIGINT, on_terminate)
+        if hasattr(signal, "SIGHUP"):
+            signal.signal(signal.SIGHUP, on_terminate)      # a dropped line: leave properly, so the pilot is free
+        for name in ("SIGUSR1", "SIGWINCH"):     # NetBBS signals a resize; so does a local terminal
+            if hasattr(signal, name):
+                signal.signal(getattr(signal, name), on_resize)
+        session.scenes_on = os.environ.get("DOOR_SCENES", "").strip() != "0"
+        if os.environ.get("DOOR_SPLASH", "").strip() != "0":
+            session.start_splash()              # with the scenes off it is still there, and holds still
         session.run()
     finally:
         game.close()

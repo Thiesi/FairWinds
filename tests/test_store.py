@@ -248,6 +248,36 @@ class Committing(StoreCase):
         career, state = a.pilot(7)
         self.assertEqual((json.loads(career)["n"], json.loads(state)["turn"]), (1, 1))
 
+    def test_a_commit_that_cannot_finish_leaves_nothing_open(self):
+        # A rollback journal, and a reader in the way: the write lock is had, the commit is not.
+        real = fw.BUSY_TIMEOUT_SECONDS
+        fw.BUSY_TIMEOUT_SECONDS = 0.2
+        try:
+            a = fw.Store(self.folder, SEED, "node", self.clock, journal="delete")
+        finally:
+            fw.BUSY_TIMEOUT_SECONDS = real
+        a.claim(7, "ssh")
+        a.commit(7, "Mara", {"n": 1}, {"day": 1, "turn": 1}, "launch")
+        reader = self.raw()
+        reader.execute("BEGIN")
+        reader.execute("SELECT count(*) FROM pilots").fetchall()         # holds a shared lock
+        with self.assertRaises(sqlite3.OperationalError):
+            a.commit(7, "Mara", {"n": 2}, {"day": 1, "turn": 2}, "hold")
+        self.assertFalse(a.db.in_transaction, "the failed commit was rolled back")
+        reader.rollback()
+        reader.close()
+        self.assertEqual(a.commit(7, "Mara", {"n": 2}, {"day": 1, "turn": 2}, "hold"), 2, "and the next one works")
+        self.assertEqual(json.loads(a.pilot(7)[0])["n"], 2)
+
+    def test_holding_is_a_read(self):
+        a, b = self.store(), self.store()
+        a.claim(7, "ssh")
+        beat = a.db.execute("SELECT heartbeat FROM sessions").fetchone()[0]
+        self.clock.now += 50
+        self.assertTrue(a.holds(7))
+        self.assertFalse(b.holds(7))
+        self.assertEqual(a.db.execute("SELECT heartbeat FROM sessions").fetchone()[0], beat)
+
     def test_pilots_are_kept_apart(self):
         a = self.store()
         for user in (1, 2, 3):
@@ -356,6 +386,34 @@ class Backup(StoreCase):
             self.assertEqual(db.execute("SELECT count(*) FROM pilots").fetchone()[0], 1)
             db.close()
 
+    def test_a_backup_into_the_data_folder_is_refused(self):
+        game = support.new_game(launch(), self.folder)
+        game.key("ENTER")
+        path = self.folder / fw.db_name(game.world.seed)
+        for target in (self.folder, self.folder / "." / "sub" / ".."):
+            with self.assertRaises(OSError):
+                fw.backup_worlds(self.folder, target)
+        game.key("ENTER")
+        self.assertTrue(game.saved_ok)
+        self.assertEqual(support.stored(self.folder)["state"]["turn"], 2, "the live records are the live records")
+        self.assertEqual([p.name for p in self.folder.glob("*.tmp")], [])
+        env = dict(os.environ, DOOR_FW_DATA_DIR=str(self.folder))
+        done = subprocess.run([sys.executable, str(ROOT / "fair_winds.py"), "--backup", str(self.folder)],
+                              env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("is the data folder", done.stderr)
+        self.assertTrue(path.exists())
+
+    def test_a_backup_never_lands_on_a_database_in_use(self):
+        game = support.new_game(launch(), self.folder)
+        game.key("ENTER")
+        other = self.folder / "other"
+        other.mkdir()
+        (other / (fw.db_name(game.world.seed) + "-wal")).write_bytes(b"")
+        with self.assertRaises(OSError):
+            fw.backup_worlds(self.folder, other)
+        self.assertEqual([p.name for p in other.glob("*.tmp")], [])
+
     def test_nothing_to_back_up_says_so(self):
         env = dict(os.environ, DOOR_FW_DATA_DIR=str(self.folder / "empty"))
         done = subprocess.run([sys.executable, str(ROOT / "fair_winds.py"), "--backup", str(self.folder / "c")],
@@ -419,6 +477,36 @@ class InTheGame(StoreCase):
         self.assertEqual(first.ended, "taken")
         self.assertIn("now flying from another session", session.out.text)
 
+    def test_records_that_are_busy_are_not_called_damaged(self):
+        first = fw.PlainFlight(launch(), self.folder)
+        first.key("ENTER")
+        first.close()
+        real = fw.Store.pilot
+
+        def busy(self, user_id):
+            raise sqlite3.OperationalError("database is locked")
+        fw.Store.pilot = busy
+        try:
+            game = fw.PlainFlight(launch(), self.folder)
+        finally:
+            fw.Store.pilot = real
+        text = self.screen(game)
+        self.assertIn("The records are busy. This game is not saved; yours is safe.", text)
+        self.assertNotIn("could not be read", text)
+        game.key("ENTER")
+        game.close()
+        again = fw.PlainFlight(launch(), self.folder)
+        self.assertIsNone(again.busy, "the session that kept nothing held nobody out")
+        self.assertEqual(again.state.turn, 1, "and the record is as it was")
+
+    def test_a_turn_costs_one_write(self):
+        game = fw.PlainFlight(launch(), self.folder)
+        writes = []
+        real = game.store._write
+        game.store._write = lambda work: (writes.append(1), real(work))[1]
+        game.key("ENTER")
+        self.assertEqual(len(writes), 1, "the look before the turn reads; the commit is the one synced write")
+
     def test_leaving_frees_the_pilot(self):
         first = fw.PlainFlight(launch(), self.folder)
         first.key("ENTER")
@@ -472,6 +560,22 @@ class RealDoor(unittest.TestCase):
                 self.assertIn("left them untouched", door.output)
                 self.assertIn("damaged or is not a database", door.errors)
             self.assertEqual(path.read_bytes(), before)
+
+    @unittest.skipUnless(hasattr(__import__("signal"), "SIGHUP"), "no hang-up signal here")
+    def test_a_dropped_line_gives_the_pilot_up(self):
+        import signal
+        with tempfile.TemporaryDirectory(prefix="fair-winds-test-") as folder:
+            env = {"DOOR_FW_DATA_DIR": folder}
+            with Door(environ=env) as first:
+                self.assertTrue(first.wait_for("Day 1  06:00"))
+                first.send("\r")
+                self.assertTrue(first.wait_for("Day 1  06:15"))
+                first.proc.send_signal(signal.SIGHUP)
+                self.assertEqual(first.wait_exit(), 0)
+            with Door(environ=env) as second:
+                self.assertTrue(second.wait_for("Day 1  06:15"), "straight back in: nobody is asked anything")
+                second.send("q")
+                self.assertEqual(second.wait_exit(), 0)
 
     def test_two_doors_for_one_pilot(self):
         with tempfile.TemporaryDirectory(prefix="fair-winds-test-") as folder:
