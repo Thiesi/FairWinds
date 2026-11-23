@@ -216,8 +216,14 @@ only after a real launch on that host, and stays marked unverified until then.
 
 None of these blocks a slice. Each is answered in the slice named.
 
-- **Is choosing a layer fun for forty turns?** S05 ends in a human playtest. If
-  the answer is no, stop and rework the turn before any art is drawn.
+- **Is the game fun?** The plan first put this question at S05, on the plain
+  flight alone. The owner played it on 2026-11-23 and found the question cannot
+  be answered there: what feels fine in a focused test may turn out repetitive
+  inside a real session, and what looks like a showstopper may not matter in a
+  career. So it is asked where there is a session to judge: after S13, on a
+  whole career with its presentation, and again after S23, with the shared
+  world and the reasons to return. Until then the turn stays cheap to change:
+  the engine knows nothing of the screens, and every number is data.
 - **Render budget.** How many bytes and how much CPU does animated wind cost on
   each transport? S08 measures it and sets the burst length and particle count.
 - **Starting numbers.** Every number in [systems.md](systems.md) is a first
@@ -251,8 +257,8 @@ Blockers: none.
 
 ### P1 — The wind and the turn
 
-The whole game with no art. P1 exists to prove the turn is fun before anything
-is drawn.
+The whole game with no art: the world, the weather, the turn, and a plain
+screen to fly it on.
 
 **S01 — Host adapter and terminal lifecycle.** Build launch metadata validation,
 an incremental key decoder, timed input, resize and deadline handling, terminal
@@ -304,16 +310,16 @@ the same turn replayed after a simulated disconnect gives the same result;
 a scripted delivery between two towns succeeds.
 Blockers: S03.
 
-**S05 — Plain flight and the fun gate.** Build an 80x24 text interface over the
-engine: the layer table, a character map, three previewed tracks, the log, and
-one complete flying day from briefing to landing.
-Why: decide whether the game works before spending on presentation.
+**S05 — Plain flight.** Build an 80x24 text interface over the engine: the
+layer table, a character map, three previewed tracks, the log, and one complete
+flying day from briefing to landing.
+Why: fly the turn for real, and find what the numbers get wrong, before
+spending on presentation.
 Outcome: a caller can fly a whole day, in standalone or hosted launch.
 Acceptance: scripted end-to-end launch, preview, commit, land and quit; resume
 after a killed process continues on the same turn; help explains every key;
-no stale key commits a turn. Then a human playtest of at least five flying days
-by the owner, with the verdict and the retuned numbers recorded in the PR.
-P2 does not start until the verdict is yes.
+no stale key commits a turn. The play-test first planned here moved to S13 and
+S23 (see Open questions).
 Blockers: S01, S04.
 
 ### P2 — Beautiful flight
@@ -404,6 +410,10 @@ Outcome: ranks and upgrades change what a pilot can attempt.
 Acceptance: each rank is reachable by scripted play; each upgrade has a
 measurable effect covered by a test; an envelope design is stored, shown in
 scenes and on other callers' maps, and readable in sixteen colours.
+Then the first play-test: the owner plays a career over several real sessions,
+with the presentation of P2, and says whether it holds up and what drags. The
+verdict and what was retuned are recorded on the P3 tracker. P4 does not start
+on a verdict that the turn needs rework.
 Blockers: S12.
 
 ### P4 — Shared world
@@ -501,6 +511,8 @@ Blockers: S15, S19.
 the eye and the hall.
 Why: the long goal.
 Outcome: reaching the eye is possible, hard and recorded for good.
+After this slice the second play-test: the owner plays the nearly whole game
+and judges it over a longer stretch, before P6 hardens it for release.
 Acceptance: no station can be planted inside the inner band; forecast error
 grows as documented toward the centre; a scripted late-game flight from the
 nearest possible mast reaches the eye; a first-tier balloon cannot; the first

@@ -20,19 +20,20 @@ what the door is. This file says how to work here.
 (the plain flight). The game can be played in plain text at 80 x 24:
 `python fair_winds.py` in a terminal, or as a door under NetBBS.
 
-**P1 ends in the owner's play-test. Do not start S06 until the owner has played
-at least five flying days and said the turn is fun.** If the verdict is no,
-rework the turn first. Record the verdict and any retuned numbers in the S05
-PR or the P1 tracker (#2).
+**The play-test moved.** The owner played the plain flight on 2026-11-23 and
+found it cannot be judged alone: it needs a real session, in a nearly finished
+game. So the build carries on through P2 and P3, and the owner's play-tests come
+after S13 (a whole career with its presentation) and after S23. Keep the turn
+cheap to change until then: the engine must stay ignorant of the screens, and
+every number must stay data.
 
-Tuning already done from measurement, before the play-test: squalls were made
+Tuning already done from measurement: squalls were made
 narrow and rarer (they sat over a start town all day), a place counts as
 reached within 12.5 km (was 7.5), and the post is for three places at once,
 because one fixed town is upwind on most days. `docs/systems.md` section 5a
 has the numbers.
 
-P1 ends in a playtest by the owner (S05). Do not start P2 until the owner has
-said the turn is fun.
+The next slice is S06.
 
 ## What the code is
 
