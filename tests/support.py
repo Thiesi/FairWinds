@@ -91,6 +91,8 @@ class Door:
         env = {k: v for k, v in os.environ.items() if not k.startswith(("DOOR_", "NETBBS_"))}
         env["PYTHONIOENCODING"] = "utf-8"
         env["DOOR_FW_DATA_DIR"] = str(Path(self._dir.name) / "data")
+        env["DOOR_SPLASH"] = "0"            # straight to the game, unless a test asks for the splash
+        env["DOOR_FW_MOTION"] = "off"       # and no moving wind to race against
         if hosted:
             self.write_info(info if info is not None else door_info(), raw)
             env["NETBBS_DOOR_INFO"] = str(self.info_path)

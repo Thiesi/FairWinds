@@ -52,7 +52,8 @@ class Lifecycle(unittest.TestCase):
             info = os.path.join(folder, "door_info.json")
             with open(info, "w", encoding="utf-8") as f:
                 json.dump(door_info(), f)
-            env = dict(os.environ, NETBBS_DOOR_INFO=info)
+            env = dict(os.environ, NETBBS_DOOR_INFO=info, DOOR_SPLASH="0", DOOR_FW_MOTION="off",
+                       DOOR_FW_DATA_DIR=os.path.join(folder, "data"))
             proc = subprocess.Popen([sys.executable, str(DOOR)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE, env=env)
             try:

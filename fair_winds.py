@@ -29,7 +29,7 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "0.1.0.dev10"
+VERSION = "0.1.0.dev11"
 DOOR_API = 5
 MIN_WIDTH, MIN_HEIGHT = 80, 24
 MAX_DIMENSION = 1000
@@ -2533,6 +2533,7 @@ class PlainFlight:
         self.typed_ahead = False          # set when a turn was committed: later keys in the same read are dropped
         self.motion = want_motion(launch, environ or {}) and self.map.pixels      # the character map's wind holds still
         self.frames_left = 0              # frames of moving wind still to show
+        self.pending_scene: dict | None = None    # a scene the last turn earned, for the session to play
         self.opening_notice = ""          # shown on the first screen, where it cannot scroll away
         loaded = self._load()
         if loaded is not True:
@@ -2748,14 +2749,35 @@ class PlainFlight:
             line = self._describe(event)
             if line:
                 self._say(f"{stamp}  {line}")
-        if before.status == "aloft" and self.state.status != "aloft":
+        landed = before.status == "aloft" and self.state.status != "aloft"
+        if landed:
             self._landed()
         self.save()                       # before anything is shown
+        if action == "launch" or landed:
+            self.pending_scene = self._scene_for("launch" if action == "launch" else "landing")
         if action != "pibal":
             self.typed_ahead = True
             if self.motion:
                 self.frames_left = BURST_FRAMES
         self._choose_default()
+
+    def _scene_for(self, kind: str) -> dict:
+        """What a launch or a landing looked like: the hour, the sky, the land, and what to say under it."""
+        state = self.state
+        minute = state.minute - TURN_MINUTES            # the moment of the turn just flown
+        frame = self.weather.frame(state.day, minute)
+        place = self.engine.place(state.x, state.y)
+        name = self.place_of(place)["name"] if place else ""
+        if kind == "launch":
+            caption = f"Day {state.day}, {clock_text(minute)}. Up and away" + (f" from {name}." if name else ".")
+            sub = ""
+        else:
+            lines = [line.split("  ", 1)[-1] for line in self.log[-3:]]
+            caption = next((line for line in lines if line.startswith(("Down ", "Midnight"))), "Down.")
+            sub = next((line for line in lines if "delivered" in line or "stranded" in line), "")
+        return {"kind": kind, "hour": minute / 60.0, "cloud": frame.cloud(state.x, state.y)[0],
+                "biome": self.world.sample(state.x, state.y)[1], "place": place is not None,
+                "seed": int(state.x) * 7919 + int(state.y) * 104729 + 17, "caption": caption, "sub": sub}
 
     def _describe(self, event: tuple) -> str:
         code = event[0]
@@ -3258,6 +3280,270 @@ PLAIN_HELP = (
 
 
 # --------------------------------------------------------------------------
+# Scenes (S09): full-screen pictures for the moments that deserve one. A
+# sky that follows the hour and the weather, ground that follows the land,
+# and the balloon. A scene plays only after what it shows has been saved,
+# never waits for a key (the splash excepted, which holds under a prompt),
+# and ends on any key, which it uses up.
+# --------------------------------------------------------------------------
+
+SCENE_FRAME_SECONDS = 1 / 7
+_TITLE_FONT = {
+    "F": "11111 10000 10000 11110 10000 10000 10000", "A": "01110 10001 10001 11111 10001 10001 10001",
+    "I": "11111 00100 00100 00100 00100 00100 11111", "R": "11110 10001 10001 11110 10100 10010 10001",
+    "W": "10001 10001 10001 10101 10101 11011 10001", "N": "10001 11001 10101 10011 10001 10001 10001",
+    "D": "11110 10001 10001 10001 10001 10001 11110", "S": "01111 10000 10000 01110 00001 00001 11110",
+    " ": "00000 00000 00000 00000 00000 00000 00000",
+}
+# Four stops from the top of the sky to the horizon, at key hours of the day.
+_SKIES = (
+    (0.0, ((6, 8, 24), (10, 14, 38), (16, 22, 52), (24, 32, 66))),
+    (4.5, ((6, 8, 24), (10, 14, 38), (18, 24, 56), (30, 36, 72))),
+    (6.2, ((34, 40, 96), (112, 80, 130), (236, 150, 110), (255, 220, 156))),
+    (8.5, ((52, 112, 196), (92, 150, 220), (140, 188, 236), (184, 216, 244))),
+    (17.0, ((52, 112, 196), (92, 150, 220), (140, 188, 236), (184, 216, 244))),
+    (19.6, ((16, 16, 52), (64, 36, 100), (200, 92, 100), (252, 176, 96))),
+    (21.3, ((8, 10, 30), (14, 18, 46), (30, 30, 70), (60, 44, 84))),
+    (24.0, ((6, 8, 24), (10, 14, 38), (16, 22, 52), (24, 32, 66))),
+)
+BALLOON_COLOURS = ((44, 172, 172), (246, 232, 202), (240, 112, 92), (246, 232, 202))
+
+
+def sky_stops(hour: float) -> tuple:
+    """The sky's four colours, top to horizon, at an hour of the day."""
+    hour = hour % 24.0
+    for (h0, a), (h1, b) in zip(_SKIES, _SKIES[1:]):
+        if h0 <= hour <= h1:
+            t = (hour - h0) / (h1 - h0) if h1 > h0 else 0.0
+            return tuple(_mix(a[i], b[i], t) for i in range(4))
+    return _SKIES[0][1]
+
+
+class Backdrop:
+    """A sky and the land under it, painted once for a scene and kept."""
+
+    def __init__(self, width: int, height: int, hour: float, cloud: float = 0.0, biome: int = GRASS,
+                 seed: int = 1, place: bool = False):
+        self.w, self.h = width, height * 2            # in pixels: two to a cell
+        self.horizon = int(self.h * 0.72)
+        self.hour = hour % 24.0
+        night = self.hour < 5.5 or self.hour >= 20.5
+        stops = sky_stops(self.hour)
+        w, h, hz = self.w, self.h, self.horizon
+        seed32 = seed & 0xFFFFFFFF
+        # The sun rides an arc from dawn to dusk; outside it there is a moon.
+        day = (self.hour - 6.0) / 14.0
+        up = 0.0 <= day <= 1.0
+        sun_x = w * (0.12 + 0.76 * day) if up else w * 0.78
+        sun_y = hz - (hz * 0.78) * (1.0 - (2.0 * day - 1.0) ** 2) - 2 if up else hz * 0.22
+        rows = []
+        for y in range(h):
+            row = []
+            t = min(1.0, y / hz) * 3
+            i = min(2, int(t))
+            base = _mix(stops[i], stops[i + 1], t - i)
+            for x in range(w):
+                c = base
+                if y < hz:
+                    d2 = (x - sun_x) ** 2 + ((y - sun_y) * 1.1) ** 2
+                    if up:
+                        glow = 0.45 * 220.0 / (220.0 + d2)
+                        c = (c[0] + (255 - c[0]) * glow, c[1] + (236 - c[1]) * glow, c[2] + (190 - c[2]) * glow)
+                        if d2 < (w * 0.028) ** 2 + 2:
+                            c = (255, 246, 210)
+                    else:
+                        if d2 < (w * 0.02) ** 2 + 1.5:
+                            c = (226, 230, 240)
+                        elif night and y < hz * 0.6 and _lattice(seed32, 7, x, y) < 0.012:
+                            c = _mix(c, (235, 240, 255), 0.75)
+                    if cloud > 0.05:
+                        n = _noise(seed32, 9, x / (w * 0.16) + 3.1, y / (h * 0.055))
+                        a = _smooth(n, 0.62 - cloud * 0.4, 0.82 - cloud * 0.3) * _smooth(y, h * 0.04, h * 0.2)
+                        lit = _mix(stops[1], stops[3], min(1.0, y / hz))
+                        c = _mix(c, _mix(lit, (236, 240, 246), 0.55 if up else 0.12), a * 0.85)
+                row.append(c)
+            rows.append(row)
+        # Two ranges and the ground, coloured by the land and by the light.
+        light = stops[3]
+        ground = terrain_rgb(200, biome if biome >= SHORE else GRASS)
+        dim = 0.34 if night else 0.62 if not up or day < 0.08 or day > 0.92 else 0.92
+        for depth, (scale, top, amp, haze) in enumerate(((w * 0.22, hz - h * 0.03, h * 0.16, 0.62),
+                                                        (w * 0.15, hz + h * 0.02, h * 0.1, 0.36))):
+            body = _mix((ground[0] * dim * 0.7, ground[1] * dim * 0.7, ground[2] * dim * 0.8), light, haze)
+            for x in range(w):
+                ty = top - amp * _noise(seed32, 11 + depth, x / scale, depth * 3.7) \
+                    - amp * 0.35 * _noise(seed32, 13 + depth, x / (scale * 0.31), depth * 5.1)
+                for y in range(max(0, int(ty)), h):
+                    rows[y][x] = body
+        self.ground_y = []
+        for x in range(w):
+            gy = hz + h * 0.1 - h * 0.05 * _noise(seed32, 17, x / (w * 0.2), 9.3)
+            self.ground_y.append(gy)
+            for y in range(max(0, int(gy)), h):
+                fade = min(1.0, (y - gy) / (h * 0.18))
+                rows[y][x] = (ground[0] * dim * (1 - 0.45 * fade), ground[1] * dim * (1 - 0.45 * fade),
+                              ground[2] * dim * (1 - 0.4 * fade))
+        if place:
+            self._town(rows, seed32, night or not up)
+        self.tops = [[(int(c[0]), int(c[1]), int(c[2])) for c in rows[y]] for y in range(0, h, 2)]
+        self.bottoms = [[(int(c[0]), int(c[1]), int(c[2])) for c in rows[y]] for y in range(1, h, 2)]
+
+    def _town(self, rows, seed32: int, lit: bool) -> None:
+        """A few roofs and a mast on the right of the picture, their windows lit after dark."""
+        w, h = self.w, self.h
+        x = int(w * 0.62)
+        n = 0
+        while x < w * 0.92:
+            bw = 3 + int(_lattice(seed32, 21, n, 0) * 4)
+            bh = 3 + int(_lattice(seed32, 22, n, 0) * (h * 0.09))
+            gy = int(self.ground_y[min(w - 1, x)])
+            for bx in range(bw):
+                for by in range(1, bh + 1):
+                    if 0 <= gy - by < h and x + bx < w:
+                        window = lit and by > 1 and by < bh and by % 2 == 0 and bx % 2 == 1 \
+                            and _lattice(seed32, 23, x + bx, by) < 0.7
+                        rows[gy - by][x + bx] = (255, 214, 124) if window else (26, 22, 44)
+            x += bw + 1 + int(_lattice(seed32, 24, n, 0) * 2)
+            n += 1
+        mx = int(w * 0.56)
+        gy = int(self.ground_y[mx])
+        for y in range(gy - int(h * 0.2), gy):
+            if 0 <= y < h:
+                rows[y][mx] = (70, 62, 96)
+        if 0 <= gy - int(h * 0.2) - 1 < h:
+            rows[gy - int(h * 0.2) - 1][mx] = (255, 84, 72)
+
+    def draw(self, screen: Screen) -> None:
+        for r in range(len(self.tops)):
+            screen.pixel_row(0, r, self.tops[r], self.bottoms[r])
+
+
+def draw_balloon(screen: Screen, cx: float, cy: float, r: float, light=(1.0, 1.0, 1.0), flame: bool = True) -> None:
+    """The balloon, in pixels: a striped envelope lit from the right, ropes and a basket."""
+    tail = r * 0.5
+    for y in range(int(cy - r), int(cy + r + tail) + 1):
+        for x in range(int(cx - r), int(cx + r) + 1):
+            dx, dy = x - cx, y - cy
+            if dy <= 0:
+                inside = 1.0 - (dy / r) * (dy / r)
+                hw = r * math.sqrt(inside) if inside > 0 else 0.0
+            else:
+                hw = r * (1.0 - (dy / (r + tail)) ** 1.7)
+            if hw < 0.8 or abs(dx) > hw + 0.3:
+                continue
+            u = max(-1.0, min(1.0, dx / max(hw, 1.0)))
+            gore = int((math.asin(u) / math.pi + 0.5) * 7.999)
+            col = BALLOON_COLOURS[gore % 4]
+            lum = 0.58 + 0.38 * u + 0.1 * (dy / r)
+            c = (col[0] * lum * light[0], col[1] * lum * light[1], col[2] * lum * light[2])
+            if flame and dy > r * 0.8:
+                c = _mix(c, (255, 196, 120), min(1.0, (dy - r * 0.8) / (r * 0.7)) * 0.6)
+            screen.pixel(x, y, c)
+    by = int(cy + r + tail) + 1
+    bw = max(1, int(r / 6))
+    rope = max(1, int(r / 5))
+    if flame:
+        screen.pixel(int(cx), by, (255, 226, 140))
+    for i in range(1, rope + 1):
+        screen.pixel(int(cx - bw), by + i, (58, 46, 70))
+        screen.pixel(int(cx + bw), by + i, (58, 46, 70))
+    for y in range(by + rope + 1, by + rope + 1 + max(1, rope)):
+        for x in range(int(cx - bw), int(cx + bw) + 1):
+            screen.pixel(x, y, (104, 70, 46))
+
+
+class Scene:
+    """One full-screen picture that plays for a number of frames.
+
+    kind       "splash", "launch" or "landing"
+    frames     how many frames it plays; the balloon moves through them
+    hold       True for the splash: it stays under a prompt until a key
+    """
+
+    def __init__(self, kind: str, width: int, height: int, pixels: bool, motion: bool, hour: float = 6.6,
+                 cloud: float = 0.0, biome: int = GRASS, seed: int = 1, place: bool = False,
+                 caption: str = "", sub: str = ""):
+        self.kind, self.width, self.height = kind, width, height
+        self.pixels, self.caption, self.sub = pixels, caption, sub
+        self.hold = kind == "splash"
+        self.frames = {"splash": 16, "launch": 11, "landing": 14}[kind] if pixels and motion else 1
+        self.linger = 0 if (pixels and motion) or self.hold else 8      # a still picture stays a moment
+        self.index = 0
+        self.backdrop = Backdrop(width, height, hour, cloud, biome, seed, place) if pixels else None
+
+    @property
+    def over(self) -> bool:
+        return not self.hold and self.index >= self.frames + self.linger
+
+    def advance(self, frames: int = 1) -> None:
+        last = self.frames - 1 if self.hold else self.frames + self.linger
+        self.index = min(last, self.index + frames)
+
+    def _eased(self) -> float:
+        """How far through its move the balloon is, from 0 to 1, slowing as it arrives."""
+        if self.frames <= 1:
+            return 1.0
+        t = min(1.0, self.index / (self.frames - 1))
+        return 1.0 - (1.0 - t) * (1.0 - t)
+
+    def draw(self, screen: Screen) -> None:
+        w, h = screen.width, screen.height
+        if not self.pixels:
+            self._card(screen)
+            return
+        back = self.backdrop
+        back.draw(screen)
+        r = max(3.0, back.h / 7.0)
+        ground = back.ground_y[int(w * 0.34)] - r * 1.75
+        t = self._eased()
+        if self.kind == "splash":
+            cx, cy = w * 0.74, back.h + r + (back.h * 0.4 - back.h - r) * t
+        elif self.kind == "launch":
+            cx, cy = w * 0.34 + w * 0.1 * t, ground + (-r * 2.5 - ground) * (t * t)
+        else:
+            cx, cy = w * 0.24 + w * 0.1 * t, -r * 1.5 + (ground + r * 1.5) * t
+        night = back.hour < 5.5 or back.hour >= 20.5
+        draw_balloon(screen, cx, cy, r, (0.5, 0.52, 0.66) if night else (1.0, 1.0, 1.0),
+                     flame=self.kind != "landing" or t < 0.9)
+        if self.kind == "splash":
+            scale = max(1, (w - 8) // 60)
+            self._title(screen, max(2, int(w * 0.06)), max(2, int(back.h * 0.14)), "FAIR WINDS", scale)
+            row = (int(back.h * 0.14) + 7 * scale) // 2 + 2
+            self._over(screen, max(2, int(w * 0.06)), row, "Read the wind. Carry the post. Finish the map.", "bright")
+            if self.index >= self.frames - 1:
+                self._over(screen, max(2, int(w * 0.06)), h - 2, "Press any key", "accent")
+        else:
+            self._over(screen, 2, h - 3, self.caption, "bright")
+            self._over(screen, 2, h - 2, self.sub, "accent")
+
+    def _title(self, screen: Screen, x: int, y: int, text: str, scale: int) -> None:
+        for layer, colour in ((1, (40, 24, 72)), (0, None)):
+            cx = x
+            for ch in text:
+                for ry, bits in enumerate(_TITLE_FONT[ch].split()):
+                    for rx, bit in enumerate(bits):
+                        if bit != "1":
+                            continue
+                        for dy in range(scale):
+                            for dx in range(scale):
+                                c = colour or _mix((250, 240, 214), (255, 196, 110), (ry * scale + dy) / (7 * scale))
+                                screen.pixel(cx + rx * scale + dx + layer, y + ry * scale + dy + layer, c)
+                cx += 6 * scale
+
+    def _over(self, screen: Screen, x: int, row: int, text: str, ink) -> None:
+        for i, ch in enumerate(text[:max(0, screen.width - x - 1)]):
+            screen.over(x + i, row, ch, ink, 0.62)
+
+    def _card(self, screen: Screen) -> None:
+        """The reading for terminals without the picture: the words, in the middle."""
+        lines = ["F A I R   W I N D S", "", "Read the wind. Carry the post. Finish the map.", "", "Press any key"] \
+            if self.kind == "splash" else [self.caption, self.sub]
+        top = max(0, (screen.height - len(lines)) // 2)
+        for i, line in enumerate(lines):
+            screen.text(max(0, (screen.width - len(line)) // 2), top + i, line, "accent" if i == 0 else "text")
+
+
+# --------------------------------------------------------------------------
 # The session.
 # --------------------------------------------------------------------------
 
@@ -3290,6 +3576,8 @@ class Session:
         self.frame = Screen(self.width, self.height, launch.color_depth, launch.charset)
         self.shown: Screen | None = None      # what the caller's terminal holds; None means unknown
         self._next_frame: float | None = None # when the next frame of moving wind is due
+        self.scene: Scene | None = None       # a full-screen scene playing now
+        self.scenes_on = False                # launch and landing scenes; main() switches them on
         self._sent: list = []                 # (when, bytes) for what was sent in the last second
         self._next_poll = self.started + GEOMETRY_POLL
 
@@ -3327,6 +3615,7 @@ class Session:
         if size != (self.width, self.height):
             self.width, self.height = size
             self.shown = None               # a resize throws the buffer away and repaints everything
+            self.scene = None               # and a scene painted for the old size is over
             self._dirty = True
 
     # -- drawing ------------------------------------------------------------
@@ -3341,6 +3630,8 @@ class Session:
         self.frame = Screen(self.width, self.height, self.launch.color_depth, self.launch.charset)
         if layout_tier(self.width, self.height) == "undersize":
             self._undersize()
+        elif self.scene is not None:
+            self.scene.draw(self.frame)
         elif self.view == "help":
             self._help()
         elif self.game is not None:
@@ -3458,6 +3749,9 @@ class Session:
         if self.stop:
             return
         self._check_geometry()
+        if self.scene is not None:
+            self._scene_step()
+            return
         if self._dirty:
             self.paint()
         moving = self.game is not None and self.view == "front" and self.game.frames_left > 0
@@ -3494,6 +3788,76 @@ class Session:
                 self.game.typed_ahead = False
                 self.keys.flush()
                 break
+        if self.game is not None and self.game.pending_scene is not None and not self.stop:
+            self._take_scene()
+
+    # -- scenes ---------------------------------------------------------------
+
+    def start_splash(self) -> None:
+        """The title, at the door: a picture where the terminal can show one, the words where it cannot."""
+        if layout_tier(self.width, self.height) == "undersize":
+            return
+        pixels = self.game.map.pixels if self.game is not None else want_pixels(self.launch, {})
+        motion = self.game.motion if self.game is not None else True
+        self.scene = Scene("splash", self.width, self.height, pixels, motion, seed=self.width * 31 + self.height)
+        self._next_frame = None
+        self._dirty = True
+
+    def _take_scene(self) -> None:
+        """Play the scene the last turn earned, if scenes are on and this terminal can show pictures."""
+        asked, self.game.pending_scene = self.game.pending_scene, None
+        if asked is None or not self.scenes_on or not self.game.map.pixels:
+            return
+        if layout_tier(self.width, self.height) == "undersize" or self.view != "front":
+            return
+        self.scene = Scene(asked["kind"], self.width, self.height, True, self.game.motion, hour=asked["hour"],
+                           cloud=asked["cloud"], biome=asked["biome"], seed=asked["seed"], place=asked["place"],
+                           caption=asked["caption"], sub=asked["sub"])
+        self._next_frame = None
+        self._dirty = True
+
+    def _end_scene(self) -> None:
+        self.scene, self._next_frame, self._dirty = None, None, True
+
+    def _scene_step(self) -> None:
+        """One step while a scene plays: paint, wait for its next frame, and end it on any key."""
+        scene = self.scene
+        if self._dirty:
+            self.paint()
+        resting = scene.hold and scene.index >= scene.frames - 1
+        if resting:
+            wait = IDLE_TIMEOUT
+        else:
+            now = self.clock()
+            if self._next_frame is None:
+                self._next_frame = now + SCENE_FRAME_SECONDS
+            wait = max(0.01, self._next_frame - now)
+        data = self.inp.read(ESCAPE_TIMEOUT if self.keys.pending else wait)
+        if data == b"":
+            self.stop = "eof"
+            return
+        if data is None:
+            keys = self.keys.flush() if self.keys.pending else []
+        else:
+            keys = self.keys.feed(data)
+        if keys:
+            # Any key ends a scene, and the scene uses it up: it is never also a move.
+            self.keys.flush()
+            if "CTRL-C" in keys:
+                self.stop = "quit"
+            self._end_scene()
+            return
+        if resting:
+            return
+        now = self.clock()
+        if now < self._next_frame - 1e-6:
+            return
+        due = 1 + int((now - self._next_frame) / SCENE_FRAME_SECONDS)
+        self._next_frame += due * SCENE_FRAME_SECONDS
+        scene.advance(due)
+        self._dirty = True
+        if scene.over:
+            self._end_scene()
 
     def _frames_due(self) -> None:
         """Move the wind by as many frames as are due, and paint once if the line can take it.
@@ -3576,6 +3940,9 @@ def main(argv=None) -> int:
     for name in ("SIGUSR1", "SIGWINCH"):     # NetBBS signals a resize; so does a local terminal
         if hasattr(signal, name):
             signal.signal(getattr(signal, name), on_resize)
+    session.scenes_on = os.environ.get("DOOR_SCENES", "").strip() != "0"
+    if session.scenes_on and os.environ.get("DOOR_SPLASH", "").strip() != "0":
+        session.start_splash()
     try:
         session.run()
     finally:
