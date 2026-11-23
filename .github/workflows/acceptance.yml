@@ -1,0 +1,32 @@
+name: Fair Winds acceptance
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  suite:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      # The host the door is written for, pinned to the release the plan was
+      # checked against (NetBBS v7.45.0), so its profile parser can accept
+      # profiles/netbbs.json.
+      - uses: actions/checkout@v4
+        with:
+          repository: Thiesi/NetBBS
+          ref: 614725882b12749c2e90b40e0d051484d7f0ee47
+          path: .task/netbbs
+      - name: Install the pinned host
+        run: python -m pip install tzdata ./.task/netbbs
+      - name: Standard-library game suite
+        run: python -m unittest discover -s tests -v

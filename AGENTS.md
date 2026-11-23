@@ -15,7 +15,9 @@ what the door is. This file says how to work here.
    constants.
 4. Check the phase trackers on GitHub (issues #1 to #7) for what is done.
 
-**Status:** P0 is complete. The next slice is S01. Nothing is implemented yet.
+**Status:** P0 is complete. S01 (host adapter and terminal lifecycle) is built:
+the door opens, shows what the host told it and closes cleanly. The next slices
+are S02 to S04. There is no game yet.
 
 P1 ends in a playtest by the owner (S05). Do not start P2 until the owner has
 said the turn is fun.
@@ -81,9 +83,8 @@ Open a PR and wait for Claude's completed written review. Fix what matters,
 explain what you dismiss, and ask for `@claude review` again after fixes. A
 failed or skipped reviewer run is not approval.
 
-The review workflows are not installed yet. **MANUAL — owner:** S01 adds
-`.github/workflows/claude.yml` and `claude-code-review.yml` as in Lunar Lander;
-they need the `CLAUDE_CODE_OAUTH_TOKEN` repository secret.
+The review workflows (`claude.yml`, `claude-code-review.yml`) are installed.
+`acceptance.yml` runs the suite on Linux and Windows against a pinned NetBBS.
 
 ## Windows development notes
 
