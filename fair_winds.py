@@ -4465,6 +4465,7 @@ class PlainFlight:
             keys = [(key, short.get(label, label)) for key, label in keys]
         if width(keys, gap) > wide:
             gap = 2
+        # N is only ever on the ground's line and J only on the air's, so each is the last to go where it is.
         for spare in ("?", "P", "H", "O", "L", "A/D", "W/S", "M", "N", "J"):
             if width(keys, gap) <= wide:
                 break
