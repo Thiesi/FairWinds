@@ -63,9 +63,42 @@ scored Daily Drift attempt is one per world day.
 **Why pace at all.** The map is shared and finite. Without a calendar one
 caller could chart a continent in a weekend and leave nothing for anyone else.
 
-**What the caller is told.** The briefing always names the day being flown, how
-many days are waiting, and when the next one opens:
-`Logbook: Day 39. Two more days are waiting. Day 42 opens at midnight.`
+**What the caller is told.** The screen always names the day being flown, in
+its heading, and says when the next one opens and how many opened days still
+wait: `Day 42 opens at midnight. Two more days wait.` A pilot who has flown
+every opened day reads `Every day that has opened is flown. Day 42 opens at
+midnight: come back then.`, has no flying keys, and may look at the day to
+come: its map and its forecast are shown, and nothing can be done with them
+until it opens. The time is given as `at midnight`, as `at 12:00`, or with its
+date when it is more than a day off.
+
+**As built (S11).** The calendar is four values in `meta`: `epoch_date`,
+`epoch_day`, `tempo` and `high_day`, with the node's `timezone` beside them. A
+world's calendar begins on the local date the world is first opened. The day
+is `epoch_day` plus `tempo` for each local date since `epoch_date`, plus the
+slot of the day the wall clock is in; `high_day` is written once for each day
+that opens, by whichever caller sees it first. Reading the day takes no lock.
+A session looks at the calendar when it opens, at each day's end, every 20
+seconds while it idles, and at any key pressed while waiting, so a day that
+opens is shown without the caller doing anything.
+
+The logbook day is the day in the pilot's flight state: `logbook_day` is not a
+separate field. A day is in progress once a turn of it has been flown, and
+until the pilot stays the night, walks out or is picked up. Days lapse only
+when no day is in progress, at the opening of a session and at each day's end;
+the pilot is told how many went by.
+
+The node's zone is looked up by its IANA name. A host without data for that
+name uses its own zone and says so on standard error; a door started from a
+shell uses the host's zone. `python fair_winds.py --tempo N` sets the tempo of
+every world in the data directory from today on: today stays today, the
+calendar is counted afresh from this date so that the slot the clock is in is
+today, and the next day opens at the next slot, never at the moment of the
+change. An empty zone name means UTC. It will move into the SysOp tool.
+
+A pilot from before the calendar counted days of their own (a new day at a key
+press). On their first call under the calendar a day number ahead of the
+world's becomes today, once; nothing else of theirs changes.
 
 ## 3. The world
 
@@ -351,9 +384,8 @@ day, and the wind picks.
 
 **Placeholders, each replaced by the slice named.** A delivery fills the balloon
 up and mends it for nothing, and so does a night at a town or station; landing
-where there is no post changes nothing (S12). A new day starts when the pilot
-asks, with no calendar (S11). Walking out and the packet boat happen at a key
-press (S16). Forecast coverage counts towns and the three starting stations
+where there is no post changes nothing (S12). Walking out and the packet boat
+happen at a key press (S16). Forecast coverage counts towns and the three starting stations
 (S15). The pilot's record holds the plain flight's own fields (the post
 aboard, the last places delivered to, deliveries, days flown, distance, the
 log) as one JSON text; S11 to S13 give them columns and tables of their own.

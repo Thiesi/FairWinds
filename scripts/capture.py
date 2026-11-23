@@ -98,6 +98,7 @@ def fly(width: int, height: int, depth: str, charset: str = "utf-8", turns=("ENT
                 pass
         session = fw.Session(launch, None, Quiet(), game=game)
         session.paint()
+        game.close()                      # the folder cannot be removed while its records are open
         return session.frame
 
 

@@ -24,7 +24,7 @@ class Lifecycle(unittest.TestCase):
             self.assertTrue(door.wait_for("Return to Test Node"))
             screen = door.screen()
             self.assertIn("Mara", screen.text())
-            self.assertIn("80 x 24", screen.text())
+            self.assertIn("opens at midnight", screen.text())
             self.assertTrue(screen.cursor_hidden)
             door.send("q")
             self.assert_clean_exit(door)
@@ -172,7 +172,7 @@ class Lifecycle(unittest.TestCase):
 
     def test_standalone_over_pipes(self):
         with Door(hosted=False) as door:
-            self.assertTrue(door.wait_for("standalone"))
+            self.assertTrue(door.wait_for("Day 1  06:00"))
             door.send("q")
             self.assert_clean_exit(door)
 

@@ -222,3 +222,21 @@ def stored(folder, user_id=12):
             found.append(dict(json.loads(row[0]), state=json.loads(row[1]), seq=row[2]))
     assert len(found) == 1, found
     return found[0]
+
+
+class Calendar:
+    """A clock for the world's calendar: it stands still until a test moves it."""
+
+    def __init__(self, start=1_800_000_000.0):          # 15 January 2027, 08:00 UTC
+        self.now = start
+
+    def __call__(self):
+        return self.now
+
+    def days(self, n=1.0):
+        self.now += n * 86400
+        return self
+
+    def hours(self, n=1.0):
+        self.now += n * 3600
+        return self
