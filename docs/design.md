@@ -44,7 +44,14 @@ point and a number.
   Ignore unknown additive fields; treat documented optional fields as optional.
   Malformed supplied metadata is an error, never a silent standalone fallback.
   Standalone play (`python fair_winds.py`, no `NETBBS_DOOR_INFO`) is for
-  development and uses a local world. DOOR32.SYS and DOOR.SYS hosts are deferred.
+  development and uses a local world.
+- **Classic hosts:** DOOR32.SYS and DOOR.SYS on other BBS software (Synchronet,
+  Mystic, ENiGMA½), as Lunar Lander supports them: the drop file's name as the
+  one argument, stdio or the inherited DOOR32 socket, CP437 and sixteen colours
+  by default, 80 columns with no live resize. A classic caller gets the whole
+  game at the small layout tier. NetBBS-only features (game events, `!top`,
+  board posts, chat lines) are absent there. Scoped below under
+  [Classic hosts](#classic-hosts) and built in S28 and S29.
 - **Pacing:** the unit of play is the world's calendar day, never the call. A
   world day opens at node-local midnight. A pilot flies each world day at most
   once, in order, and can never fly a day that has not opened. Up to three
@@ -139,6 +146,72 @@ on 2026-11-22:
 
 The existing API is sufficient. No NetBBS gap issue is required.
 
+## Classic hosts
+
+Scoped on 2026-11-23 against Lunar Lander's shipped classic support (its README,
+"Classic BBS setup"), which is the model. Fair Winds differs in three ways: it
+has a shared world, a calendar, and far more screens.
+
+**Launch.** `python3 fair_winds.py /path/to/node/DOOR32.SYS`. `DOOR.SYS` works
+too. The file is recognised by name without case, or by its contents when
+renamed, with CRLF or LF endings. `NETBBS_DOOR_INFO`, when set, wins. A
+malformed drop file stops the launch with a message on stderr that never names
+the file. A caller without ANSI (DOOR32 emulation 0, DOOR.SYS `NG` or `7E`) is
+told the game needs an ANSI terminal and is returned to the BBS.
+
+**What the launch record takes from a drop file.**
+
+| Launch record | DOOR32.SYS | DOOR.SYS | Otherwise |
+| --- | --- | --- | --- |
+| Pilot identity | User record number | User record number | Required; a launch without one is a visit |
+| Handle | Alias | Alias or name | Sanitized, display only |
+| Node identity | | | `DOOR_FW_NODE_ID`, default `classic` |
+| BBS name | | | `DOOR_FW_BBS_NAME`, default "BBS" |
+| Geometry | 80 by 24 | 80 by page length | No live resize |
+| Colour depth | | | 16, or `--color 256` or `truecolor` |
+| Charset | | | CP437, or `--encoding utf-8` |
+| Session limit | Minutes left | Minutes left | Warn, then return before the cutoff |
+| Timezone | | | `DOOR_FW_TIMEZONE`, default UTC |
+| Transport | Type 2: inherited socket | Stdio | Stdio |
+| Outbound | | | Never present |
+
+**Consequences for the game.**
+
+- *Identity.* Pilots are keyed by record number, so an alias change keeps a
+  career. Different BBSes' record numbers overlap, so each BBS needs its own
+  data directory, shared by all its nodes. The world seed derives from
+  `DOOR_FW_NODE_ID`: keep it once set, or the continent changes.
+- *Shared world.* Every node of a multi-node BBS opens the same SQLite file.
+  That is what S10 builds; a classic host adds no new concurrency. The data
+  directory must be on a local disk: SQLite's WAL does not work over a network
+  share. A host that cannot guarantee that sets `DOOR_FW_JOURNAL=delete`.
+- *Calendar.* The world day turns at midnight in `DOOR_FW_TIMEZONE`. Nothing
+  else about pacing changes: a drop file's time limit ends a session, and a
+  session means nothing to the game.
+- *Layout.* Always the small tier. This is the reason the small tier must carry
+  the whole game and never a reduced one (S05, S06, and every screen slice's
+  80x24 acceptance).
+- *Display.* Sixteen colours sent as every ANSI-BBS terminal takes them: bold
+  for a bright foreground and the eight plain backgrounds, never the 90-97 and
+  100-107 codes. CP437 shade blocks stand in for half-block pixels. Motion
+  defaults to still on a classic host; `DOOR_FW_MOTION=burst` turns it on.
+- *Guests.* The drop file has no guest flag. `DOOR_FW_GUEST_IDS` lists the
+  record numbers to treat as visits.
+- *Gazette, standings, events.* The in-door Gazette, hall and Daily Drift table
+  work everywhere. Publishing them is a NetBBS feature.
+- *DOOR32 socket.* With communication type 2 the door uses the inherited handle
+  (a descriptor on POSIX, Winsock on Windows), filters telnet commands, doubles
+  outgoing 0xFF, takes CR NUL or CR LF as one Enter, and closes only its own
+  handle on return. This is the path for Synchronet on Windows.
+
+**Not supported.** Non-ANSI terminals. DOS doors, FOSSIL and serial handles: the
+door is a native program. DORINFOx.DEF, CHAIN.TXT and other drop files. Live
+resize. 40-column terminals.
+
+**Evidence.** A fixture is not a host. S28 and S29 are complete on fixture and
+subprocess evidence; a recipe for a named host is marked verified in the README
+only after a real launch on that host, and stays marked unverified until then.
+
 ## Open questions
 
 None of these blocks a slice. Each is answered in the slice named.
@@ -187,7 +260,9 @@ restore on every exit path, standalone launch, and the CI workflow.
 Why: nothing else matters if a caller cannot enter or leave reliably.
 Outcome: the door launches, shows a placeholder screen and returns cleanly.
 Acceptance: real subprocess pipe tests for input, EOF, quit, SIGTERM and
-deadline; split escape sequences; optional-field defaults; `door_api` other than
+deadline; split escape sequences; optional-field defaults; one host-neutral
+launch record that everything after start-up reads, so a drop file can fill it
+later without touching the game (S28); `door_api` other than
 5 rejected; malformed metadata diagnosed on stderr; undersize terminal handled;
 `profiles/netbbs.json` accepted by NetBBS's profile parser; the suite green on
 Linux and Windows; scratch kept bounded as [AGENTS.md](../AGENTS.md) requires.
@@ -473,7 +548,35 @@ Acceptance: clean-checkout suite; artifact and tag byte identity; LF endings;
 checksum verification of the download; a fresh install launches; release notes
 name outstanding field gates. Stable v1 needs real terminal and browser play by
 people; without it publish an explicitly marked prerelease.
-Blockers: S26.
+Blockers: S26, S28.
+
+**S28 — Classic hosts: drop files over stdio.** Build DOOR32.SYS and DOOR.SYS
+parsing into the launch record, the `--encoding` and `--color` options, the
+classic settings, the non-ANSI refusal, the drop file's time limit, and the
+README's classic setup with recipes for Synchronet, Mystic and ENiGMA½.
+Why: a door that runs only on NetBBS reaches only NetBBS callers.
+Outcome: the whole game on a classic host over stdio, at 80 columns in CP437.
+Acceptance: fixtures for both formats with CRLF and LF, renamed files and
+mixed-case names; each malformed field refused with a bounded message that does
+not name the file; `NETBBS_DOOR_INFO` takes precedence; a scripted flying day
+over a pipe in CP437 and sixteen colours emits no byte outside CP437, no
+90-107 colour code and no cursor move beyond 80 by the page length; record
+number keys the pilot and an alias change keeps the career; two nodes of one
+BBS share a world; the session ends before the drop file's cutoff and resumes
+on the same turn; a guest record number writes nothing; outbound is never
+attempted. Recipes are labelled unverified until launched on the real host.
+Blockers: S06, S10, S11.
+
+**S29 — Classic hosts: the DOOR32 socket.** Build the inherited-handle transport
+for communication type 2 on POSIX and Windows, with telnet filtering.
+Why: Synchronet on Windows passes a socket, not stdio.
+Outcome: the same game over an inherited socket.
+Acceptance: a socketpair harness on POSIX and a Winsock harness on Windows play
+a scripted flight; telnet commands and option negotiation are filtered; a
+literal 0xFF survives both ways; CR NUL and CR LF are one Enter; a closed peer
+ends the session promptly with the turn saved; only the door's own handle is
+closed. Shipped as experimental until a real Synchronet launch is recorded.
+Blockers: S28.
 
 ## Delivery discipline
 
@@ -500,7 +603,8 @@ stdout subprocesses; storage concurrency and crash consistency; terminal bounds;
 NetBBS's actual runtime and profile parser. Captures at 80x24, 132x40 and 168x46
 in each colour depth and charset.
 
-Field: a real terminal client over Telnet and SSH; the browser transport;
+Field: a real terminal client over Telnet and SSH; the browser transport; a
+real launch on each classic host the README gives a recipe for;
 resizing during a flight; ordinary latency; disconnect and relaunch mid-flight;
 eight callers; a season on a live node; and human judgement of fun, difficulty
 and readability. Record these separately. A virtual terminal does not certify a
@@ -513,5 +617,6 @@ browser, and a script does not certify a playtest.
   access. A later version may let the Gyre's eye connect continents.
 - A second continent. When a chart is complete, a later version may sight a far
   shore.
-- DOOR32.SYS and DOOR.SYS hosts, and an ANSI-free reading.
+- Non-ANSI terminals, DOS-era drop files other than DOOR32.SYS and DOOR.SYS,
+  FOSSIL and serial handles, and 40-column terminals.
 - Sound.
