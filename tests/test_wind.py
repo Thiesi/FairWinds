@@ -78,7 +78,7 @@ class Streaks(unittest.TestCase):
         moved = 0
         for (x, y, age), streak in zip(before, v._streaks):
             if streak[2] == age + 1:                       # not one that just started again
-                self.assertAlmostEqual(streak[0] - x, 40.0 * fw.STREAK_PX_PER_KMH)
+                self.assertAlmostEqual(streak[0] - x, fw.streak_step(40.0))
                 self.assertEqual(streak[1], y)
                 moved += 1
         self.assertGreater(moved, len(before) // 2)
@@ -89,6 +89,58 @@ class Streaks(unittest.TestCase):
             self.assertLessEqual(len(trail), fw.STREAK_TRAIL)
             self.assertLessEqual(age, fw.STREAK_LIFE)
             self.assertTrue(all(0 <= px < 52 and 0 <= py < 32 for px, py in trail))
+
+    def test_faster_wind_moves_faster_but_not_in_proportion(self):
+        steps = [fw.streak_step(v) for v in (0, 6, 25, 50, 100, 200)]
+        self.assertEqual(steps, sorted(steps))
+        self.assertLess(fw.streak_step(100) / fw.streak_step(6), 3.0, "a jet is not ten times the bytes of a breeze")
+        self.assertLess(max(steps), 1.0, "never more than a pixel a frame")
+        calm = self.view(wind=(0.0, 0.0))
+        before = [(s[0], s[1]) for s in calm._streaks]
+        calm.advance()
+        self.assertEqual(sum(a != (s[0], s[1]) for a, s in zip(before, calm._streaks)), 0, "a calm does not move")
+
+    def test_a_streak_is_a_bright_head_and_a_one_tone_tail(self):
+        v = self.view()
+        plain = fw.Screen(80, 24)
+        v.draw(plain, 1, 1, 52, 16, 400.0, 300.0, 1, 600)
+        v.draw_wind(self.screen)
+        trail = max((s[3] for s in v._streaks), key=len)
+        self.assertGreater(len(trail), 2)
+
+        def lift(px, py):
+            k = (1 + (py >> 1)) * 80 + 1 + px
+            mine = (self.screen.bg if py & 1 else self.screen.fg)[k]
+            base = (plain.bg if py & 1 else plain.fg)[k]
+            return (mine[2] - base[2]) / max(1, 255 - base[2])
+        alone = [p for p in trail if sum(p in s[3] for s in v._streaks) == 1]
+        if len(alone) == len(trail):
+            self.assertAlmostEqual(lift(*trail[-1]), fw.STREAK_BRIGHT, delta=0.03)
+            for p in trail[:-1]:
+                self.assertAlmostEqual(lift(*p), fw.STREAK_FAINT, delta=0.03)
+
+    def test_streaks_thin_when_frames_cost_too_much(self):
+        v = self.view()
+        self.assertEqual(v.share, 1.0)
+        v.tune(fw.FRAME_BYTES)
+        self.assertEqual(v.share, 1.0, "on budget: nothing changes")
+        v.tune(fw.FRAME_BYTES * 3)
+        self.assertAlmostEqual(v.share, 1 / 3)
+        for _ in range(20):
+            v.tune(fw.FRAME_BYTES * 10)
+        self.assertEqual(v.share, fw.STREAK_SHARE_MIN, "but some wind always shows")
+        plain = fw.Screen(80, 24)
+        v.draw(plain, 1, 1, 52, 16, 400.0, 300.0, 1, 600)
+        v.draw(self.screen, 1, 1, 52, 16, 400.0, 300.0, 1, 600)
+        v.draw_wind(self.screen)
+        thin = sum(self.screen.fg[k] != plain.fg[k] or self.screen.bg[k] != plain.bg[k] for k in range(80 * 24))
+        for _ in range(40):
+            v.tune(100)
+        self.assertEqual(v.share, 1.0, "and they come back when frames are cheap")
+        v.draw(self.screen, 1, 1, 52, 16, 400.0, 300.0, 1, 600)
+        v.draw_wind(self.screen)
+        full = sum(self.screen.fg[k] != plain.fg[k] or self.screen.bg[k] != plain.bg[k] for k in range(80 * 24))
+        self.assertLess(thin, full)
 
     def test_the_first_picture_already_shows_the_flow(self):
         v = self.view()
@@ -356,6 +408,47 @@ class Budget(GameCase):
                 game.tick()
                 sizes.append(len(self.paint(session)))
         return sum(sizes) / len(sizes)
+
+    def test_a_fast_wind_costs_about_what_a_slow_one_does(self):
+        # Measured on ReLink over SSH: a burst on a 23 km/h layer cost twice to
+        # three times one on a 6 km/h layer, and at 168 x 46 it arrived as a
+        # stall and then a lump. A frame's cost must not follow the wind's speed.
+        def burst(speed):
+            game, session, _ = self.start(terminal_width=168, terminal_height=46)
+            self.paint(session)
+            game.key("ENTER")
+            self.paint(session)
+            game.map._wind_key = None
+            game.map.set_wind("forced", lambda wx, wy: (speed, speed * 0.3))
+            game._show_wind = lambda: False
+            self.paint(session)                      # the frame that switches winds is the look, not the burst
+            sizes = []
+            for _ in range(fw.BURST_FRAMES):
+                game.map.advance()
+                size = len(self.paint(session))
+                game.map.tune(size)
+                sizes.append(size)
+            return sizes
+        slow, fast, jet = burst(6.0), burst(25.0), burst(110.0)
+        self.assertLess(sum(fast), sum(slow) * 2.7, "four times the wind is well under three times the bytes")
+        self.assertLess(sum(jet), sum(fast) * 1.3, "and eighteen times the wind is hardly more again")
+        per_second = round(1 / fw.FRAME_SECONDS)
+        for sizes in (slow, fast, jet):
+            worst = max(sum(sizes[i:i + per_second]) for i in range(len(sizes) - per_second + 1))
+            self.assertLess(worst, fw.BURST_BYTES_PER_SECOND, "no second of it reaches the cap, so no frame is held back")
+
+    def test_the_session_tunes_the_streaks_from_what_frames_cost(self):
+        game, session, clock = self.start(keys=[b"\r"], terminal_width=168, terminal_height=46)
+        session.step()
+        game.map.share = 1.0
+        real_render = fw.Screen.render
+        try:
+            fw.Screen.render = lambda self, previous=None: (real_render(self, previous) or "") + "x" * 20000
+            while game.frames_left > 0:
+                session.step()
+        finally:
+            fw.Screen.render = real_render
+        self.assertLess(game.map.share, 0.5, "dear frames thinned the streaks")
 
     def test_bytes_while_the_wind_moves(self):
         small = self.burst()

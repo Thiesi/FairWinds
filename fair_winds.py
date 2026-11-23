@@ -29,7 +29,7 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "0.1.0.dev10"
+VERSION = "0.1.0.dev11"
 DOOR_API = 5
 MIN_WIDTH, MIN_HEIGHT = 80, 24
 MAX_DIMENSION = 1000
@@ -2081,8 +2081,20 @@ STREAK_CELLS_EACH = 50               # one streak of wind for this many map cell
 STREAKS_MIN = 12
 STREAK_TRAIL = 5                     # pixels in a streak's tail
 STREAK_LIFE = 60                     # frames before a streak starts again somewhere else
-STREAK_PX_PER_KMH = 0.02             # 40 km/h moves a streak most of a pixel a frame
-STREAK_FAINT, STREAK_BRIGHT = 0.12, 0.6
+STREAK_FAINT, STREAK_BRIGHT = 0.22, 0.6
+STREAK_SHARE_MIN = 0.2               # however dear a frame is, a fifth of the streaks stay
+FRAME_BYTES = 5500                   # what one frame of moving wind should cost; the streaks thin to keep to it
+
+
+def streak_step(speed: float) -> float:
+    """Pixels a streak moves in a frame, for a wind speed in km/h.
+
+    Faster wind moves faster, but not in proportion: a frame costs what its
+    streaks move, and a jet drawn at ten times the surface's speed would
+    cost ten times the bytes. 6 km/h is 0.17 of a pixel, 25 is 0.29, 100 is
+    0.46.
+    """
+    return 0.1 + 0.5 * speed / (speed + 40.0)
 FRAME_SECONDS = 1 / 7                # the wind moves at seven frames a second
 BURST_FRAMES = 10                    # after a turn, and
 LOOK_FRAMES = 6                      # after looking at another layer; then it holds still
@@ -2153,6 +2165,7 @@ class MapView:
         self._wgw = 0
         self._streaks: list = []
         self._lcg = 1
+        self.share = 1.0                  # the part of the streaks drawn: thinned when frames cost too much
 
     # -- the window ------------------------------------------------------------
 
@@ -2358,7 +2371,11 @@ class MapView:
         for streak in self._streaks:
             x, y, age, trail = streak
             vx, vy = self._wind_at(x, y)
-            x, y, age = x + vx * STREAK_PX_PER_KMH, y + vy * STREAK_PX_PER_KMH, age + 1
+            speed = math.sqrt(vx * vx + vy * vy)
+            if speed > 0.5:
+                k = streak_step(speed) / speed
+                x, y = x + vx * k, y + vy * k
+            age += 1
             if not (0.0 <= x < width and 0.0 <= y < height) or age > STREAK_LIFE:
                 x, y, age = self._next() * width, self._next() * height, 0
                 trail.clear()
@@ -2368,8 +2385,24 @@ class MapView:
                 del trail[:-STREAK_TRAIL]
             streak[0], streak[1], streak[2] = x, y, age
 
+    def tune(self, frame_bytes: int) -> None:
+        """Told what the last frame of moving wind cost, draw fewer streaks or more to keep to FRAME_BYTES.
+
+        The cost of a frame depends on the colour depth, the size of the map
+        and how fast the wind is, and only the bytes say what it came to.
+        """
+        if frame_bytes > FRAME_BYTES * 1.3:
+            self.share = max(STREAK_SHARE_MIN, self.share * FRAME_BYTES / frame_bytes)
+        elif frame_bytes < FRAME_BYTES * 0.6 and self.share < 1.0:
+            self.share = min(1.0, self.share * 1.15)
+
     def draw_wind(self, screen: Screen) -> None:
-        """Lay the streaks over the ground: brightest at the head, fading along the tail."""
+        """Lay the streaks over the ground: a bright head and a dimmer tail.
+
+        The tail is one tone, not a fade. With a fade every pixel of a streak
+        changes each time its head moves; with one tone only three do: the
+        new head, the old head, and the end of the tail.
+        """
         if self._wind is None:
             return
         if not self.pixels:
@@ -2377,11 +2410,12 @@ class MapView:
             return
         tops, bottoms = self._base
         left, top = self.left, self.top
-        for _, _, _, trail in self._streaks:
+        shown = max(1, int(len(self._streaks) * self.share + 0.5))
+        for _, _, _, trail in self._streaks[:shown]:
             n = len(trail)
             for i, (px, py) in enumerate(trail):
                 base = (bottoms if py & 1 else tops)[py >> 1][px]
-                t = STREAK_FAINT + (STREAK_BRIGHT - STREAK_FAINT) * (i + 1) / n
+                t = STREAK_BRIGHT if i == n - 1 else STREAK_FAINT
                 screen.pixel(left + px, top * 2 + py, (int(base[0] + (240 - base[0]) * t),
                                                        int(base[1] + (247 - base[1]) * t),
                                                        int(base[2] + (255 - base[2]) * t)))
@@ -3291,6 +3325,7 @@ class Session:
         self.shown: Screen | None = None      # what the caller's terminal holds; None means unknown
         self._next_frame: float | None = None # when the next frame of moving wind is due
         self._sent: list = []                 # (when, bytes) for what was sent in the last second
+        self._wind_frame = False              # the next paint is a frame of moving wind and nothing else
         self._next_poll = self.started + GEOMETRY_POLL
 
     # -- time ---------------------------------------------------------------
@@ -3356,6 +3391,9 @@ class Session:
             now = self.clock()
             self._sent = [(when, size) for when, size in self._sent if when > now - 1.0]
             self._sent.append((now, len(changed)))
+        if self._wind_frame and self.game is not None:
+            self.game.map.tune(len(changed))    # this paint was a frame of moving wind and nothing else
+        self._wind_frame = False
         self.shown = self.frame
         self._dirty = False
 
@@ -3513,6 +3551,7 @@ class Session:
         recent = sum(size for when, size in self._sent if when > now - 1.0)
         if recent < BURST_BYTES_PER_SECOND or self.game.frames_left == 0:
             self._dirty = True                  # the last frame is always painted: it is the one that stays
+            self._wind_frame = True
 
     def run(self) -> str:
         try:

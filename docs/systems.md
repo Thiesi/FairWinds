@@ -602,9 +602,19 @@ saturation against them, and it uses the grey ramp only for greys.
 **Wind.** The map shows the wind of the layer the pilot is choosing, as far as
 they know it: the truth where they have read it, the forecast otherwise. It is
 sampled every 20 km over the window and blended between. One streak for every
-fifty map cells is carried along it, a head and a fading tail of five pixels
-that lighten the ground beneath; a streak that leaves the map, or grows old,
-starts again somewhere else. The streaks are seeded from the window, so the
+fifty map cells is carried along it: a bright head and a dimmer tail of one
+tone, five pixels in all, that lighten the ground beneath. A streak that
+leaves the map, or grows old, starts again somewhere else.
+
+A frame costs what its streaks move, so three things keep that cost from
+following the wind. Faster wind moves a streak faster but not in proportion:
+0.17 of a pixel a frame at 6 km/h, 0.29 at 25, 0.46 at 100. The tail is one
+tone and not a fade, so a streak that moves changes three pixels, not all
+five. And the map is told what each frame of moving wind came to and draws
+fewer streaks, down to a fifth of them, when frames run over 5.5 KB. Measured
+over SSH on ReLink before these, a burst on a 23 km/h layer cost two to three
+times one on a 6 km/h layer, up to 99 KB at 168 by 46, and there it arrived as
+a stall and then a lump: the cap below was holding frames back. The streaks are seeded from the window, so the
 same window always starts with the same picture.
 
 The wind moves at seven frames a second in short bursts: ten frames after a
@@ -636,13 +646,14 @@ rest.
 quarter of one core, and a one-hour session inside the shipped profile's CPU
 limit with margin. Measured in process on the development host, in truecolor:
 
-| | 80 by 24 | 132 by 40 | 168 by 46 |
+| A burst, truecolor | 80 by 24 | 132 by 40 | 168 by 46 |
 | --- | --- | --- | --- |
 | Streaks | 16 | 66 | 106 |
-| A frame | 0.9 KB | 3.9 KB | 5.6 KB |
-| While moving | 6 KB/s | 27 KB/s | 38 KB/s |
+| In a 6 km/h wind | 3 KB | 11 KB | 20 KB |
+| In a 25 km/h wind | 7 KB | 23 KB | 47 KB |
+| In a 110 km/h wind | 13 KB | 39 KB | 47 KB |
+| Its worst second | 9 KB | 28 KB | 34 KB |
 | CPU while moving | 4% of a core | 9% | 15% |
-| A whole burst | 8 KB | 38 KB | 54 KB |
 
 In 256 colours a frame is less than half as large. A burst lasts about a
 second and a half, so a turn with its burst costs about 0.25 s of CPU at the
