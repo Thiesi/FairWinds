@@ -87,6 +87,7 @@ class Door:
     def __init__(self, info=None, raw=None, hosted=True, environ=None):
         self._dir = tempfile.TemporaryDirectory(prefix="fair-winds-test-")
         self.info_path = Path(self._dir.name) / "door_info.json"
+        self.size = (80, 24)
         env = {k: v for k, v in os.environ.items() if not k.startswith(("DOOR_", "NETBBS_"))}
         env["PYTHONIOENCODING"] = "utf-8"
         env["DOOR_FW_DATA_DIR"] = str(Path(self._dir.name) / "data")
@@ -103,6 +104,8 @@ class Door:
 
     def write_info(self, info, raw=None):
         """Replace the launch file whole, as NetBBS does."""
+        if isinstance(info, dict):
+            self.size = (info.get("terminal_width", 80), info.get("terminal_height", 24))
         temp = self.info_path.with_suffix(".tmp")
         temp.write_text(raw if raw is not None else json.dumps(info), encoding="utf-8")
         temp.replace(self.info_path)
@@ -129,14 +132,28 @@ class Door:
         self.proc.stdin.write(data if isinstance(data, bytes) else data.encode())
         self.proc.stdin.flush()
 
-    def wait_for(self, text, timeout=10):
+    def _seen(self, text, size):
+        """Is the text on the caller's screen now? Only changed cells are sent,
+        so the byte stream alone no longer spells it. Escape sequences, and
+        text from before a screen was entered, are looked for in the bytes."""
+        output = self.output
+        if "\x1b" in text or "\x1b" not in output:
+            return text in output
+        if text in output:
+            return True
+        term = Terminal(*size)
+        term.feed(output)
+        return text in term.text()
+
+    def wait_for(self, text, timeout=10, size=None):
+        size = size or self.size
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if text in self.output:
+            if self._seen(text, size):
                 return True
-            if self.proc.poll() is not None and text not in self.output:
+            if self.proc.poll() is not None:
                 time.sleep(0.1)
-                return text in self.output
+                return self._seen(text, size)
             time.sleep(0.02)
         return False
 
@@ -148,7 +165,8 @@ class Door:
         time.sleep(0.1)     # let the pumps drain
         return code
 
-    def screen(self, width=80, height=24):
+    def screen(self, width=None, height=None):
+        width, height = width or self.size[0], height or self.size[1]
         term = Terminal(width, height)
         term.feed(self.output)
         return term
