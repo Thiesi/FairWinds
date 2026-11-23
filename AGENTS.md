@@ -17,8 +17,16 @@ what the door is. This file says how to work here.
 
 **Status:** P0 and P1 are built: S01 (host adapter and terminal lifecycle), S02
 (world generator and terrain cache), S03 (weather), S04 (turn engine) and S05
-(the plain flight). The game can be played in plain text at 80 x 24:
-`python fair_winds.py` in a terminal, or as a door under NetBBS.
+(the plain flight). Of P2, S06 (the cell buffer, the colour and charset
+readings, layouts that fill the terminal) is built. The game can be played in
+plain text: `python fair_winds.py` in a terminal, or as a door under NetBBS.
+The next slice is S07, the relief map.
+
+Every screen draws onto a `Screen` and the session sends only what changed.
+Draw with `Session._line` or straight onto `session.frame`; never write escape
+sequences yourself. Tests that drive the real door must look at the screen
+(`Door.wait_for`, `Door.screen`), not at the byte stream, which no longer
+spells whole lines.
 
 **The play-test moved.** The owner played the plain flight on 2026-11-23 and
 found it cannot be judged alone: it needs a real session, in a nearly finished
@@ -33,7 +41,6 @@ reached within 12.5 km (was 7.5), and the post is for three places at once,
 because one fixed town is upwind on most days. `docs/systems.md` section 5a
 has the numbers.
 
-The next slice is S06.
 
 ## What the code is
 

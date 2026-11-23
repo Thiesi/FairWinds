@@ -500,9 +500,15 @@ get an art-directed reading, never a nearest-colour fallback.
 
 | Tier | From | What it adds |
 | --- | --- | --- |
-| Small | 80 by 24 | Map, the layer table, stores, two log lines, keys |
+| Small | 80 by 24 | Map, the layer table, stores, three log lines, keys |
 | Medium | 132 by 40 | Relief map, the sky column, layer rows, a longer log |
 | Wide | 168 by 46 | Forecast strip, pilots in the air, cargo |
+
+Within a tier the layout follows the terminal cell for cell: the panel keeps
+its width, the log and keys keep their rows, and the map takes everything
+else. 80 by 24 gives a map of 52 by 16 cells, 132 by 40 one of 104 by 32, and
+168 by 46 one of 140 by 38, so a bigger window shows more of the world. What
+each tier adds beyond a bigger map arrives with S07 and S08.
 
 A terminal 200 columns or wider may later show the map and chart side by side.
 
@@ -510,9 +516,32 @@ A terminal 200 columns or wider may later show the map and chart side by side.
 chart, almanac, album, guestbook, Daily Drift, Trials, gazette, hall, help.
 The pitch page shows flight, station, chart, a wonder, and the small tier.
 
-**The cell buffer.** A grid of glyph, foreground and background. Output is the
-changed runs only, with SGR sequences kept minimal. The bottom-right cell is
-never written. A resize throws the buffer away and repaints.
+**The cell buffer.** Every screen is drawn onto a `Screen`: a grid of cells,
+each a glyph with a foreground and a background. `render(previous)` returns
+only what turns the last frame into this one: it jumps to each run of changed
+cells, writes through gaps of up to four unchanged cells where that is cheaper
+than a jump, sets a colour only when it changes, and returns nothing at all
+for an unchanged frame. The bottom-right cell is never written. A resize
+throws the buffer away and repaints after a clear.
+
+Colours are given once, as RGB or as a named ink, and read three ways.
+Truecolor sends them as they are. 256 colours takes the nearest of the colour
+cube and the grey ramp. Sixteen colours uses a chosen reading for each named
+ink (a nearest colour would turn half of them grey) and the nearest colour
+otherwise, with only what every ANSI terminal takes: bold for a bright
+foreground, the eight plain backgrounds, and a reset before every change so
+bold never leaks.
+
+A cell can hold two square pixels, upper and lower. UTF-8 and CP437 draw them
+with a half block. Sixteen colours has only eight backgrounds, so the block is
+turned over where that puts the brighter half in front. ASCII draws a pixel
+cell as one character from a ramp of shades. A glyph placed over pixels takes
+the cell, on the darkened mean of the two.
+
+Measured on the plain flight: a full 80 by 24 frame is about 3.3 KB, looking
+at another layer about 220 bytes, and a turn about 1.6 KB (most of it the map
+moving under the balloon). A paint takes 10 ms at 80 by 24 and 34 ms at 168 by
+46.
 
 **The map.** Composed in order: terrain from tiles with hillshade; the uncharted
 veil; cloud and squall; wind streaks; tracks; markers; labels. A half-block cell

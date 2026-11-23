@@ -25,10 +25,11 @@ import struct
 import sys
 import threading
 import time
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "0.1.0.dev6"
+VERSION = "0.1.0.dev7"
 DOOR_API = 5
 MIN_WIDTH, MIN_HEIGHT = 80, 24
 MAX_DIMENSION = 1000
@@ -1754,6 +1755,293 @@ class LocalTerminal:
 
 
 # --------------------------------------------------------------------------
+# The cell buffer (S06). Every screen is drawn onto a grid of cells, each a
+# glyph with a foreground and a background. What goes to the caller is only
+# the cells that changed since the last frame.
+#
+# Colours are written once, as RGB or as a named ink, and read three ways:
+# truecolor as they are, 256 colours by the nearest palette entry, and
+# sixteen colours by an art-directed choice for named inks and the nearest
+# colour otherwise, using only what every ANSI terminal takes: bold for a
+# bright foreground, and the eight plain backgrounds.
+# --------------------------------------------------------------------------
+
+ANSI16 = ((0, 0, 0), (170, 0, 0), (0, 170, 0), (170, 85, 0), (0, 0, 170), (170, 0, 170), (0, 170, 170),
+          (170, 170, 170), (85, 85, 85), (255, 85, 85), (85, 255, 85), (255, 255, 85), (85, 85, 255),
+          (255, 85, 255), (85, 255, 255), (255, 255, 255))
+
+# name: (truecolor, sixteen-colour index). The sixteen-colour reading is
+# chosen, not computed: a nearest colour would turn half of these grey.
+INKS = {
+    "text": ((206, 214, 226), 7),
+    "dim": ((112, 126, 148), 6),
+    "accent": ((255, 196, 110), 11),
+    "warn": ((255, 150, 130), 9),
+    "bright": ((255, 255, 255), 15),
+    "sea": ((70, 130, 190), 4),
+    "land": ((120, 180, 110), 2),
+    "cool": ((120, 228, 255), 14),
+    "warm": ((255, 150, 196), 13),
+}
+_ASCII_RAMP = " .:-=+*#%@"
+HALF_BLOCK = "▀"           # upper half block: foreground on top, background below
+LOWER_BLOCK = "▄"
+
+_near16: dict = {}
+_near256: dict = {}
+
+
+def nearest16(rgb, limit: int = 16) -> int:
+    """The nearest of the sixteen ANSI colours, or of the first `limit` of them."""
+    key = (rgb, limit)
+    found = _near16.get(key)
+    if found is None:
+        r, g, b = rgb
+        found = min(range(limit), key=lambda i: (ANSI16[i][0] - r) ** 2 + (ANSI16[i][1] - g) ** 2
+                    + (ANSI16[i][2] - b) ** 2)
+        if len(_near16) > 4096:
+            _near16.clear()
+        _near16[key] = found
+    return found
+
+
+def nearest256(rgb) -> int:
+    """The nearest xterm-256 colour: the 6x6x6 cube or the grey ramp, whichever is closer."""
+    found = _near256.get(rgb)
+    if found is None:
+        r, g, b = rgb
+        steps = (0, 95, 135, 175, 215, 255)
+
+        def axis(v):
+            return min(range(6), key=lambda i: abs(steps[i] - v))
+        ri, gi, bi = axis(r), axis(g), axis(b)
+        cube = (steps[ri], steps[gi], steps[bi])
+        grey_i = min(23, max(0, round(((r + g + b) / 3 - 8) / 10)))
+        grey = 8 + 10 * grey_i
+
+        def off(c):
+            return (c[0] - r) ** 2 + (c[1] - g) ** 2 + (c[2] - b) ** 2
+        found = 232 + grey_i if off((grey, grey, grey)) < off(cube) else 16 + 36 * ri + 6 * gi + bi
+        if len(_near256) > 8192:
+            _near256.clear()
+        _near256[rgb] = found
+    return found
+
+
+def _rgb(ink):
+    """An ink as three whole numbers from 0 to 255, whatever arithmetic produced it."""
+    if isinstance(ink, str):
+        return INKS[ink][0]
+    return tuple(0 if v < 0 else 255 if v > 255 else int(v) for v in ink)
+
+
+_ASCII_GLYPHS = {HALF_BLOCK: "#", LOWER_BLOCK: "#", "\u2588": "#", "\u2591": ".", "\u2592": ":", "\u2593": "#",
+                 "\u00b7": "-", "\u2022": "*", "\u00b0": "o"}
+
+
+def safe_glyph(ch: str) -> str:
+    """One printable character that takes exactly one cell, or a question mark.
+
+    The buffer is only right if what it writes moves the cursor one cell. A
+    control character, an escape, or a wide or zero-width character would
+    put the caller's terminal out of step with it.
+    """
+    if len(ch) != 1 or not ch.isprintable():
+        return "?"
+    if " " <= ch <= "~":
+        return ch
+    if unicodedata.east_asian_width(ch) in ("W", "F") or unicodedata.combining(ch) \
+            or unicodedata.category(ch) in ("Mn", "Me", "Cf"):
+        return "?"
+    return ch
+
+
+class Screen:
+    """One frame: a grid of cells.
+
+    `put` and `text` take an ink for the foreground and the background: a
+    name from INKS, an (r, g, b) tuple, or None for the terminal's own.
+    `pixel` paints half a cell, so a cell holds two square pixels.
+    `render(previous)` returns the bytes that turn the previous frame into
+    this one, and nothing at all when the two are the same.
+    """
+
+    def __init__(self, width: int, height: int, depth: str = "truecolor", charset: str = "utf-8"):
+        self.width, self.height = max(1, width), max(1, height)
+        self.depth, self.charset = depth, charset
+        n = self.width * self.height
+        self.ch = [" "] * n
+        self.fg: list = [None] * n
+        self.bg: list = [None] * n
+        self.split = bytearray(n)          # 1 where the cell holds two pixels: fg on top, bg below
+        self._cells: list | None = None    # what goes out for each cell, worked out once per frame
+
+    # -- drawing -------------------------------------------------------------
+
+    def put(self, x: int, y: int, ch: str, fg=None, bg=None) -> None:
+        if 0 <= x < self.width and 0 <= y < self.height:
+            k = y * self.width + x
+            self.ch[k], self.fg[k], self.bg[k], self.split[k] = safe_glyph(ch), fg, bg, 0
+            self._cells = None
+
+    def text(self, x: int, y: int, text: str, fg="text", bg=None) -> None:
+        """A run of text, clipped at the edges. One character is one cell."""
+        if not 0 <= y < self.height:
+            return
+        for i, ch in enumerate(text):
+            if x + i >= self.width:
+                break
+            if x + i >= 0:
+                self.put(x + i, y, ch, fg, bg)
+
+    def fill(self, x0: int, y0: int, x1: int, y1: int, bg=None, ch: str = " ", fg=None) -> None:
+        for y in range(max(0, y0), min(self.height, y1 + 1)):
+            for x in range(max(0, x0), min(self.width, x1 + 1)):
+                self.put(x, y, ch, fg, bg)
+
+    def pixel(self, x: int, py: int, rgb) -> None:
+        """Paint one square pixel; row py is half a cell tall."""
+        y = py >> 1
+        if 0 <= x < self.width and 0 <= y < self.height:
+            k = y * self.width + x
+            if not self.split[k]:
+                base = _rgb(self.bg[k]) if self.bg[k] is not None else (0, 0, 0)
+                self.ch[k], self.fg[k], self.bg[k], self.split[k] = HALF_BLOCK, base, base, 1
+            if py & 1:
+                self.bg[k] = _rgb(rgb)
+            else:
+                self.fg[k] = _rgb(rgb)
+            self._cells = None
+
+    def over(self, x: int, y: int, ch: str, fg="bright", darken: float = 0.6) -> None:
+        """A glyph on top of pixels: it takes the cell, on the darkened mean of what was there."""
+        if 0 <= x < self.width and 0 <= y < self.height:
+            k = y * self.width + x
+            if self.split[k]:
+                top, bottom = self.fg[k], self.bg[k]
+                self.put(x, y, ch, fg, _rgb(tuple((top[i] + bottom[i]) / 2 * (1 - darken) for i in range(3))))
+            else:
+                self.put(x, y, ch, fg, self.bg[k])
+
+    # -- output --------------------------------------------------------------
+
+    def _cell(self, k: int) -> tuple:
+        """What actually goes out for a cell: (glyph, foreground code, background code)."""
+        ch, fg, bg = self.ch[k], self.fg[k], self.bg[k]
+        depth = self.depth
+        if self.split[k]:
+            top, bottom = fg, bg
+            if self.charset == "ascii":
+                lum = (0.3 * (top[0] + bottom[0]) + 0.59 * (top[1] + bottom[1]) + 0.11 * (top[2] + bottom[2])) / 510
+                ch = _ASCII_RAMP[min(len(_ASCII_RAMP) - 1, int(lum * len(_ASCII_RAMP)))]
+                fg, bg = tuple((top[i] + bottom[i]) // 2 for i in range(3)), None
+            elif top == bottom:
+                ch, fg, bg = " ", None, top
+            elif depth == "16":
+                # Only eight backgrounds exist. Put the half that suffers least there.
+                t16, b16 = nearest16(top), nearest16(bottom)
+                if t16 == b16:
+                    return " ", "", self._bg_code(top)
+                if b16 < 8 or (t16 >= 8 and b16 >= 8):
+                    ch, fg, bg = HALF_BLOCK, top, bottom
+                else:
+                    ch, fg, bg = LOWER_BLOCK, bottom, top
+        if ch == " " and bg is None:
+            return " ", "", ""
+        if self.charset == "ascii" and not ch.isascii():
+            ch = _ASCII_GLYPHS.get(ch, "?")
+        return ch, ("" if ch == " " else self._fg_code(fg)), self._bg_code(bg)
+
+    def cells(self) -> list:
+        """What goes out for every cell. Worked out once: a frame is drawn, then rendered."""
+        if self._cells is None:
+            self._cells = [self._cell(k) for k in range(self.width * self.height)]
+        return self._cells
+
+    def _fg_code(self, ink) -> str:
+        if ink is None:
+            return "39"
+        depth = self.depth
+        if depth == "16":
+            index = INKS[ink][1] if isinstance(ink, str) else nearest16(ink)
+            return f"3{index}" if index < 8 else f"1;3{index - 8}"
+        rgb = _rgb(ink)
+        if depth == "256":
+            return f"38;5;{nearest256(rgb)}"
+        return f"38;2;{rgb[0]};{rgb[1]};{rgb[2]}"
+
+    def _bg_code(self, ink) -> str:
+        if ink is None:
+            return "49"
+        depth = self.depth
+        if depth == "16":
+            return f"4{nearest16(_rgb(ink), 8)}"
+        rgb = _rgb(ink)
+        if depth == "256":
+            return f"48;5;{nearest256(rgb)}"
+        return f"48;2;{rgb[0]};{rgb[1]};{rgb[2]}"
+
+    def render(self, previous: "Screen | None" = None) -> str:
+        """The bytes that turn `previous` into this frame. None means a cleared screen.
+
+        The bottom-right cell is never written: many terminals scroll when it
+        is. Unchanged cells cost nothing, and an unchanged frame is "".
+        """
+        w, h = self.width, self.height
+        same_size = previous is not None and previous.width == w and previous.height == h \
+            and previous.depth == self.depth and previous.charset == self.charset
+        blank = (" ", "", "")
+        mine = self.cells()
+        theirs = previous.cells() if same_size else [blank] * (w * h)
+        out: list[str] = []
+        state = None
+        sixteen = self.depth == "16"
+        for y in range(h):
+            x = 0
+            limit = w - 1 if y == h - 1 else w
+            while x < limit:
+                k = y * w + x
+                cell = mine[k]
+                if cell == theirs[k]:
+                    x += 1
+                    continue
+                out.append(f"\x1b[{y + 1};{x + 1}H")
+                while x < limit:
+                    k = y * w + x
+                    cell = mine[k]
+                    if cell == theirs[k]:
+                        # A short gap is cheaper to write through than to jump over,
+                        # and it keeps words whole in the byte stream.
+                        ahead = next((n for n in range(1, 5) if x + n < limit and mine[k + n] != theirs[k + n]), 0)
+                        if not ahead:
+                            break
+                    ch, fg, bg = cell
+                    key = (fg, bg)
+                    if ch == " " and not bg and state is not None and (state[1] or "49") == "49":
+                        key = state         # a plain space needs no colour of its own
+                    if key != state:
+                        if sixteen or state is None:
+                            # Sixteen colours restart from a reset, so bold never leaks.
+                            out.append("\x1b[0;" + ";".join(p for p in (fg, bg or "49") if p) + "m")
+                        else:
+                            parts = []
+                            if fg and fg != state[0]:
+                                parts.append(fg)
+                            if (bg or "49") != (state[1] or "49"):
+                                parts.append(bg or "49")
+                            if parts:
+                                out.append("\x1b[" + ";".join(parts) + "m")
+                            key = (fg or state[0], bg)
+                        state = key
+                    out.append(ch)
+                    x += 1
+        if not out:
+            return ""
+        out.append("\x1b[0m")
+        return "".join(out)
+
+
+# --------------------------------------------------------------------------
 # The plain flight (S05): the whole turn on an 80 x 24 text screen, to find
 # out whether choosing a layer is fun before anything is drawn. Its save is
 # one small file per pilot; the world database replaces it in S10.
@@ -2121,27 +2409,31 @@ class PlainFlight:
     def draw(self, s: "Session") -> list[str]:
         state, launch = self.state, self.launch
         phase = self.phase()
+        # The layout follows the terminal: a bigger window is a bigger map.
+        # At 80 x 24 the map is 52 x 16 with the panel beside it and seven rows below.
+        self.map_cols, self.map_rows = s.width - 28, s.height - 8
+        self.panel_col, base, wide = s.width - 25, s.height - 7, s.width - 2
         out = [s._line(0, 1, "FAIR WINDS", "accent"),
                s._line(0, 13, f"Day {state.day}  {clock_text(state.minute)}", "text")]
         distance, toward, nearest = self.bearings()[0]
         post = f"Nearest post: {nearest['name']}, {distance:.0f} km {toward}"
-        out.append(s._line(0, max(32, 79 - len(post)), post, "text"))
+        out.append(s._line(0, max(32, s.width - 1 - len(post)), post, "text"))
         out += self._draw_map(s)
         out += self._draw_panel(s, phase)
         for i, line in enumerate(self.log[-3:]):
-            out.append(s._line(17 + i, 1, line[:78], "dim" if i < len(self.log[-3:]) - 1 else "text"))
+            out.append(s._line(base + i, 1, line[:wide], "dim" if i < len(self.log[-3:]) - 1 else "text"))
         if s.notice:
-            out.append(s._line(20, 1, s.notice[:78], "warn"))
+            out.append(s._line(base + 3, 1, s.notice[:wide], "warn"))
         elif not self.saved_ok:
-            out.append(s._line(20, 1, "This game cannot be saved here. Tell the SysOp. You can play on.", "warn"))
+            out.append(s._line(base + 3, 1, "This game cannot be saved here. Tell the SysOp. You can play on.", "warn"))
         elif launch.guest:
-            out.append(s._line(20, 1, "You are visiting: nothing is kept when you leave.", "dim"))
+            out.append(s._line(base + 3, 1, "You are visiting: nothing is kept when you leave.", "dim"))
         sentence, role = self._sentence(phase)
-        out.append(s._line(21, 1, sentence[:78], role))
-        out.append(s._line(22, 1, f"{launch.handle}  {self.deliveries} delivered  {self.total_km + state.distance:.0f} km"
-                                  f"   {s.width} x {s.height} {launch.color_depth} {layout_tier(s.width, s.height)}"
-                                  f" {'standalone' if launch.host == 'standalone' else launch.transport}"[:78], "dim"))
-        out += s._keys(23, self._key_help(phase))
+        out.append(s._line(base + 4, 1, sentence[:wide], role))
+        out.append(s._line(base + 5, 1, f"{launch.handle}  {self.deliveries} delivered  {self.total_km + state.distance:.0f} km"
+                                        f"   {s.width} x {s.height} {launch.color_depth} {layout_tier(s.width, s.height)}"
+                                        f" {'standalone' if launch.host == 'standalone' else launch.transport}"[:wide], "dim"))
+        out += s._keys(base + 6, self._key_help(phase))
         return out
 
     def _key_help(self, phase: str):
@@ -2209,21 +2501,21 @@ class PlainFlight:
     def _draw_map(self, s: "Session") -> list[str]:
         state = self.state
         cw, ch = MAP_CELL_KM
-        x0, y0 = state.x - MAP_COLS / 2 * cw, state.y - MAP_ROWS / 2 * ch
+        x0, y0 = state.x - self.map_cols / 2 * cw, state.y - self.map_rows / 2 * ch
         frame = self.weather.frame(state.day, state.minute)
         cells: dict[tuple[int, int], tuple[str, str]] = {}
 
         def put(wx: float, wy: float, glyph: str, role: str) -> tuple[int, int] | None:
             col, row = int((wx - x0) // cw), int((wy - y0) // ch)
-            if 0 <= col < MAP_COLS and 0 <= row < MAP_ROWS:
+            if 0 <= col < self.map_cols and 0 <= row < self.map_rows:
                 cells[(col, row)] = (glyph, role)
                 return col, row
             return None
 
         out = []
-        for row in range(MAP_ROWS):
+        for row in range(self.map_rows):
             run, run_role, start = [], None, 0
-            for col in range(MAP_COLS):
+            for col in range(self.map_cols):
                 wx, wy = x0 + (col + 0.5) * cw, y0 + (row + 0.5) * ch
                 biome = self.world.sample(wx, wy)[1]
                 glyph, role = _MAP_GLYPHS[biome], _MAP_ROLES[biome]
@@ -2242,7 +2534,7 @@ class PlainFlight:
                 wanted = (kind, i) in self.targets
                 where = put(place["x"], place["y"], "#" if wanted else glyph, "accent" if wanted else role)
                 if where and wanted:
-                    name = place["name"][:MAP_COLS - where[0] - 2]
+                    name = place["name"][:self.map_cols - where[0] - 2]
                     for j, letter in enumerate(name):
                         cells[(where[0] + 1 + j, where[1])] = (letter, "accent")
         if state.status in ("aloft", "ground") and self.engine.actions(state):
@@ -2254,13 +2546,13 @@ class PlainFlight:
                 role = _TRACK_ROLES[action] if action == self.choice else "dim"
                 for px, py, layer in look["points"]:
                     put(px, py, str(layer), role)
-        cells[(MAP_COLS // 2, MAP_ROWS // 2)] = ("@", "bright")
+        cells[(self.map_cols // 2, self.map_rows // 2)] = ("@", "bright")
         for (col, row), (glyph, role) in cells.items():
             out.append(s._line(1 + row, 1 + col, glyph, role))
         return out
 
     def _draw_panel(self, s: "Session", phase: str) -> list[str]:
-        state, col = self.state, 55
+        state, col = self.state, self.panel_col
         offered = self.engine.actions(state)
         frame = self.weather.frame(state.day, state.minute)
         cover = self.coverage(state.x, state.y)
@@ -2323,7 +2615,7 @@ PLAIN_HELP = (
     "  J  drop a sack of ballast: up one layer for no fuel",
     "  P  release a pibal: true winds in every layer for four turns",
     "  L  land (from the lowest layer the ground leaves open)",
-    "  N  stay the night    ?  this help    Q  leave (the game is saved)",
+    "  N  stay the night   ?  this help   Ctrl-L  redraw   Q  leave (saved)",
     "",
     "The map: @ you, # places with post waiting, o towns, + weather stations,",
     "~ sea  . shore  , grass  \" forest  : dry plain  n hills  ^ mountain  A snow,",
@@ -2343,19 +2635,6 @@ PLAIN_HELP = (
 
 _ENTER = "\x1b[0m\x1b[?25l\x1b[2J\x1b[H"
 _LEAVE = "\x1b[0m\x1b[?25h\x1b[2J\x1b[H"
-
-_INK = {
-    "accent": {"truecolor": "38;2;255;196;110", "256": "38;5;215", "16": "1;33"},
-    "dim": {"truecolor": "38;2;112;126;148", "256": "38;5;103", "16": "36"},
-    "text": {"truecolor": "38;2;206;214;226", "256": "38;5;252", "16": "37"},
-    "warn": {"truecolor": "38;2;255;150;130", "256": "38;5;210", "16": "1;31"},
-    "bright": {"truecolor": "1;38;2;255;255;255", "256": "1;38;5;231", "16": "1;37"},
-    "sea": {"truecolor": "38;2;70;130;190", "256": "38;5;67", "16": "34"},
-    "land": {"truecolor": "38;2;120;180;110", "256": "38;5;108", "16": "32"},
-    "cool": {"truecolor": "38;2;120;228;255", "256": "38;5;117", "16": "1;36"},
-    "warm": {"truecolor": "38;2;255;150;196", "256": "38;5;218", "16": "1;35"},
-}
-
 
 class Session:
     """One caller, from the first byte to the last.
@@ -2380,6 +2659,8 @@ class Session:
             self.notice, game.opening_notice = game.opening_notice, ""      # said once, on the first screen
         self._warned: set[float] = set()
         self._dirty = True
+        self.frame = Screen(self.width, self.height, launch.color_depth, launch.charset)
+        self.shown: Screen | None = None      # what the caller's terminal holds; None means unknown
         self._next_poll = self.started + GEOMETRY_POLL
 
     # -- time ---------------------------------------------------------------
@@ -2415,35 +2696,34 @@ class Session:
         size = current_geometry(self.launch)
         if size != (self.width, self.height):
             self.width, self.height = size
-            self._dirty = True              # a resize repaints everything
+            self.shown = None               # a resize throws the buffer away and repaints everything
+            self._dirty = True
 
     # -- drawing ------------------------------------------------------------
 
-    def ink(self, role: str) -> str:
-        return f"\x1b[0;{_INK[role][self.launch.color_depth]}m"
-
     def _line(self, row: int, col: int, text: str, role: str = "text") -> str:
-        """One run of text, clipped so the bottom-right cell is never written."""
-        if not 0 <= row < self.height or col >= self.width:
-            return ""
-        room = self.width - col - (1 if row == self.height - 1 else 0)
-        text = text[:max(0, room)]
-        if not text:
-            return ""
-        return f"\x1b[{row + 1};{col + 1}H{self.ink(role)}{text}"
+        """One run of text onto the frame being drawn."""
+        self.frame.text(col, row, text, role)
+        return ""
 
     def paint(self) -> None:
-        parts = ["\x1b[0m\x1b[2J"]
+        """Draw the current view onto a new frame and send what changed."""
+        self.frame = Screen(self.width, self.height, self.launch.color_depth, self.launch.charset)
         if layout_tier(self.width, self.height) == "undersize":
-            parts += self._undersize()
+            self._undersize()
         elif self.view == "help":
-            parts += self._help()
+            self._help()
         elif self.game is not None:
-            parts += self.game.draw(self)
+            self.game.draw(self)
         else:
-            parts += self._front()
-        parts.append("\x1b[0m")
-        self.out.write("".join(parts))
+            self._front()
+        if self.shown is None:
+            self.out.write("\x1b[0m\x1b[2J" + self.frame.render(None))
+        else:
+            changed = self.frame.render(self.shown)
+            if changed:
+                self.out.write(changed)
+        self.shown = self.frame
         self._dirty = False
 
     def _dot(self) -> str:
@@ -2510,8 +2790,13 @@ class Session:
     # -- input --------------------------------------------------------------
 
     def _handle(self, key: str) -> None:
-        self.notice = ""
         self._dirty = True
+        if key in ("CTRL-L", "CTRL-R"):
+            # Redraw: only differences are sent, so if a line was garbled on
+            # the way, or the host wrote over the screen, this puts it right.
+            self.shown = None
+            return
+        self.notice = ""
         lower = key.lower() if len(key) == 1 else key
         if self.view == "help":
             if lower in ("q", "b", "ESC", "?", "ENTER", "CTRL-C"):
@@ -2565,7 +2850,8 @@ class Session:
             while not self.stop:
                 self.step()
             if self.stop == "deadline":
-                self.out.write("\x1b[0m\x1b[2J" + self._line(0, 1, "Session time is up. Nothing is lost.", "accent"))
+                # Written straight out, past the buffer: the session is over and nothing is drawn after it.
+                self.out.write("\x1b[0m\x1b[2J\x1b[1;2HSession time is up. Nothing is lost.")
         except SessionClosed:
             self.stop = "closed"
         finally:
