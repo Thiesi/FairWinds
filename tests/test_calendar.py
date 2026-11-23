@@ -370,7 +370,8 @@ class Logbook(CalendarCase):
         self.assertEqual(game.phase(), "wait", "day 2 opening is not day 3 opening")
         self.clock.days(1)
         game.key("ENTER")
-        self.assertEqual(game.phase(), "ground")
+        self.assertFalse(game.waiting())
+        self.assertTrue(game.at_office(), "in a town, with its post office open")
 
     def test_a_pilot_who_is_behind_wakes_straight_into_the_next_day(self):
         game = self.game()
@@ -387,7 +388,7 @@ class Logbook(CalendarCase):
         game = self.game()
         text = self.screen(game)
         self.assertIn("Day 1  06:00", text)
-        self.assertIn("Day 2 opens at midnight.   Mara  0 delivered  0 km", text)
+        self.assertIn("Day 2 opens at midnight.   40 postmarks   0 delivered   0 km   Mara", text)
         self.assertNotIn("more day", text)
         for size in ((132, 40), (168, 46)):
             wide = self.screen(game, *size)

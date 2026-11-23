@@ -205,12 +205,15 @@ class Flying(PlainCase):
             self.press(game, "n")
             self.assertEqual(game.state.day, day + 1)
         else:
-            self.assertRegex(text, r"\[N\] (Next day|Night here)")
+            self.assertRegex(text, r"\[N\] (Next day|Night)")
             self.press(game, "n")
             self.assertEqual(game.state.day, day + 1)
         self.assertEqual((game.state.turn, game.state.status, game.state.distance), (0, "ground", 0.0))
-        self.assertIn("launch", game.engine.actions(game.state), "and the balloon can fly again")
         self.assertEqual(game.days_flown, 1)
+        self.clock.days(3)
+        game._day_may_have_opened()
+        self.assertTrue("launch" in game.offered() or game.at_office() or game.phase() == "stranded",
+                        "and the balloon can fly again, or there is somewhere to turn")
 
 
 class GettingThere(PlainCase):
@@ -230,19 +233,23 @@ class GettingThere(PlainCase):
     def test_delivering_the_post(self):
         game = self.game()
         ref = self.over_a_target(game, wear=30, ballast=1, pibals=0)
-        old = list(game.targets)
+        item = next(item for item in game.manifest if tuple(item["dest"]) == ref)
+        before = game.postmarks
         self.press(game, "l", "ENTER")
         self.assertEqual(game.deliveries, 1)
         self.assertEqual(game.state.status, "ground")
-        self.assertNotIn(ref, game.targets, "the next post is for somewhere else")
-        self.assertEqual(len(game.targets), 3)
-        self.assertNotEqual(game.targets, old)
-        self.assertEqual((game.state.fuel, game.state.ballast, game.state.pibals, game.state.wear), (60, 5, 3, 0),
-                         "a delivery fills the balloon up, until towns have stores")
+        self.assertEqual(game.postmarks, before + item["payout"], "a delivery pays what it promised")
+        self.assertNotIn(ref, game.targets, "that post is off the manifest")
+        self.assertEqual(len(game.manifest), 2)
+        self.assertEqual(len(game.state.cargo), 2)
+        self.assertEqual((game.state.fuel, game.state.ballast, game.state.pibals, game.state.wear), (20, 1, 0, 30),
+                         "and nothing is filled for nothing: the stores sell it")
         text = self.screen(game)
-        self.assertIn("is delivered. That makes 1.", text)
+        self.assertIn(f"mailbag, {item['payout']} postmarks. That makes 1.", text)
         self.assertIn("1 delivered", text)
+        self.assertIn("[O] Post", text)
         self.assertEqual(self.save_file()["deliveries"], 1)
+        self.assertEqual(self.save_file()["postmarks"], game.postmarks)
 
     def test_landing_where_there_is_no_post_changes_nothing(self):
         game = self.game()
@@ -254,13 +261,14 @@ class GettingThere(PlainCase):
                 break
         game.state = state
         game._choose_default()
-        targets = list(game.targets)
+        targets, postmarks = list(game.targets), game.postmarks
         self.press(game, "l", "ENTER")
-        self.assertEqual((game.deliveries, game.targets), (0, targets), "no delivery, and the post is the same post")
+        self.assertEqual((game.deliveries, game.targets, game.postmarks), (0, targets, postmarks),
+                         "no delivery, and the post is the same post")
         self.assertEqual((game.state.fuel, game.state.wear), (20, 30), "and no free fill for dropping in")
-        self.assertIn("There was no post for", self.screen(game))
+        self.assertIn("Nothing aboard was for", self.screen(game))
         self.press(game, "n")
-        self.assertEqual((game.state.fuel, game.state.wear), (60, 0), "a night at a town does fill it")
+        self.assertEqual((game.state.fuel, game.state.wear), (20, 30), "a night fills nothing either")
 
     def test_distance_is_counted_once(self):
         game = self.game()
@@ -275,12 +283,12 @@ class GettingThere(PlainCase):
         self.press(game, "ENTER", "ENTER")
         today = game.state.distance
         self.assertGreater(today, first_leg)
-        self.assertIn(f"0 delivered  {today:.0f} km", self.screen(game), "two legs, each counted once")
+        self.assertIn(f"0 delivered   {today:.0f} km", self.screen(game), "two legs, each counted once")
         game.state = dataclasses.replace(game.state, status="ground", layer=0)
         self.press(game, "n")
         self.assertAlmostEqual(game.total_km, today)
         self.assertEqual(game.state.distance, 0.0)
-        self.assertIn(f"0 delivered  {today:.0f} km", self.screen(game), "and the same total the next morning")
+        self.assertIn(f"0 delivered   {today:.0f} km", self.screen(game), "and the same total the next morning")
         self.assertAlmostEqual(self.save_file()["total_km"], today)
 
     def test_a_day_nothing_was_flown_on_is_not_a_flying_day(self):
@@ -308,12 +316,26 @@ class GettingThere(PlainCase):
     def test_stranded_and_walking_out(self):
         game = self.game()
         game.state = dataclasses.replace(game.state, x=game.state.x + 40.0, status="stranded", fuel=0, turn=30)
+        game.postmarks = 3
         self.assertEqual(game.phase(), "stranded")
         self.assertIn("costs two days", self.screen(game))
         self.press(game, "ENTER")
-        self.assertEqual((game.state.day, game.state.status, game.state.fuel), (3, "ground", 60))
+        self.assertEqual((game.state.day, game.state.status, game.state.fuel), (3, "ground", 0))
         self.assertIsNotNone(game.engine.place(game.state.x, game.state.y), "walked out to a town")
-        self.assertIn("Two days on foot", self.screen(game))
+        self.assertIn("Two days on foot", " ".join(game.log))
+        self.assertEqual(len(game.manifest), 3, "the post came along")
+        self.assertTrue(game.relief_due(), "and nobody is left there without fuel or the means to buy it")
+
+    def test_down_in_the_wild_and_unable_to_fly_is_stranded(self):
+        game = self.game()
+        game.state = dataclasses.replace(game.state, x=game.state.x - 60.0, fuel=1, turn=40)
+        self.assertIsNone(game.here())
+        self.assertEqual(game.phase(), "stranded", "one unit of fuel launches nothing, and no night adds any")
+        game.state = dataclasses.replace(game.state, fuel=30, wear=fw.WEAR_GROUNDED)
+        self.assertEqual(game.phase(), "stranded")
+        self.assertIn("too worn to fly. Walking out", self.screen(game))
+        self.press(game, "w")
+        self.assertIsNotNone(game.here())
 
     def test_ditched_and_the_packet_boat(self):
         game = self.game()
@@ -325,13 +347,17 @@ class GettingThere(PlainCase):
         self.assertEqual(place[0], "town")
         self.assertTrue(game.world.towns[place[1]]["port"] or not any(t["port"] for t in game.world.towns))
 
-    def test_a_worn_out_balloon_rests(self):
+    def test_a_worn_out_balloon_rests_until_it_is_mended(self):
         game = self.game()
         game.state = dataclasses.replace(game.state, wear=100)
         self.assertEqual(game.phase(), "rest")
-        self.assertIn("too worn to fly", self.screen(game))
+        self.assertIn("too worn to fly. The stores at the post office mend it: O.", self.screen(game))
         self.press(game, "n")
-        self.assertEqual((game.state.wear, game.state.day), (0, 2), "a night at a town mends it")
+        self.assertEqual(game.state.wear, 100, "a night mends nothing")
+        self.clock.days(1)
+        game._day_may_have_opened()
+        self.press(game, "o", "m")
+        self.assertEqual((game.state.wear, game.postmarks), (60, 0), "the stores mend what the postmarks pay for")
 
     def test_a_night_in_the_wild_fills_nothing(self):
         game = self.game()
@@ -348,7 +374,8 @@ class Saving(PlainCase):
         self.assertEqual(fw.FlightState.from_dict(self.save_file()["state"]), game.state)
         again = self.game()
         self.assertEqual(again.state, game.state)
-        self.assertEqual((again.targets, again.visited, again.log), (game.targets, game.visited, game.log))
+        self.assertEqual((again.targets, again.manifest, again.postmarks, again.log),
+                         (game.targets, game.manifest, game.postmarks, game.log))
         self.assertEqual(self.screen(again), self.screen(game), "the screen is the same screen")
         self.press(game, "ENTER")
         self.press(again, "ENTER")
