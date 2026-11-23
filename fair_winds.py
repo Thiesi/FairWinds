@@ -1805,8 +1805,12 @@ class PlainFlight:
         self.saved_ok = True
         self.log: list[str] = []
         self.typed_ahead = False          # set when a turn was committed: later keys in the same read are dropped
-        if not self._load():
+        loaded = self._load()
+        if loaded is not True:
             self._new_game()
+            if loaded == "damaged":
+                self._say("Your saved game could not be read, so this is a new one. The old file was kept for the SysOp.")
+        self.save()                       # so a game that cannot be saved says so before the first turn
         self._choose_default()
 
     # -- the save ------------------------------------------------------------
@@ -1821,13 +1825,25 @@ class PlainFlight:
         self._say(f"You are at {start['name']}. There is post for {self._names()}.")
         self._say("Read the winds and fly to whichever the day favours.")
 
-    def _load(self) -> bool:
+    def _load(self):
+        """True if a saved game was read, False if there is none, "damaged" if one was set aside.
+
+        Only a missing file means a new pilot. A file that is there but
+        cannot be used is moved aside under one fixed name, so the next save
+        never overwrites a game somebody might still want back.
+        """
         if self.path is None:
             return False
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
+            text = self.path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return False
+        except (OSError, UnicodeDecodeError):
+            return self._set_aside()
+        try:
+            data = json.loads(text)
             if data["version"] != PLAIN_SAVE_VERSION or data["seed"] != self.world.seed:
-                return False
+                return self._set_aside()
             self.state = FlightState.from_dict(data["state"])
             self.targets = [self._ref(t) for t in data["targets"]][:POST_CHOICES]
             self.visited = [self._ref(v) for v in data["visited"]][-4:]
@@ -1837,8 +1853,15 @@ class PlainFlight:
             self.total_km = float(data["total_km"])
             self.log = [str(line) for line in data.get("log", [])][-3:]
             return True
-        except (OSError, ValueError, KeyError, TypeError):
-            return False
+        except (ValueError, KeyError, TypeError):
+            return self._set_aside()
+
+    def _set_aside(self) -> str:
+        try:
+            self.path.replace(self.path.with_name(self.path.name + ".bad"))
+        except OSError:
+            pass
+        return "damaged"
 
     def save(self) -> None:
         if self.path is None:
@@ -1850,7 +1873,10 @@ class PlainFlight:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temp = self.path.with_name(self.path.name + f".{os.getpid()}.tmp")
-            temp.write_text(json.dumps(data), encoding="utf-8")
+            with open(temp, "w", encoding="utf-8") as handle:
+                handle.write(json.dumps(data))
+                handle.flush()
+                os.fsync(handle.fileno())     # on disk before it replaces the last good save
             temp.replace(self.path)
             self.saved_ok = True
         except OSError:
@@ -2030,37 +2056,39 @@ class PlainFlight:
         return ""
 
     def _landed(self) -> None:
-        self.total_km += self.state.distance
         place = self.engine.place(self.state.x, self.state.y)
         if self.state.status != "ground" or place is None:
             return
-        if place in self.targets:
-            self.deliveries += 1
-            self._say(f"The post for {self.place_of(place)['name']} is delivered. That makes {self.deliveries}.")
+        if place not in self.targets:
+            self._say(f"There was no post for {self.place_of(place)['name']}. A night here fills the balloon.")
+            return
+        self.deliveries += 1
+        self._say(f"The post for {self.place_of(place)['name']} is delivered. That makes {self.deliveries}.")
         if not self.visited or self.visited[-1] != place:
             self.visited.append(place)
         del self.visited[:-4]
         self.targets = self._next_targets()
         self._say(f"New post aboard, for {self._names()}.")
-        # Until towns have stores (S12), a town or station fills the balloon up.
+        # Until towns have stores (S12), a delivery fills the balloon up.
         self.state = dataclasses.replace(self.state, fuel=FUEL_START, ballast=BALLAST_START,
                                          pibals=PIBALS_START, wear=0)
 
     def _new_day(self, days: int, x: float | None = None, y: float | None = None, refill: bool = False) -> None:
         state = self.state
         stores = dict(fuel=FUEL_START, ballast=BALLAST_START, pibals=PIBALS_START, wear=0) if refill else {}
+        self.total_km += state.distance        # today's distance joins the total as the day ends
+        if state.turn > 0:
+            self.days_flown += 1              # a day nothing was flown on is not a flying day
         self.state = dataclasses.replace(state, day=state.day + days, turn=0, layer=0, status="ground",
                                          distance=0.0, pibal_until=-1,
                                          x=state.x if x is None else x, y=state.y if y is None else y, **stores)
-        self.days_flown += 1
-        self.save()
         self._choose_default()
 
     def _night(self) -> None:
         at_place = self.engine.place(self.state.x, self.state.y) is not None
         self._new_day(1, refill=at_place)
         self._say(f"Day {self.state.day}. Dawn.")
-        self.save()
+        self.save()                       # once, with the new day and its log together
 
     def _nearest(self, towns) -> dict:
         return min(towns, key=lambda t: ((t["x"] - self.state.x) ** 2 + (t["y"] - self.state.y) ** 2, t["cell"]))
@@ -2094,10 +2122,10 @@ class PlainFlight:
         out += self._draw_panel(s, phase)
         for i, line in enumerate(self.log[-3:]):
             out.append(s._line(17 + i, 1, line[:78], "dim" if i < len(self.log[-3:]) - 1 else "text"))
-        if not self.saved_ok:
-            out.append(s._line(20, 1, "This game cannot be saved here. Tell the SysOp. You can play on.", "warn"))
-        elif s.notice:
+        if s.notice:
             out.append(s._line(20, 1, s.notice[:78], "warn"))
+        elif not self.saved_ok:
+            out.append(s._line(20, 1, "This game cannot be saved here. Tell the SysOp. You can play on.", "warn"))
         elif launch.guest:
             out.append(s._line(20, 1, "You are visiting: nothing is kept when you leave.", "dim"))
         sentence, role = self._sentence(phase)
@@ -2292,13 +2320,14 @@ PLAIN_HELP = (
     "The map: @ you, # places with post waiting, o towns, + weather stations,",
     "~ sea  . shore  , grass  \" forest  : dry plain  n hills  ^ mountain  A snow,",
     "% squall. Digits are tracks: where each layer would carry you, by forecast.",
-    "",
     "A wind marked ~ is a forecast: you have not read that layer. Your own layer",
     "is always true. Climbing costs fuel, sinking is free, holding costs 1 (0 from",
     "11:00 to 15:00, 2 after 20:00). Land in 15 km/h or less for a clean landing.",
+    "Within 12 km of a place counts as being there: two or three map cells.",
     "",
     "Leaving never loses anything. The game is saved every turn.",
 )
+assert len(PLAIN_HELP) <= 21
 
 
 # --------------------------------------------------------------------------

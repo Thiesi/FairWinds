@@ -348,12 +348,14 @@ in a day on about three days in four, in 6 to 42 turns; one fixed nearest town
 on fewer than half. S12's contracts keep this shape: several destinations a
 day, and the wind picks.
 
-**Placeholders, each replaced by the slice named.** A town or station fills the
-balloon up and mends it for nothing (S12). A new day starts when the pilot
+**Placeholders, each replaced by the slice named.** A delivery fills the balloon
+up and mends it for nothing, and so does a night at a town or station; landing
+where there is no post changes nothing (S12). A new day starts when the pilot
 asks, with no calendar (S11). Walking out and the packet boat happen at a key
-press (S16). The save is one JSON file per pilot, written whole after every
-turn (S10). Forecast coverage counts towns and the three starting stations
-(S15).
+press (S16). The save is one JSON file per pilot, written whole and synced
+after every turn; a save that cannot be read is moved aside, never overwritten,
+and the pilot is told (S10). Forecast coverage counts towns and the three
+starting stations (S15).
 
 ## 6. Economy and progress
 

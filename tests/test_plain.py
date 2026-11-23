@@ -100,7 +100,7 @@ class NewGame(PlainCase):
         self.assertEqual(b.state.turn, 0, "another pilot starts their own game")
         c = self.game(node_id="other-node")
         self.assertNotEqual(c.world.seed, a.world.seed)
-        self.assertEqual(len(list(self.folder.glob("pilot-*.json"))), 1)
+        self.assertEqual(len(list(self.folder.glob("pilot-*.json"))), 3, "one save per pilot per world")
 
 
 class Flying(PlainCase):
@@ -234,11 +234,60 @@ class GettingThere(PlainCase):
         self.assertEqual(len(game.targets), 3)
         self.assertNotEqual(game.targets, old)
         self.assertEqual((game.state.fuel, game.state.ballast, game.state.pibals, game.state.wear), (60, 5, 3, 0),
-                         "a town or station fills the balloon up, until towns have stores")
+                         "a delivery fills the balloon up, until towns have stores")
         text = self.screen(game)
         self.assertIn("is delivered. That makes 1.", text)
         self.assertIn("1 delivered", text)
         self.assertEqual(self.save_file()["deliveries"], 1)
+
+    def test_landing_where_there_is_no_post_changes_nothing(self):
+        game = self.game()
+        start = game.world.towns[game.world.start_town]
+        for day in range(1, 80):
+            state = dataclasses.replace(game.state, day=day, turn=10, status="aloft", fuel=20, wear=30,
+                                        layer=game.engine.lowest_open(start["x"], start["y"]))
+            if "land" in game.engine.actions(state) and game.engine.landing_class(state) == "clean":
+                break
+        game.state = state
+        game._choose_default()
+        targets = list(game.targets)
+        self.press(game, "l", "ENTER")
+        self.assertEqual((game.deliveries, game.targets), (0, targets), "no delivery, and the post is the same post")
+        self.assertEqual((game.state.fuel, game.state.wear), (20, 30), "and no free fill for dropping in")
+        self.assertIn("There was no post for", self.screen(game))
+        self.press(game, "n")
+        self.assertEqual((game.state.fuel, game.state.wear), (60, 0), "a night at a town does fill it")
+
+    def test_distance_is_counted_once(self):
+        game = self.game()
+        self.press(game, "ENTER", "ENTER", "ENTER")
+        first_leg = game.state.distance
+        self.assertGreater(first_leg, 0)
+        self.assertIn(f"{first_leg:.0f} km", self.screen(game))
+        # Land, and fly a second leg the same day.
+        game.state = dataclasses.replace(game.state, status="ground", layer=0)
+        game._choose_default()
+        self.assertEqual(game.total_km, 0.0, "nothing joins the total until the day ends")
+        self.press(game, "ENTER", "ENTER")
+        today = game.state.distance
+        self.assertGreater(today, first_leg)
+        self.assertIn(f"0 delivered  {today:.0f} km", self.screen(game), "two legs, each counted once")
+        game.state = dataclasses.replace(game.state, status="ground", layer=0)
+        self.press(game, "n")
+        self.assertAlmostEqual(game.total_km, today)
+        self.assertEqual(game.state.distance, 0.0)
+        self.assertIn(f"0 delivered  {today:.0f} km", self.screen(game), "and the same total the next morning")
+        self.assertAlmostEqual(self.save_file()["total_km"], today)
+
+    def test_a_day_nothing_was_flown_on_is_not_a_flying_day(self):
+        game = self.game()
+        self.press(game, "n", "n")
+        self.assertEqual((game.state.day, game.days_flown), (3, 0))
+        self.press(game, "ENTER", "ENTER")
+        game.state = dataclasses.replace(game.state, status="ground", layer=0)
+        game._choose_default()
+        self.press(game, "n")
+        self.assertEqual(game.days_flown, 1)
 
     def test_a_second_flight_the_same_day(self):
         game = self.game()
@@ -301,9 +350,11 @@ class Saving(PlainCase):
 
     def test_looking_is_not_saved_flying_is(self):
         game = self.game()
-        self.assertEqual(list(self.folder.glob("pilot-*.json")), [], "nothing is written until something happens")
+        start = self.save_file()
+        self.assertEqual(start["state"]["turn"], 0, "the game is saved from the start, so a bad folder shows at once")
         self.press(game, "ENTER")
         first = self.save_file()
+        self.assertNotEqual(first, start)
         self.press(game, "w", "s", "w")
         self.assertEqual(self.save_file(), first)
 
@@ -319,15 +370,20 @@ class Saving(PlainCase):
         blocker = self.folder / "in-the-way"
         blocker.write_text("not a folder", encoding="utf-8")
         game = fw.PlainFlight(launch(), blocker)
+        self.assertFalse(game.saved_ok)
+        self.assertIn("cannot be saved here", self.screen(game), "said before the first turn, not after it")
         self.press(game, "ENTER", "ENTER")
         self.assertEqual(game.state.turn, 2, "the game plays on")
-        self.assertFalse(game.saved_ok)
-        self.assertIn("cannot be saved here", self.screen(game))
+        session = self.session(game)
+        session.notice = "About 1 minute of session time left."
+        session.paint()
+        self.assertIn("of session time left", session.out.text, "a session notice is not hidden by the save warning")
 
-    def test_a_damaged_or_foreign_save_starts_a_new_game(self):
+    def test_a_save_that_cannot_be_read_is_set_aside_never_overwritten(self):
         game = self.game()
         self.press(game, "ENTER")
         path = next(self.folder.glob("pilot-*.json"))
+        aside = path.with_name(path.name + ".bad")
         good = path.read_text(encoding="utf-8")
         for bad in ("", "{", "[]", good[:40], good.replace('"version": 1', '"version": 99'),
                     good.replace(f'"seed": {game.world.seed}', '"seed": 1'),
@@ -336,7 +392,16 @@ class Saving(PlainCase):
             fresh = self.game()
             self.assertEqual((fresh.state.turn, fresh.state.status), (0, "ground"))
             self.assertEqual(len(fresh.targets), 3)
-        self.assertEqual(sorted(p.name for p in self.folder.glob("pilot-*")), [path.name], "no stray files")
+            self.assertEqual(aside.read_text(encoding="utf-8"), bad, "the unreadable file is kept, whole")
+            self.assertIn("could not be read", self.screen(fresh), "and the pilot is told")
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["state"]["turn"], 0)
+        self.assertEqual(sorted(p.name for p in self.folder.glob("pilot-*")), [path.name, aside.name],
+                         "one file set aside per pilot, however often it happens")
+
+    def test_a_missing_save_is_simply_a_new_pilot(self):
+        game = self.game()
+        self.assertNotIn("could not be read", self.screen(game))
+        self.assertEqual(list(self.folder.glob("*.bad")), [])
 
 
 class Screens(PlainCase):
@@ -369,6 +434,7 @@ class Screens(PlainCase):
             self.assertIn(glyph, text)
         self.assertIn("saved every turn", text)
         self.assertLessEqual(len(fw.PLAIN_HELP), 21, "help fits the screen above the key row")
+        self.assertIn("Within 12 km of a place counts", text)
         self.assertTrue(all(len(line) <= 78 for line in fw.PLAIN_HELP))
 
     def test_sixteen_colours_and_ascii(self):
