@@ -596,9 +596,14 @@ which always hold still.
 
 Frames are due at fixed moments counted from when the burst began. A frame
 that is late skips the frames whose moments have passed; none is queued, and
-the burst ends when it would have. And while the wind moves, no more than 44 KB
-goes out in any one second: when that is reached the wind advances unpainted,
-except for a burst's last frame, which is the one that stays. The cap is there
+the burst ends when it would have. And while the wind moves, about 44 KB is
+the most that goes out in any one second (a frame is painted while the second's
+total is under that, so it can end a frame over). When it is reached the wind
+advances unpainted, except for a burst's last frame, which is the one that
+stays. Everything sent counts, a full frame too: after a first draw, a resize,
+Ctrl-L or a move of the window, the wind holds still for up to a second and
+then shows where it has got to, because that frame is what the line is busy
+with. The cap is there
 because a pipe to the host takes a whole burst without blocking, so the time a
 write took says nothing about how far behind the caller's line is.
 
