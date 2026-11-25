@@ -358,9 +358,22 @@ class TrailsInTheGame(InTheGame):
         frame = session.frame
         heads = [k for k, g in enumerate(frame.ch) if g in fw.TRACK_HEADS]
         self.assertGreaterEqual(len(heads), 1)
-        inks = {frame.fg[k] for k in heads}
-        chosen = fw.INKS[fw._TRACK_ROLES[game.choice]][0]
-        self.assertTrue(any(sum(ink) >= sum(chosen) * 0.5 for ink in inks if isinstance(ink, tuple)))
+
+    def test_in_sixteen_colours_every_trail_keeps_a_colour_of_its_own(self):
+        roles = set(fw._TRACK_ROLES.values())
+        readings = {}
+        for role in roles:
+            readings[role] = fw.INKS[role][1]
+            readings[role + "_dim"] = fw.INKS[role + "_dim"][1]
+        self.assertEqual(len(set(readings.values())), len(readings), readings)
+        game, session = self.session(color_depth="16")
+        game.key("ENTER")
+        self.paint(session)
+        names = set(fw._TRACK_ROLES.values()) | {r + "_dim" for r in fw._TRACK_ROLES.values()}
+        marks = {session.frame.fg[k] for k, g in enumerate(session.frame.ch)
+                 if g in fw.TRACK_HEADS + (fw.TRACK_DOT, fw.TRACK_HOUR) and session.frame.fg[k] in names}
+        self.assertTrue(marks, "the trails are drawn in named inks, each with a chosen sixteen-colour reading")
+        self.assertTrue(any(m.endswith("_dim") for m in marks) or len(game.choices()) == 1)
 
 
 class Trails(unittest.TestCase):
@@ -376,6 +389,11 @@ class Trails(unittest.TestCase):
         self.assertEqual(glyphs, [fw.TRACK_DOT] * 3 + [fw.TRACK_HOUR] + [fw.TRACK_DOT] * 3 + [fw.TRACK_HOUR, "\u2192"])
         self.assertEqual(fw.track_glyphs([], (0.0, 0.0), True), [])
         self.assertEqual(fw.track_glyphs(self.points((0.0, -3.0)), (0.0, 0.0), True), ["\u2191"], "one step is all head")
+
+    def test_a_track_that_goes_nowhere_ends_in_a_dot_not_an_arrow(self):
+        still = [(0.0, 0.0, 1), (0.0, 0.0, 1)]
+        self.assertEqual(fw.track_glyphs(still, (0.0, 0.0), True)[-1], fw.TRACK_HOUR)
+        self.assertEqual(fw.track_glyphs(still, (0.0, 0.0), False)[-1], "*")
 
     def test_the_head_points_where_the_track_is_going(self):
         ways = {(1, 0): "\u2192", (1, 1): "\u2198", (0, 1): "\u2193", (-1, 1): "\u2199", (-1, 0): "\u2190",

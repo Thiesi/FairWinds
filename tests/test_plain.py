@@ -611,6 +611,36 @@ class Screens(PlainCase):
         text = self.screen(game)
         self.assertNotIn("`", text.split("\n")[-2])
 
+    def test_a_date_format_cannot_smuggle_in_a_mark(self):
+        game = self.game(datetime_format="%d`%m %H:%M")
+        self.press(game, "ENTER")
+        game.state = dataclasses.replace(game.state, x=game.state.x + 40.0, status="stranded", fuel=0, turn=30)
+        self.press(game, "w")                            # two days on: the briefing now carries a date
+        session = self.session(game)
+        session.paint()
+        frame = session.frame
+        rows = ["".join(frame.ch[r * 80:(r + 1) * 80]) for r in range(24)]
+        status = next(r for r, row in enumerate(rows) if "postmarks" in row)
+        self.assertNotIn("`", rows[status])
+        self.assertIn(" opens on ", rows[status])
+        self.assertEqual(frame.fg[status * 80 + rows[status].index("postmarks")], "dim", "names are still names")
+        self.assertEqual(frame.fg[status * 80 + rows[status].index("postmarks") - 3], "text", "and figures figures")
+
+    def test_right_aligned_lines_end_where_they_should(self):
+        game = self.game()
+        for size in ((80, 24), (132, 40)):
+            session = self.session(game, *size)
+            session.paint()
+            head = "".join(session.frame.ch[:size[0]])
+            self.assertTrue(head.rstrip().endswith("NNW") and len(head.rstrip()) == size[0] - 1, head)
+        game.key("o")
+        session = self.session(game)
+        session.paint()
+        rows = ["".join(session.frame.ch[r * 80:(r + 1) * 80]) for r in range(3)]
+        self.assertEqual(len(rows[0].rstrip()), 79)
+        self.assertTrue(rows[0].rstrip().endswith("postmarks"))
+        self.assertTrue(rows[1].rstrip().endswith("weight") and len(rows[1].rstrip()) == 79)
+
     def test_sixteen_colours_and_ascii(self):
         game = self.game(color_depth="16", charset="ascii")
         self.press(game, "ENTER")

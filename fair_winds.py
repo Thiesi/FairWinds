@@ -1820,6 +1820,11 @@ INKS = {
     # What a figure is called, and the figure: told apart at a glance wherever both stand on a line.
     "label": ((128, 146, 176), 6),
     "value": ((240, 244, 250), 15),
+    # A track that is not the chosen one: its choice's colour, further off. Each has a sixteen-colour reading
+    # of its own, so that even there the three are told apart.
+    "cool_dim": ((90, 171, 191), 6),
+    "warm_dim": ((191, 112, 147), 5),
+    "accent_dim": ((191, 147, 82), 3),
 }
 _ASCII_RAMP = " .:-=+*#%@"
 HALF_BLOCK = "▀"           # upper half block: foreground on top, background below
@@ -1904,6 +1909,9 @@ def track_glyphs(points: list, start: tuple, utf8: bool) -> list[str]:
             continue
         px, py = (points[i - 1][0], points[i - 1][1]) if i else start
         dx, dy = x - px, y - py
+        if dx == 0 and dy == 0:
+            out.append(TRACK_HOUR if utf8 else TRACK_PLAIN[1])     # a calm: it ends where it is, pointing nowhere
+            continue
         if utf8:
             # Eight ways: which of dx, dy dominates, or both.
             ax, ay = abs(dx), abs(dy)
@@ -4308,7 +4316,8 @@ class PlainFlight:
     def _status(self, s: "Session", wide: int) -> str:
         """The line under the sentence: when the next day opens first, then as much else as there is room for."""
         launch = self.launch
-        status = self.briefing()[:wide]
+        # The briefing may carry a date in the caller's own format: no mark of ours may come in with it.
+        status = self.briefing().replace("`", " ")[:wide]
         length = len(status)
         for part in (f"`{self.postmarks}` postmarks", f"`{self.deliveries}` delivered",
                      f"`{self.total_km + self.state.distance:.0f}` km", f"`{launch.handle.replace('`', ' ')}`",
@@ -4328,7 +4337,7 @@ class PlainFlight:
         out = [s._line(0, 1, "FAIR WINDS", "accent"),
                s._line(0, 13, f"The rigging loft at {town['name']}"[:wide - 30], "text")]
         right = f"`{self.postmarks}` postmarks"
-        out.append(s._kv(0, s.width - 1 - len(right) + 2, right))
+        out.append(s._kv_right(0, s.width - 1, right))
         grade, score = self.grade(), self.score()
         after = f"{GRADES[grade + 1][0]} at {GRADES[grade + 1][1]}" if grade + 1 < len(GRADES) else "the highest there is"
         out.append(s._line(1, 1, "LICENCE", "accent"))
@@ -4382,7 +4391,7 @@ class PlainFlight:
         out = [s._line(0, 1, "FAIR WINDS", "accent"),
                s._line(0, 13, f"{place['name']}, a {'town' if town else 'weather station'}"[:wide - 44], "text")]
         right = f"Day `{state.day}`  `{clock_text(state.minute)}`   `{self.postmarks}` postmarks"
-        out.append(s._kv(0, max(13, s.width - 1 - len(right) + 6), right))
+        out.append(s._kv_right(0, s.width - 1, right, 13))
         # Where there are rows to spare and pixels to paint with, the place itself looks in over the counter.
         vista = min(14, s.height - 24) if self.map.pixels else 0
         if vista >= 4:
@@ -4398,7 +4407,7 @@ class PlainFlight:
         row = 1 + vista
         out.append(s._line(row, 1, "THE POST OFFICE", "accent"))
         load = f"Aboard `{self.weight()}` of `{self.lift()}` weight"
-        out.append(s._kv(row, s.width - 1 - len(load) + 4, load))
+        out.append(s._kv_right(row, s.width - 1, load))
         offers = self.offers()
         for i, offer in enumerate(offers):
             there = self.place_of(tuple(offer["dest"]))
@@ -4466,7 +4475,7 @@ class PlainFlight:
                s._kv(0, 13, f"Day `{state.day}`  `{clock_text(state.minute)}`")]
         distance, toward, nearest = self.bearings()[0]
         post = f"{'Nearest post' if self.manifest else 'Nearest office'}: `{nearest['name']}, {distance:.0f} km {toward}`"
-        out.append(s._kv(0, max(32, s.width - 1 - len(post) + 2), post))
+        out.append(s._kv_right(0, s.width - 1, post, 32))
         out += self._draw_map(s)
         out += self._draw_panel(s, phase)
         for i, line in enumerate(self.log[-3:]):
@@ -4644,10 +4653,8 @@ class PlainFlight:
             utf8 = self.launch.charset == "utf-8"
             for action in order:
                 look = self.preview(action)
-                ink = INKS[_TRACK_ROLES[action]][0]
-                if action != self.choice:
-                    # The same colour, further off: it still says which choice it is.
-                    ink = (int(ink[0] * 0.75), int(ink[1] * 0.75), int(ink[2] * 0.75))
+                # The chosen track in its choice's colour; the others in the same colour, further off.
+                ink = _TRACK_ROLES[action] + ("" if action == self.choice else "_dim")
                 glyphs = track_glyphs(look["points"], (state.x, state.y), utf8)
                 for (px, py, _), glyph in zip(look["points"], glyphs):
                     view.mark(screen, px, py, glyph, ink)
@@ -4890,7 +4897,7 @@ PLAIN_HELP = (
     "A balloon cannot steer. Each layer of air blows its own way: climb or sink",
     "to the one that carries you to a place marked `#`. A turn is 15 minutes.",
     "  `W` `S`  look at the layer above or below      `Enter`  fly the choice",
-    "  `A` `D`  lowest layer: trail the rope, bear left or right of the wind",
+    "  `A` `D`  lowest layer: trail the rope left or right. Arrows and Space work too.",
     "  `J`  drop a sack: up a layer, no fuel        `P`  pibal: true winds, 4 turns",
     "  `L`  land, from the lowest layer             `M`  drop mail within 30 km",
     "# ON THE GROUND",
@@ -5300,6 +5307,10 @@ class Session:
             col += len(part)
             room -= len(part)
         return ""
+
+    def _kv_right(self, row: int, edge: int, text: str, least: int = 0) -> str:
+        """A marked line ending at a column: it measures what will show, not the marks."""
+        return self._kv(row, max(least, edge - len(text.replace("`", ""))), text)
 
     def paint(self) -> None:
         """Draw the current view onto a new frame and send what changed."""
