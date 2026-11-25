@@ -3415,6 +3415,7 @@ class PlainFlight:
         self.flight_cells = self.flight_pay = 0       # what this flight has charted so far, said when it is down
         self.atlas = False                # the chart of the whole continent is open
         self._chart_size = None
+        self._share = None
         self._grade_seen = 0
         self.hub_note = ""                # what the last thing done there came to
         self._vista = None                # the picture over the post office, kept while it is the same picture
@@ -3692,16 +3693,29 @@ class PlainFlight:
                 self.found[fid] = (watch[fid][2], self.launch.user_id, self.launch.handle, self.state.day)
             self._charted(cells, found)
             return
+        # What the turn earns is worked out inside its transaction. If the transaction does not go through,
+        # the earnings must not stand either: or the ground would be paid for now and again by whoever is
+        # written down as first over it.
+        kept = (self.charted, self.postmarks, self.points, self.flight_cells, self.flight_pay, set(self.chart),
+                dict(self.found), list(self.naming), list(self.log), list(self.heard), self.chart_version)
         try:
             self.store.commit(self.launch.user_id, self.launch.handle,
                               (lambda new, found: self._charted(new, found)) if cells else self._career(),
                               self.state.to_dict(), action, cells, watch)
             self.saved_ok = True
-        except LeaseLost:
-            self.ended = "taken"
-        except sqlite3.Error as error:
-            diagnose(f"a turn could not be saved: {error}")
-            self.saved_ok = False       # play on; say so on the screen
+            if cells:
+                self.chart.update(cells)          # seen, and on the chart: first over them or not
+                self.chart_version += 1
+        except (LeaseLost, sqlite3.Error) as error:
+            if cells:
+                (self.charted, self.postmarks, self.points, self.flight_cells, self.flight_pay, self.chart,
+                 self.found, self.naming, self.log, self.heard, self.chart_version) = kept
+            if isinstance(error, LeaseLost):
+                self.ended = "taken"
+            else:
+                diagnose(f"a turn could not be saved: {error}")
+                self.saved_ok = False       # play on; say so on the screen
+            return
 
     # -- the chart -----------------------------------------------------------
 
@@ -3733,7 +3747,8 @@ class PlainFlight:
                 feature = self.world.features[fid]
                 group = [c for c in feature["cells"] if c not in self.known]
                 given = len(feature["cells"]) - len(group)
-                need = int(math.ceil(len(feature["cells"]) * DISCOVERY_SHARE)) - given
+                # At least one cell has to be charted by somebody: what was known from the start finds nothing.
+                need = max(1, int(math.ceil(len(feature["cells"]) * DISCOVERY_SHARE)) - given)
                 watch[fid] = (group, need, feature_names(self.world, feature)[0])
         return watch
 
@@ -3776,19 +3791,22 @@ class PlainFlight:
         name = offer["names"][choice if 0 <= choice < len(offer["names"]) else 0]
         if self.store is not None:
             try:
-                self.store.name_feature(offer["id"], self.launch.user_id, name)
+                if not self.store.name_feature(offer["id"], self.launch.user_id, name):
+                    name = offer["names"][0]      # not this pilot's to name after all: the name it has stands
             except sqlite3.Error as error:
                 diagnose(f"a name could not be kept: {error}")
                 name = offer["names"][0]
         old = self.found.get(offer["id"], (name, self.launch.user_id, self.launch.handle, self.state.day))
         self.found[offer["id"]] = (name,) + tuple(old[1:])
-        self.chart_version += 1
         self._say(f"It is {name} on every chart now.")
 
     def charted_share(self) -> float:
         """How much of the land is on the chart, from 0 to 1."""
-        land = self.world._land
-        return sum(1 for cell in land if cell in self.chart or cell in self.known) / max(1, len(land))
+        if self._share is None or self._share[0] != (self.chart_version, len(self.chart)):
+            land = self.world._land
+            share = sum(1 for cell in land if cell in self.chart or cell in self.known) / max(1, len(land))
+            self._share = ((self.chart_version, len(self.chart)), share)      # counted once for each state of the chart
+        return self._share[1]
 
     def _see_chart(self) -> bool:
         """Take in what others have charted and named since the last look. True if anything is new."""
@@ -3802,11 +3820,12 @@ class PlainFlight:
         except sqlite3.Error:
             return False
         self._chart_size = size
-        changed = cells != self.chart or found != self.found
-        if changed:
-            self.chart, self.found = cells | self.chart, dict(found)
-            self.chart_version += 1
-        return changed
+        new_ground, new_names = not cells <= self.chart, found != self.found
+        if new_ground:
+            self.chart = cells | self.chart
+            self.chart_version += 1           # the ground is drawn again; names are labels, laid on at every paint
+        self.found = dict(found)
+        return new_ground or new_names
 
     def pulse(self, now: float) -> bool:
         """Called as time passes: watch the calendar and keep the lease alive. True if the screen has to change."""
@@ -4328,7 +4347,11 @@ class PlainFlight:
             # What was seen from the basket this turn: from where the turn ended, at the height it was flown.
             layer = self.state.layer or before.layer or (self.engine.lowest_open(before.x, before.y)
                                                          if action == "launch" else 0)
+            # From halfway and from the end: a fast wind carries a balloon further in a turn than it sees.
             seen = self.seen_cells(self.state.x, self.state.y, layer, before.day, before.minute)
+            half = self.seen_cells((before.x + self.state.x) / 2, (before.y + self.state.y) / 2, layer,
+                                   before.day, before.minute)
+            seen += [cell for cell in half if cell not in seen]
         self.save(action, seen)           # before anything is shown
         if self.ended:
             return
@@ -4677,7 +4700,7 @@ class PlainFlight:
             except sqlite3.Error:
                 board = []
         if board:
-            line = "First to chart: " + "   ".join(f"{clean_text(name, 16).replace('`', ' ')} `{count}`"
+            line = "Most cells charted: " + "   ".join(f"{clean_text(name, 16).replace('`', ' ')} `{count}`"
                                                    for name, count in board)
             out.append(s._kv(s.height - 3, 1, line, wide))
         out.append(s._kv(s.height - 2, 1, self._status(s, wide), wide, "dim", "text"))

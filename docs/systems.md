@@ -616,15 +616,19 @@ The chart is the first answer: a flight blown off course is a surveying flight.
   been flown over stands out from it in colour. The owner called the map
   beautiful; a black veil over nine tenths of it would have thrown that away.
 - Each turn that ends aloft charts the cells in sight from the layer it was
-  flown in. Every cell in sight is charted, water too, so lakes and islands
+  flown in, from halfway through the turn and from its end, by the weather at
+  its start. Every cell in sight is charted, water too, so lakes and islands
   can be found; only land pays.
 - First over a cell is settled where it is written: the cell is inserted if
   nobody has it, inside the turn's own transaction. Two pilots over the same
-  ground are each credited with what was theirs.
+  ground are each credited with what was theirs. A turn that cannot be written
+  earns nothing and charts nothing: what it would have paid is taken back, so
+  the ground is still there for whoever is written down as first.
 - Pay: a postmark for every 2 cells of land a pilot is first to chart, a
   licence point for every 5. It is said once, when the flight is down.
 - A feature is found by the turn that brings it to 60 percent charted, counting
-  what was known from the start. Finding one pays 25 postmarks and 10 points.
+  what was known from the start; at least one of its cells has to be charted
+  by somebody. Finding one pays 25 postmarks and 10 points.
   The finder is shown three names and picks with 1, 2 or 3; any other key
   takes the first, and the key is used up. Until chosen, and if the finder
   leaves, the first name stands. Names are a word from the generator's list
@@ -637,7 +641,8 @@ The chart is the first answer: a flight blown off course is a surveying flight.
 - A session takes in what others have charted every 20 seconds and at each of
   its own turns. The map is composed again only when the chart has changed.
 - The records gain two tables, `charted` and `features`, and the schema is
-  version 2. A world from before is brought forward when it is next opened.
+  version 2. A world from before is brought forward when it is next opened;
+  flights made before the chart charted nothing.
   A build from before this one refuses a world at version 2.
 - Measured with the scripted pilot: about 11 postmarks a flying day from
   charting and about one feature found a day. One pilot charted 7 percent of

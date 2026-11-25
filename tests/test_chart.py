@@ -181,6 +181,43 @@ class Shared(ChartCase):
         self.assertEqual(len(rows | game.known) and len((rows | game.known) & land) / len(land), game.charted_share())
         self.assertIn(f"{game.charted_share() * 100:.0f}% charted", self.screen(game, 132, 40))
 
+    def test_ground_somebody_else_charted_first_is_on_this_pilots_map_at_once(self):
+        a = self.game(user_id=1)
+        b = self.other(2)
+        x, y, cell = self.wild(a)
+        self.fly_over(a, x, y)
+        seen = self.fly_over(b, x, y)                    # b had not looked, and learns from its own turn
+        self.assertTrue(b.is_charted(x, y))
+        self.assertLessEqual(set(seen), b.chart | b.known)
+        version = b.chart_version
+        self.fly_over(b, x, y)
+        self.assertEqual(b.chart_version, version, "and the same ground is not sent in again")
+
+    def test_a_fast_turn_charts_what_it_passed_over(self):
+        game = self.game()
+        x, y, _ = self.wild(game)
+        game.state = dataclasses.replace(game.state, x=x - 60.0, y=y, layer=1, status="aloft", turn=12)
+        game._choose_default()
+        real = fw.WeatherFrame.wind
+        try:
+            fw.WeatherFrame.wind = lambda self, wx, wy, layer: (240.0, 0.0)     # sixty km in the turn
+            game.key("ENTER")
+        finally:
+            fw.WeatherFrame.wind = real
+        self.assertAlmostEqual(game.state.x, x)
+        middle = fw.cell_at(x - 30.0, y)
+        self.assertTrue(middle in game.chart or middle in game.known, "the ground under the middle of the turn")
+
+    def test_the_share_is_counted_once_for_each_state_of_the_chart(self):
+        game = self.game()
+        first = game.charted_share()
+        kept = game._share
+        for _ in range(5):
+            game.charted_share()
+        self.assertIs(game._share, kept)
+        game.save("hold", sorted(game.world._land - game.known)[:50])
+        self.assertGreater(game.charted_share(), first)
+
     def test_charting_is_said_once_when_the_flight_is_down(self):
         game = self.game()
         x, y, _ = self.wild(game)
@@ -416,6 +453,68 @@ class Records(ChartCase):
         self.assertEqual(store.chart()[0], set())
         self.assertFalse(store.db.in_transaction)
 
+    def test_a_turn_that_is_not_written_earns_nothing_and_charts_nothing(self):
+        game = self.game()
+        feature = next(f for f in game.world.features
+                       if 2 <= len(f["cells"]) <= 40 and not any(c in game.known for c in f["cells"]))
+        before = (game.charted, game.postmarks, game.points, set(game.chart), dict(game.found), list(game.log))
+        real = game.store.db
+
+        class Failing:
+            """The database, with a COMMIT that fails: a full disk at the worst moment."""
+            def __init__(self, db):
+                self.db = db
+
+            def execute(self, sql, *args):
+                if sql == "COMMIT":
+                    raise sqlite3.OperationalError("database or disk is full")
+                return self.db.execute(sql, *args)
+
+            def __getattr__(self, name):
+                return getattr(self.db, name)
+        game.store.db = Failing(real)
+        game.save("hold", feature["cells"])
+        game.store.db = real
+        self.assertFalse(game.saved_ok)
+        self.assertEqual((game.charted, game.postmarks, game.points, game.chart, game.found, game.log), before,
+                         "nothing the turn would have earned stands")
+        self.assertEqual(game.naming, [], "and no name is offered for a feature the records do not have")
+        self.assertEqual(real.execute("SELECT count(*) FROM charted").fetchone()[0], 0)
+        self.assertFalse(real.in_transaction)
+        other = self.other(2)
+        other.save("hold", feature["cells"])
+        self.assertTrue(other.naming, "so the next pilot over it is first, once")
+        game.save("hold", feature["cells"])
+        self.assertTrue(game.saved_ok)
+        self.assertEqual(game.charted, 0, "and this one, coming back, is second")
+
+    def test_a_real_world_at_schema_one_keeps_its_pilots(self):
+        seed = fw.world_seed("relink-test")
+        path = self.folder / fw.db_name(seed)
+        db = sqlite3.connect(str(path))
+        for statement in fw.MIGRATIONS[1]:
+            db.execute(statement)
+        db.execute(f"PRAGMA application_id={fw.APPLICATION_ID}")
+        db.execute("PRAGMA user_version=1")
+        db.executemany("INSERT INTO meta VALUES (?, ?)", (("seed", str(seed)), ("node", "relink-test"), ("created", "1")))
+        probe = fw.PlainFlight(launch(user_id=2 ** 62 + 9, timezone="UTC", node_id="relink-test"), None, now=self.clock)
+        probe.key("ENTER")
+        probe.key("ENTER")
+        career = {k: v for k, v in probe._career().items() if k != "charted"}
+        db.execute("INSERT INTO pilots VALUES (12, 'Mara', 1.0, ?)", (json.dumps(career),))
+        db.execute("INSERT INTO flights VALUES (12, 2, ?)", (json.dumps(probe.state.to_dict()),))
+        db.commit()
+        db.close()
+        game = fw.PlainFlight(launch(user_id=12, timezone="UTC", node_id="relink-test"), self.folder, now=self.clock)
+        self.assertTrue(game.saved_ok)
+        self.assertEqual(game.state.turn, 2)
+        self.assertEqual((game.charted, game.chart), (0, set()), "nothing flown before the chart is charted after the fact")
+        game.key("ENTER")
+        self.assertEqual(game.state.turn, 3)
+        db = sqlite3.connect(str(path))
+        self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 2)
+        db.close()
+
     def test_who_charted_most(self):
         a = self.game(user_id=1, handle="Ada")
         b = self.other(2, handle="Bo")
@@ -450,7 +549,7 @@ class Atlas(ChartCase):
         game.key("c")
         for size in ((80, 24), (100, 30), (132, 40), (168, 46), (250, 70), (80, 60)):
             text = self.screen(game, *size)
-            self.assertIn("First to chart: Mara", text)
+            self.assertIn("Most cells charted: Mara", text)
             self.assertIn("@", text)
         for changes in ({"color_depth": "16"}, {"charset": "cp437", "color_depth": "16"}, {"charset": "ascii"},
                         {"color_depth": "256"}):
