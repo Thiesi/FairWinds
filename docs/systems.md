@@ -604,6 +604,50 @@ The pilot whose turn crosses that line is offered three names composed from the
 generator's word lists and picks one. If they decline, the first is used. Caller
 text never enters a name.
 
+**As built (S14).** From the owner's play-test: when the wind will not take a
+pilot where they meant to go, going somewhere else should be worth something.
+The chart is the first answer: a flight blown off course is a surveying flight.
+
+- The ground within 30 km of every town and station is known from the start,
+  about a twentieth of the land. Everything else is uncharted until somebody
+  has seen it from the basket.
+- Uncharted ground is drawn as a dim, grey sketch of itself (in characters:
+  its glyphs, dimmed), not as a blank. The land's shape shows, and what has
+  been flown over stands out from it in colour. The owner called the map
+  beautiful; a black veil over nine tenths of it would have thrown that away.
+- Each turn that ends aloft charts the cells in sight from the layer it was
+  flown in, from points along the turn no further apart than that sight, by
+  the weather at its start. Every cell in sight is charted, water too, so lakes and islands
+  can be found; only land pays.
+- First over a cell is settled where it is written: the cell is inserted if
+  nobody has it, inside the turn's own transaction. Two pilots over the same
+  ground are each credited with what was theirs. A turn that cannot be written
+  earns nothing and charts nothing: what it would have paid is taken back, so
+  the ground is still there for whoever is written down as first.
+- Pay: a postmark for every 2 cells of land a pilot is first to chart, a
+  licence point for every 5. It is said once, when the flight is down.
+- A feature is found by the turn that brings it to 60 percent charted, counting
+  what was known from the start; at least one of its cells has to be charted
+  by somebody. Finding one pays 25 postmarks and 10 points.
+  The finder is shown three names and picks with 1, 2 or 3; any other key
+  takes the first, and the key is used up. Until chosen, and if the finder
+  leaves, the first name stands. Names are a word from the generator's list
+  and a word for the kind of feature (`FEATURE_WORDS`), drawn by key from the
+  world's seed: the same three for a feature every time, and no caller's text.
+- Found features are named on the map where they lie. `C` opens the chart of
+  the whole continent: what is charted in colour, the rest sketched, towns,
+  the pilot, other pilots, the share of the land charted, how many features
+  are found, and who has been first over the most cells.
+- A session takes in what others have charted every 20 seconds and at each of
+  its own turns. The map is composed again only when the chart has changed.
+- The records gain two tables, `charted` and `features`, and the schema is
+  version 2. A world from before is brought forward when it is next opened;
+  flights made before the chart charted nothing.
+  A build from before this one refuses a world at version 2.
+- Measured with the scripted pilot: about 11 postmarks a flying day from
+  charting and about one feature found a day. One pilot charted 7 percent of
+  the land in seven flying days.
+
 **Stations.** A pilot who lands in the wild with a station kit may plant a
 station, at least 60 km from any other. A station has stock from 0 to 14. Stock
 falls by one each world day. Any pilot landing there may resupply it for a
@@ -901,7 +945,7 @@ One SQLite file for each world, `fair_winds-<seed>.db`, under
 name is the world's, as in the terrain cache beside it, so two nodes that
 share a data directory, or a SysOp trying the door from a shell, never meet in
 one file. The file carries an `application_id` of its own (`FWDB`) and a
-`user_version` for the schema, now 1. WAL mode, or a rollback journal with
+`user_version` for the schema, now 2. WAL mode, or a rollback journal with
 `DOOR_FW_JOURNAL=delete`; `synchronous=FULL`, so a turn is on disk before its
 result is shown. Every write is one short transaction that takes the write
 lock with its first statement and waits up to five seconds for another
@@ -915,8 +959,8 @@ caller's. No transaction is open while a caller thinks.
 | `flights` | The flight in progress: state after the last committed turn | S10 |
 | `turns` | The journal of committed turns for the current flying day | S10 |
 | `cargo`, `contracts` | What is carried and what is on offer | |
-| `charted` | Chart cells: first pilot and day | |
-| `features` | Discovery, chosen name, pilot, day | |
+| `charted` | Chart cells: first pilot and day | S14 |
+| `features` | Discovery, chosen name, pilot, day | S14 |
 | `stations`, `contributions` | Stations, stock, mast progress, who gave what | |
 | `strandings` | Who is down, where, what they need | |
 | `guestbook` | Lines per station | |

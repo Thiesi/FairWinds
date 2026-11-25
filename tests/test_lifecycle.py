@@ -23,7 +23,7 @@ class Lifecycle(unittest.TestCase):
         with Door() as door:
             self.assertTrue(door.wait_for("Nearest post"))
             screen = door.screen()
-            self.assertIn("Mara", screen.text())
+            self.assertIn("postmarks", screen.text())
             self.assertIn("opens at midnight", screen.text())
             self.assertTrue(screen.cursor_hidden)
             door.send("q")

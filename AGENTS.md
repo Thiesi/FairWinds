@@ -25,9 +25,13 @@ splash, and the launch and landing scenes). The game can be played:
 (the world database, the pilot's lease and the atomic turn commit), S11 (the
 calendar: world days, the three-day window, tempo), S12 (contracts, cargo,
 postmarks, the stores and the post office screen) and S13 (the licence, the
-gear and the envelope designer) are built. P3 is built. **The owner's
-play-test comes next, before P4**: see `docs/design.md` after S13. Do not start
-S14 until its verdict is on the P3 tracker (issue #4).
+gear and the envelope designer) are built. P3 is built, and the owner is
+play-testing it: what they have said so far, and what was changed for it, is
+on the P3 tracker (issue #4). From that play-test came the last-stretch moves
+(trail rope, mail drop, cargo sent on by road, a wait) and a pass over how the
+screen reads. Of P4, S14 (the chart: what is seen from the basket is charted
+for everyone, features are found and named) is built at the owner's asking,
+ahead of the play-test's verdict. The next slice is S15, stations and masts.
 
 To look at a screen, run `python scripts/capture.py`: it writes each size and
 colour depth as an HTML page under `.test-tmp/captures`, which headless Edge

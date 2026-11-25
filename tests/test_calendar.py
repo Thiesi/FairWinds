@@ -388,7 +388,7 @@ class Logbook(CalendarCase):
         game = self.game()
         text = self.screen(game)
         self.assertIn("Day 1  06:00", text)
-        self.assertIn("Day 2 opens at midnight.   40 postmarks   0 delivered   0 km   Mara", text)
+        self.assertIn("Day 2 opens at midnight.   40 postmarks   0 delivered   0 km   5% charted", text)
         self.assertNotIn("more day", text)
         for size in ((132, 40), (168, 46)):
             wide = self.screen(game, *size)

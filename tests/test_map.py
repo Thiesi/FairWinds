@@ -122,18 +122,44 @@ class Weatherly(unittest.TestCase):
         day, night = v._compose(1, 12 * 60, None), v._compose(1, 22 * 60, None)
         self.assertLess(sum(sum(c) for row in night[0] for c in row), 0.8 * sum(sum(c) for row in day[0] for c in row))
 
-    def test_the_unknown_is_veiled(self):
+    def test_the_unknown_is_sketched_in_dim_greys(self):
         screen = fw.Screen(80, 24)
         v = view()
         v.draw(screen, 1, 1, 52, 16, 400.0, 300.0, 1, 600, charted=lambda wx, wy: wx < v.x0 + 130.0)
-        left = {tuple(screen.fg[1 * 80 + x]) for x in range(1, 27)}
+        left = {tuple(screen.fg[y * 80 + x]) for y in range(1, 17) for x in range(1, 27)}
         right = {tuple(screen.fg[y * 80 + x]) for y in range(1, 17) for x in range(27, 53)}
-        self.assertLessEqual(right, {(15, 20, 31), (25, 31, 46)}, "what nobody has flown over is not drawn")
-        self.assertFalse(left & {(15, 20, 31), (25, 31, 46)})
+        self.assertLessEqual(len(right), 12, "what nobody has flown over is drawn in a handful of tones")
+        for c in right:
+            self.assertLess(max(c), 140, "and dim")
+            self.assertLess(max(c) - min(c), 60, "and nearly without colour")
+        self.assertGreater(len(right), 1, "but its shape is there")
+        self.assertTrue(any(max(c) - min(c) > 60 for c in left), "what is charted is in colour")
+        whole = fw.Screen(80, 24)
+        w = view()
+        w.draw(whole, 1, 1, 52, 16, 400.0, 300.0, 1, 600)
+        for y in range(1, 17):
+            for x in range(27, 53):
+                self.assertEqual(tuple(screen.fg[y * 80 + x]), fw.sketch_rgb(whole.fg[y * 80 + x]),
+                                 "the same ground, sketched")
         chars = fw.Screen(80, 24, "16")
         c = view(pixels=False)
         c.draw(chars, 1, 1, 52, 16, 400.0, 300.0, 1, 600, charted=lambda wx, wy: False)
-        self.assertLessEqual({chars.ch[y * 80 + x] for y in range(1, 17) for x in range(1, 53)}, {" ", "?"})
+        cells = [(chars.ch[y * 80 + x], chars.fg[y * 80 + x]) for y in range(1, 17) for x in range(1, 53)]
+        self.assertTrue(all(ink == "dim" or glyph == "%" for glyph, ink in cells), "in characters: its glyphs, dimmed")
+        self.assertGreater(len({glyph for glyph, _ in cells}), 1)
+
+    def test_the_picture_is_composed_again_only_when_the_chart_changes(self):
+        v = view()
+        screen = fw.Screen(80, 24)
+        calls = []
+        real = v._compose
+        v._compose = lambda *args: (calls.append(1), real(*args))[1]
+        known = lambda wx, wy: wx < 400.0
+        for _ in range(3):
+            v.draw(screen, 1, 1, 52, 16, 400.0, 300.0, 1, 600, charted=known, version=4)
+        self.assertEqual(len(calls), 1)
+        v.draw(screen, 1, 1, 52, 16, 400.0, 300.0, 1, 600, charted=known, version=5)
+        self.assertEqual(len(calls), 2)
 
     def test_off_the_edge_of_the_world_is_sea(self):
         screen = fw.Screen(80, 24)

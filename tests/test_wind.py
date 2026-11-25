@@ -447,7 +447,8 @@ class Budget(GameCase):
             return sizes
         slow, fast, jet = burst(6.0), burst(25.0), burst(110.0)
         self.assertLess(sum(fast), sum(slow) * 2.7, "four times the wind is well under three times the bytes")
-        self.assertLess(sum(jet), sum(fast) * 1.3, "and eighteen times the wind is hardly more again")
+        # A jet is held to the frame budget by thinning: however cheap the ground under it is to send.
+        self.assertLess(sum(jet), fw.FRAME_BYTES * fw.BURST_FRAMES * 1.15, "and eighteen times the wind keeps to budget")
         per_second = round(1 / fw.FRAME_SECONDS)
         for sizes in (slow, fast, jet):
             worst = max(sum(sizes[i:i + per_second]) for i in range(len(sizes) - per_second + 1))
