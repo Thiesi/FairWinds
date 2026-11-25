@@ -33,7 +33,7 @@ import zoneinfo
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "0.1.0.dev18"
+VERSION = "0.1.0.dev19"
 DOOR_API = 5
 MIN_WIDTH, MIN_HEIGHT = 80, 24
 MAX_DIMENSION = 1000
@@ -2205,6 +2205,17 @@ def _mix(a, b, t: float):
     return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t)
 
 
+def sketch_rgb(c) -> tuple:
+    """Ground nobody has charted: its own shape, in a few dim greys, as on a map drawn from hearsay.
+
+    The land still shows where it is, and what has been flown over stands
+    out from it in colour. A handful of tones, so a veiled sea is one long
+    run of a single colour on the wire.
+    """
+    grey = int((c[0] * 0.3 + c[1] * 0.59 + c[2] * 0.11) / 24) * 24
+    return (14 + int(grey * 0.30), 18 + int(grey * 0.33), 28 + int(grey * 0.40))
+
+
 def terrain_rgb(m: int, biome: int):
     """The colour of a piece of ground before the light falls on it."""
     if biome <= SEA_SHALLOW:
@@ -2344,9 +2355,9 @@ class MapView:
                         lit = tiles[key] = self._tile(*key)
                     c = lit[(sy % n) * n + sx % n]
                     if charted is not None and not charted(wx, wy):
-                        c = _VEIL[1] if (px + py * 3) % 7 == 0 else _VEIL[0]
+                        c = sketch_rgb(c)
                 else:
-                    c = _OFF_WORLD
+                    c = _OFF_WORLD if charted is None else sketch_rgb(_OFF_WORLD)    # nobody has charted past the edge
                 k = gy0 * gw + px // g
                 if busy[k]:
                     tx_ = px / g - px // g
@@ -2369,14 +2380,19 @@ class MapView:
     # -- drawing -----------------------------------------------------------------
 
     def draw(self, screen: Screen, left: int, top: int, cols: int, rows: int,
-             x: float, y: float, day: int, minute: int, charted=None) -> None:
-        """Draw the ground and the weather. Markers go on afterwards with `mark` and `label`."""
+             x: float, y: float, day: int, minute: int, charted=None, version=None) -> None:
+        """Draw the ground and the weather. Markers go on afterwards with `mark` and `label`.
+
+        charted(wx, wy) says whether a place is on the chart; what is not is
+        veiled. version changes whenever the chart does: with one given, the
+        picture is composed again only when it, or anything else, has changed.
+        """
         self.left, self.top, self.cols, self.rows = left, top, cols, rows
         self.x0, self.y0 = self.origin(x, y, cols, rows)
         self._taken = set()
         if self.pixels:
-            key = (day, minute, self.x0, self.y0, cols, rows, charted is not None)
-            if key != self._base_key or charted is not None:
+            key = (day, minute, self.x0, self.y0, cols, rows, charted is not None, version)
+            if key != self._base_key or (charted is not None and version is None):
                 self._base, self._base_key = self._compose(day, minute, charted), key
             tops, bottoms = self._base
             for r in range(rows):
@@ -2388,10 +2404,10 @@ class MapView:
             wy = self.y0 + (r + 0.5) * ch
             for c in range(cols):
                 wx = self.x0 + (c + 0.5) * cw
-                if charted is not None and not charted(wx, wy):
-                    glyph, role = ("?" if (c + r * 3) % 7 == 0 else " "), "dim"
-                elif frame.squall(wx, wy) > SQUALL_THRESHOLD:
+                if frame.squall(wx, wy) > SQUALL_THRESHOLD:
                     glyph, role = "%", "warn"
+                elif charted is not None and not charted(wx, wy):
+                    glyph, role = _MAP_GLYPHS[self.world.sample(wx, wy)[1]], "dim"      # sketched in, not surveyed
                 else:
                     biome = self.world.sample(wx, wy)[1]
                     glyph, role = _MAP_GLYPHS[biome], _MAP_ROLES[biome]
@@ -2908,6 +2924,78 @@ def design_rgb(design: dict) -> tuple:
 
 
 # --------------------------------------------------------------------------
+# The chart (S14): the map is blank beyond the places until somebody has
+# flown over it. What one pilot sees from the basket is charted for
+# everyone, in that pilot's name.
+# --------------------------------------------------------------------------
+
+SIGHT_KM = (10.0, 20.0, 30.0, 40.0, 50.0, 50.0)   # how far the ground is seen from each layer, lowest first
+CLOUD_BLOCKS = 0.6                   # cloud cover over a cell, with its deck below the balloon, hides the cell
+HOME_SIGHT_KM = 30.0                 # the ground this close to a town or a station was known from the start
+CHART_PER_POSTMARK = 2               # cells of land charted first for a postmark
+CHART_PER_POINT = 5                  # and for a point on the licence
+DISCOVERY_SHARE = 0.6                # a feature is found when this much of it is charted
+DISCOVERY_PAY, DISCOVERY_POINTS = 25, 10
+FEATURE_WORDS = {
+    "lake": (" Tarn", " Water", " Mere", " Lake"), "island": (" Isle", " Holm", " Skerry"),
+    "peak": (" Peak", " Horn", " Tor"), "plain": (" Flats", " Leas", " Reach"),
+    "forest": (" Wood", " Weald", " Holt"), "dry plain": (" Barrens", " Waste", " Pans"),
+    "hills": (" Downs", " Fells", " Hills"), "range": (" Range", " Teeth", " Heights"),
+}
+FEATURE_LABELS = 8                   # names of features drawn on a map at most
+
+
+def cell_at(x: float, y: float) -> int | None:
+    """The chart cell a place in the world falls in, or None off the chart."""
+    if not (0.0 <= x < WORLD_W and 0.0 <= y < WORLD_H):
+        return None
+    return int(y / CHART_KM) * CHART_W + int(x / CHART_KM)
+
+
+def cells_within(x: float, y: float, km: float) -> list[int]:
+    """The chart cells whose centres lie within so many km of a place."""
+    out = []
+    reach = int(km / CHART_KM) + 1
+    cx, cy = int(x / CHART_KM), int(y / CHART_KM)
+    for gy in range(max(0, cy - reach), min(CHART_H, cy + reach + 1)):
+        for gx in range(max(0, cx - reach), min(CHART_W, cx + reach + 1)):
+            dx, dy = (gx + 0.5) * CHART_KM - x, (gy + 0.5) * CHART_KM - y
+            if dx * dx + dy * dy <= km * km:
+                out.append(gy * CHART_W + gx)
+    return out
+
+
+def known_cells(world: "World") -> frozenset:
+    """What was on the map before anybody flew: the ground around every town and station."""
+    if getattr(world, "_known", None) is None:
+        cells = set()
+        for place in world.towns + world.stations:
+            cells.update(cells_within(place["x"], place["y"], HOME_SIGHT_KM))
+        world._known = frozenset(cells)
+        world._land = frozenset(k for k in range(CHART_W * CHART_H) if world.chart_biome[k] >= SHORE)
+        by_cell: dict = {}
+        for feature in world.features:
+            for cell in feature["cells"]:
+                by_cell.setdefault(cell, []).append(feature["id"])
+        world._features_at = by_cell
+    return world._known
+
+
+def feature_names(world: "World", feature: dict) -> list[str]:
+    """Three names a feature may be given. Composed from word lists by keyed draws: no caller's text is in them."""
+    words = FEATURE_WORDS[feature["kind"]]
+    names: list[str] = []
+    for attempt in range(60):
+        first = _NAME_FIRST[draw(world.seed, "feature-name", feature["id"], attempt, 0) % len(_NAME_FIRST)]
+        last = words[draw(world.seed, "feature-name", feature["id"], attempt, 1) % len(words)]
+        if first + last not in names:
+            names.append(first + last)
+        if len(names) == 3:
+            break
+    return names
+
+
+# --------------------------------------------------------------------------
 # The world's records (S10): one SQLite file for each world, shared by every
 # caller of that node. Writes are short transactions that take the write
 # lock at once; none is open while a caller thinks. A process killed at any
@@ -2915,7 +3003,7 @@ def design_rgb(design: dict) -> tuple:
 # --------------------------------------------------------------------------
 
 APPLICATION_ID = 0x46574442          # "FWDB": says the file is a Fair Winds world
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 LEASE_STALE_SECONDS = 90.0           # a session not heard from for this long may be replaced without asking
 HEARTBEAT_SECONDS = 20.0
 BUSY_TIMEOUT_SECONDS = 5.0           # how long a write waits for another caller's write
@@ -2932,6 +3020,11 @@ MIGRATIONS = {
         "CREATE TABLE turns (user_id INTEGER NOT NULL, seq INTEGER NOT NULL, day INTEGER NOT NULL,"
         " turn INTEGER NOT NULL, action TEXT NOT NULL, state TEXT NOT NULL, at REAL NOT NULL,"
         " PRIMARY KEY (user_id, seq)) WITHOUT ROWID",
+    ),
+    2: (
+        "CREATE TABLE charted (cell INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, day INTEGER NOT NULL)",
+        "CREATE TABLE features (id INTEGER PRIMARY KEY, name TEXT NOT NULL, user_id INTEGER NOT NULL,"
+        " handle TEXT NOT NULL, day INTEGER NOT NULL, chosen INTEGER NOT NULL DEFAULT 0)",
     ),
 }
 _NO_PLACE_TO_WRITE = ("readonly", "read-only", "unable to open", "locked", "disk i/o", "full", "busy")
@@ -3081,24 +3174,49 @@ class Store:
                               " WHERE p.user_id=?", (user_id,)).fetchone()
         return (row[0], row[1]) if row else None
 
-    def commit(self, user_id: int, handle: str, career: dict, state: dict, action: str = "") -> int:
+    def commit(self, user_id: int, handle: str, career, state: dict, action: str = "",
+               chart=(), watch=None) -> int:
         """Write the pilot as they now stand, and with an action a line in the day's journal.
 
-        One transaction: the flight, the journal row and the career go
-        together or not at all. Raises LeaseLost, having written nothing, if
-        the pilot is no longer this session's.
+        One transaction: the flight, the journal row, the career, the cells
+        the turn charted and any feature it found go together or not at all.
+        Raises LeaseLost, having written nothing, if the pilot is no longer
+        this session's.
+
+        chart   cells this turn saw. Each is charted in this pilot's name if
+                nobody charted it before.
+        watch   features the turn may have found: id -> (cells to count,
+                how many of them must be charted, the name it gets).
+        career  the career as a dict, or a function of (cells newly charted,
+                features found) that returns it: what a turn earns depends
+                on what turned out to be new.
         """
         def work():
             db, now = self.db, self.clock()
             row = db.execute("SELECT token FROM sessions WHERE user_id=?", (user_id,)).fetchone()
             if row is None or row[0] != self.token:
                 raise LeaseLost()
+            new = [cell for cell in chart if db.execute(
+                "INSERT OR IGNORE INTO charted VALUES (?, ?, ?)", (cell, user_id, state["day"])).rowcount == 1]
+            found = []
+            for fid, (cells, need, name) in (watch or {}).items():
+                have = 0
+                for i in range(0, len(cells), 400):
+                    part = cells[i:i + 400]
+                    have += db.execute(f"SELECT count(*) FROM charted WHERE cell IN ({','.join('?' * len(part))})",
+                                       part).fetchone()[0]
+                # Whoever's turn crosses the line finds it; the row is there once, so it is found once.
+                if have >= need and db.execute("INSERT OR IGNORE INTO features (id, name, user_id, handle, day)"
+                                               " VALUES (?, ?, ?, ?, ?)",
+                                               (fid, name, user_id, handle, state["day"])).rowcount == 1:
+                    found.append(fid)
+            written = career(new, found) if callable(career) else career
             row = db.execute("SELECT seq FROM flights WHERE user_id=?", (user_id,)).fetchone()
             seq = row[0] if row else 0
             text = json.dumps(state)
             db.execute("INSERT INTO pilots VALUES (?, ?, ?, ?) ON CONFLICT (user_id) DO UPDATE SET"
                        " handle=excluded.handle, career=excluded.career",
-                       (user_id, handle, now, json.dumps(career)))
+                       (user_id, handle, now, json.dumps(written)))
             if action:
                 seq += 1
                 db.execute("INSERT INTO turns VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -3109,6 +3227,30 @@ class Store:
             db.execute("UPDATE sessions SET heartbeat=? WHERE user_id=?", (now, user_id))
             return seq
         return self._write(work)
+
+    def chart(self) -> tuple[set, dict]:
+        """Every charted cell, and the features found: id -> (name, user_id, handle, day)."""
+        cells = {row[0] for row in self.db.execute("SELECT cell FROM charted")}
+        found = {row[0]: tuple(row[1:]) for row in
+                 self.db.execute("SELECT id, name, user_id, handle, day FROM features")}
+        return cells, found
+
+    def chart_size(self) -> tuple[int, int]:
+        """How many cells are charted and how many features found: cheap, to see whether to read them again."""
+        return (self.db.execute("SELECT count(*) FROM charted").fetchone()[0],
+                self.db.execute("SELECT count(*), coalesce(sum(chosen), 0) FROM features").fetchone())
+
+    def charters(self, limit: int = 5) -> list[tuple[str, int]]:
+        """Who has charted the most cells first."""
+        return self.db.execute("SELECT coalesce(p.handle, '?'), count(*) FROM charted c LEFT JOIN pilots p"
+                               " USING (user_id) GROUP BY c.user_id ORDER BY count(*) DESC, c.user_id LIMIT ?",
+                               (limit,)).fetchall()
+
+    def name_feature(self, feature: int, user_id: int, name: str) -> bool:
+        """The finder picks a name, once. False if it was not theirs to name, or is named already."""
+        return self._write(lambda: self.db.execute(
+            "UPDATE features SET name=?, chosen=1 WHERE id=? AND user_id=? AND chosen=0",
+            (name, feature, user_id)).rowcount == 1)
 
     def others(self, user_id: int) -> list[tuple[str, str]]:
         """Every other pilot of this world: career and flight as stored text, the latest to fly first."""
@@ -3264,6 +3406,15 @@ class PlainFlight:
         self.hub = False                  # the post office screen is open
         self.loft = False                 # the rigging loft screen is open
         self.others: list = []            # other pilots in this world: (x, y, colour), for the map
+        self.known = known_cells(self.world)      # what was on the map before anybody flew
+        self.chart: set = set()           # every cell anybody has charted since
+        self.found: dict = {}             # features found: id -> (name, user_id, handle, day)
+        self.chart_version = 0            # goes up whenever the chart changes: the map composes again
+        self.charted = 0                  # cells of land this pilot was first to chart
+        self.naming: list = []            # features this pilot has just found and may name
+        self.flight_cells = self.flight_pay = 0       # what this flight has charted so far, said when it is down
+        self.atlas = False                # the chart of the whole continent is open
+        self._chart_size = None
         self._grade_seen = 0
         self.hub_note = ""                # what the last thing done there came to
         self._vista = None                # the picture over the post office, kept while it is the same picture
@@ -3321,6 +3472,7 @@ class PlainFlight:
         self.save()                       # so a game that cannot be saved says so before the first turn
         self._grade_seen = self.grade()
         self._see_others()
+        self._see_chart()
         if self._imported and self.saved_ok and self.store is not None and not self.ended:
             # Only once the database has the pilot. And never over an earlier file of that name.
             aside = self.legacy.with_name(self.legacy.name + ".imported")
@@ -3340,7 +3492,7 @@ class PlainFlight:
         self.deliveries, self.days_flown, self.total_km = 0, 0, 0.0
         self.postmarks, self.manifest, self.taken, self.next_id = START_POSTMARKS, [], [], 1
         self.gear, self.points, self.design = {track: 0 for track in TRACKS}, 0, design_of(None)
-        self.lift_off = None
+        self.lift_off, self.charted = None, 0
         self._fit()
         home = ("town", self.world.start_town)
         for dest in places_near(self.world, start["x"], start["y"], skip=home)[:POST_CHOICES]:
@@ -3469,6 +3621,7 @@ class PlainFlight:
         self.postmarks, self.next_id = postmarks, next_id
         self.deliveries, self.days_flown, self.total_km, self.log = deliveries, days_flown, total_km, log
         self.gear, self.points, self.design = gear, max(0, points), design_of(career.get("design"))
+        self.charted = max(0, int(career.get("charted", 0)))
         spot = career.get("lift_off")
         self.lift_off = [float(spot[0]), float(spot[1])] if spot else None
         if self.lift_off is not None and not all(math.isfinite(v) for v in self.lift_off):
@@ -3516,21 +3669,144 @@ class PlainFlight:
     def _career(self) -> dict:
         return {"manifest": self.manifest, "taken": self.taken, "postmarks": self.postmarks, "next_id": self.next_id,
                 "gear": self.gear, "points": self.points, "design": self.design, "lift_off": self.lift_off,
+                "charted": self.charted,
                 "deliveries": self.deliveries, "days_flown": self.days_flown, "total_km": self.total_km,
                 "log": self.log[-3:], "dated": self._dated}
 
-    def save(self, action: str = "") -> None:
-        """Write the game as it stands; with an action, as a committed turn in the day's journal."""
-        if self.store is None or self.ended:
+    def save(self, action: str = "", chart=()) -> None:
+        """Write the game as it stands; with an action, as a committed turn in the day's journal.
+
+        chart is the cells the turn saw. Which of them are new, and whether a
+        feature is found, is settled where it is written, so two pilots over
+        the same ground at once are each credited with what was theirs.
+        """
+        cells = [cell for cell in chart if cell not in self.chart and cell not in self.known]
+        watch = self._watch(cells)
+        if self.ended:
+            return
+        if self.store is None:
+            # A visit, or records out of reach: the chart is this session's own.
+            found = [fid for fid, (group, need, _) in watch.items()
+                     if fid not in self.found and sum(c in self.chart or c in cells for c in group) >= need]
+            for fid in found:
+                self.found[fid] = (watch[fid][2], self.launch.user_id, self.launch.handle, self.state.day)
+            self._charted(cells, found)
             return
         try:
-            self.store.commit(self.launch.user_id, self.launch.handle, self._career(), self.state.to_dict(), action)
+            self.store.commit(self.launch.user_id, self.launch.handle,
+                              (lambda new, found: self._charted(new, found)) if cells else self._career(),
+                              self.state.to_dict(), action, cells, watch)
             self.saved_ok = True
         except LeaseLost:
             self.ended = "taken"
         except sqlite3.Error as error:
             diagnose(f"a turn could not be saved: {error}")
             self.saved_ok = False       # play on; say so on the screen
+
+    # -- the chart -----------------------------------------------------------
+
+    def is_charted(self, wx: float, wy: float) -> bool:
+        cell = cell_at(wx, wy)
+        return cell is None or cell in self.chart or cell in self.known
+
+    def seen_cells(self, x: float, y: float, layer: int, day: int, minute: int) -> list[int]:
+        """The cells seen from the basket: within the layer's sight, and not under a cloud deck below the balloon."""
+        if layer < 1:
+            return []
+        frame = self.weather.frame(day, minute)
+        out = []
+        for cell in cells_within(x, y, SIGHT_KM[min(layer, len(SIGHT_KM)) - 1]):
+            cx, cy = (cell % CHART_W + 0.5) * CHART_KM, (cell // CHART_W + 0.5) * CHART_KM
+            cover, deck = frame.cloud(cx, cy)
+            if cover >= CLOUD_BLOCKS and deck < layer:
+                continue
+            out.append(cell)
+        return out
+
+    def _watch(self, cells: list) -> dict:
+        """The features these cells belong to that nobody has found, with what finding each takes."""
+        watch = {}
+        for cell in cells:
+            for fid in self.world._features_at.get(cell, ()):
+                if fid in watch or fid in self.found:
+                    continue
+                feature = self.world.features[fid]
+                group = [c for c in feature["cells"] if c not in self.known]
+                given = len(feature["cells"]) - len(group)
+                need = int(math.ceil(len(feature["cells"]) * DISCOVERY_SHARE)) - given
+                watch[fid] = (group, need, feature_names(self.world, feature)[0])
+        return watch
+
+    def _charted(self, new: list, found: list) -> dict:
+        """What a turn's charting came to: the cells that were new, and any feature found. Returns the career."""
+        land = sum(1 for cell in new if cell in self.world._land)
+        before = self.charted
+        self.charted += land
+        pay = self.charted // CHART_PER_POSTMARK - before // CHART_PER_POSTMARK
+        self.postmarks += pay
+        self.points += self.charted // CHART_PER_POINT - before // CHART_PER_POINT
+        if new:
+            self.chart.update(new)
+            self.chart_version += 1
+        # Said once, when the flight is down: a line a turn would crowd the log out.
+        self.flight_cells += land
+        self.flight_pay += pay
+        for fid in found:
+            feature = self.world.features[fid]
+            names = feature_names(self.world, feature)
+            self.found[fid] = (names[0], self.launch.user_id, self.launch.handle, self.state.day)
+            self.postmarks += DISCOVERY_PAY
+            self.points += DISCOVERY_POINTS
+            self.naming.append({"id": fid, "kind": feature["kind"], "names": names})
+            article = "an" if feature["kind"][0] in "aeiou" else "a"
+            self._say(f"You have found {article} {feature['kind']} nobody had named: {DISCOVERY_PAY} postmarks.")
+        return self._career()
+
+    def _say_charted(self) -> None:
+        """What the flight just ended put on the chart."""
+        if self.flight_cells:
+            cells, pay = self.flight_cells, self.flight_pay
+            self._say(f"Charted on the way: {cells} cell{'s' if cells != 1 else ''} of land nobody had seen, "
+                      f"{pay} postmark{'s' if pay != 1 else ''}.")
+        self.flight_cells = self.flight_pay = 0
+
+    def _name_it(self, choice: int) -> None:
+        """Give the feature just found one of its three names. Any key that is not a choice takes the first."""
+        offer = self.naming.pop(0)
+        name = offer["names"][choice if 0 <= choice < len(offer["names"]) else 0]
+        if self.store is not None:
+            try:
+                self.store.name_feature(offer["id"], self.launch.user_id, name)
+            except sqlite3.Error as error:
+                diagnose(f"a name could not be kept: {error}")
+                name = offer["names"][0]
+        old = self.found.get(offer["id"], (name, self.launch.user_id, self.launch.handle, self.state.day))
+        self.found[offer["id"]] = (name,) + tuple(old[1:])
+        self.chart_version += 1
+        self._say(f"It is {name} on every chart now.")
+
+    def charted_share(self) -> float:
+        """How much of the land is on the chart, from 0 to 1."""
+        land = self.world._land
+        return sum(1 for cell in land if cell in self.chart or cell in self.known) / max(1, len(land))
+
+    def _see_chart(self) -> bool:
+        """Take in what others have charted and named since the last look. True if anything is new."""
+        if self.store is None:
+            return False
+        try:
+            size = self.store.chart_size()
+            if size == self._chart_size:
+                return False
+            cells, found = self.store.chart()
+        except sqlite3.Error:
+            return False
+        self._chart_size = size
+        changed = cells != self.chart or found != self.found
+        if changed:
+            self.chart, self.found = cells | self.chart, dict(found)
+            self.chart_version += 1
+        return changed
 
     def pulse(self, now: float) -> bool:
         """Called as time passes: watch the calendar and keep the lease alive. True if the screen has to change."""
@@ -3551,8 +3827,9 @@ class PlainFlight:
         """Look at the calendar. If a day has opened, say so where it matters. True if anything changed."""
         before = self.others
         self._see_others()                # the same glance takes in where everyone else has got to
+        charted = self._see_chart()       # and what they have charted
         if not self._look_at_the_calendar():
-            return self.others != before
+            return self.others != before or charted
         if self._catch_up():
             self.save()
         self._choose_default()
@@ -3920,6 +4197,15 @@ class PlainFlight:
             return "help"
         if self.waiting() and self._day_may_have_opened():
             return None                   # the day opened while the pilot waited: show it before any key means anything
+        if self.naming:
+            self._name_it(int(k) - 1 if len(k) == 1 and k.isdigit() else 0)
+            return None                   # the key was the name's, whatever it was
+        if self.atlas:
+            self.atlas = False
+            return None
+        if k == "c" and not self.hub and not self.loft:
+            self.atlas = True
+            return None
         if self.hub:
             self._hub_key(k)
             return None
@@ -4035,8 +4321,15 @@ class PlainFlight:
                 self.points += POINTS["clean"]
         if landed:
             self._landed()
+            self._say_charted()
         self._promote()
-        self.save(action)                 # before anything is shown
+        seen = []
+        if action != "pibal":
+            # What was seen from the basket this turn: from where the turn ended, at the height it was flown.
+            layer = self.state.layer or before.layer or (self.engine.lowest_open(before.x, before.y)
+                                                         if action == "launch" else 0)
+            seen = self.seen_cells(self.state.x, self.state.y, layer, before.day, before.minute)
+        self.save(action, seen)           # before anything is shown
         if self.ended:
             return
         if (action == "launch" or landed) and self.saved_ok:
@@ -4320,7 +4613,8 @@ class PlainFlight:
         status = self.briefing().replace("`", " ")[:wide]
         length = len(status)
         for part in (f"`{self.postmarks}` postmarks", f"`{self.deliveries}` delivered",
-                     f"`{self.total_km + self.state.distance:.0f}` km", f"`{launch.handle.replace('`', ' ')}`",
+                     f"`{self.total_km + self.state.distance:.0f}` km",
+                     f"`{self.charted_share() * 100:.0f}`% charted", f"`{launch.handle.replace('`', ' ')}`",
                      f"{s.width} x {s.height} {launch.color_depth} {layout_tier(s.width, s.height)}"
                      f" {'standalone' if launch.host == 'standalone' else launch.transport}"):
             plain = len(part.replace("`", ""))
@@ -4329,6 +4623,66 @@ class PlainFlight:
             status += "   " + part
             length += 3 + plain
         return status                     # marked: figures between backticks, for the line that draws it
+
+    def _draw_atlas(self, s: "Session") -> list[str]:
+        """The chart of the whole continent: what is known, what is blank, and whose work it is."""
+        wide, screen = s.width - 2, s.frame
+        out = [s._line(0, 1, "FAIR WINDS", "accent"), s._line(0, 13, "The chart", "text")]
+        share = self.charted_share()
+        right = f"`{share * 100:.0f}`% of the land charted"
+        out.append(s._kv_right(0, s.width - 1, right))
+        cols, rows = wide, s.height - 5
+        state = self.state
+
+        def cell_of(px: int, py: int, across: int, down: int) -> int:
+            return min(CHART_H - 1, py * CHART_H // down) * CHART_W + min(CHART_W - 1, px * CHART_W // across)
+
+        def colour(cell: int):
+            rgb = terrain_rgb(self.world.chart_elevation[cell], self.world.chart_biome[cell])
+            return rgb if cell in self.chart or cell in self.known else sketch_rgb(rgb)
+        if self.map.pixels:
+            for r in range(rows):
+                top = [colour(cell_of(c, r * 2, cols, rows * 2)) for c in range(cols)]
+                bottom = [colour(cell_of(c, r * 2 + 1, cols, rows * 2)) for c in range(cols)]
+                screen.pixel_row(1, 1 + r, top, bottom)
+        else:
+            for r in range(rows):
+                for c in range(cols):
+                    cell = cell_of(c, r, cols, rows)
+                    biome = self.world.chart_biome[cell]
+                    known = cell in self.chart or cell in self.known
+                    screen.put(1 + c, 1 + r, _MAP_GLYPHS[biome], _MAP_ROLES[biome] if known else "dim")
+
+        def mark(x: float, y: float, glyph: str, ink) -> None:
+            c, r = int(x / WORLD_W * cols), int(y / WORLD_H * rows)
+            if 0 <= c < cols and 0 <= r < rows:
+                if self.map.pixels:
+                    screen.over(1 + c, 1 + r, glyph, ink, 0.7)
+                else:
+                    screen.put(1 + c, 1 + r, glyph, ink)
+        for town in self.world.towns:
+            mark(town["x"], town["y"], "o", "text")
+        for ox, oy, ink in self.others:
+            mark(ox, oy, "Q", ink)
+        mark(state.x, state.y, "@", "bright")
+        named = sum(1 for entry in self.found.values() if entry)
+        out.append(s._kv(s.height - 4, 1, f"You were first over `{self.charted}` cell{'' if self.charted == 1 else 's'}"
+                                          f" of land.   "
+                                          f"`{named}` of `{len(self.world.features)}` features are found and named.",
+                         wide))
+        board = []
+        if self.store is not None:
+            try:
+                board = self.store.charters()
+            except sqlite3.Error:
+                board = []
+        if board:
+            line = "First to chart: " + "   ".join(f"{clean_text(name, 16).replace('`', ' ')} `{count}`"
+                                                   for name, count in board)
+            out.append(s._kv(s.height - 3, 1, line, wide))
+        out.append(s._kv(s.height - 2, 1, self._status(s, wide), wide, "dim", "text"))
+        out += s._keys(s.height - 1, [("Enter", "Back")])
+        return out
 
     def _draw_loft(self, s: "Session") -> list[str]:
         """The rigging loft: the licence, the gear and what more can be fitted, and the envelope's design."""
@@ -4458,6 +4812,8 @@ class PlainFlight:
     def draw(self, s: "Session") -> list[str]:
         if self.busy is not None or self.ended:
             return self._draw_lease(s)
+        if self.atlas and not self.naming:
+            return self._draw_atlas(s)
         if self.hub and self.at_office():
             return self._draw_hub(s)
         if self.loft and self.at_loft():
@@ -4520,6 +4876,8 @@ class PlainFlight:
         return keys, gap
 
     def _key_help(self, phase: str):
+        if self.naming:
+            return [(f"1-{len(self.naming[0]['names'])}", "Name it"), ("Enter", "The first will do")]
         leave = ("Q", f"Return to {self.launch.node_name}")
         offered = self.offered(self.state)
         if phase == "aloft":
@@ -4555,6 +4913,10 @@ class PlainFlight:
             return f"{why}. Walking out to the nearest town costs two days.", "warn"
         if phase == "ditched":
             return "Adrift. The packet boat will take a day to bring you to port.", "warn"
+        if self.naming:
+            offer = self.naming[0]
+            names = "   ".join(f"{i + 1} {name}" for i, name in enumerate(offer["names"]))
+            return f"Name the {offer['kind']}:   {names}", "accent"
         if phase == "wait":
             opens = when_text(calendar_opens(self.calendar, state.day), self._local(), self.launch.datetime_format)
             return f"Every day that has opened is flown. Day {state.day} opens {opens}: come back then.", "accent"
@@ -4623,7 +4985,8 @@ class PlainFlight:
 
     def _draw_map(self, s: "Session") -> list[str]:
         state, view, screen = self.state, self.map, s.frame
-        view.draw(screen, 1, 1, self.map_cols, self.map_rows, state.x, state.y, state.day, state.minute)
+        view.draw(screen, 1, 1, self.map_cols, self.map_rows, state.x, state.y, state.day, state.minute,
+                  self.is_charted, self.chart_version)
         if self._show_wind():
             if self.motion:
                 self.frames_left = max(self.frames_left, LOOK_FRAMES)
@@ -4661,6 +5024,16 @@ class PlainFlight:
         for cell, place in cells:                    # names last, where there is room left for them
             if cell is not None:
                 view.label(screen, cell, place["name"], "accent")
+        shown = 0
+        for fid, entry in sorted(self.found.items()):
+            if shown >= FEATURE_LABELS:
+                break
+            group = self.world.features[fid]["cells"]
+            middle = group[len(group) // 2]
+            fx, fy = (middle % CHART_W + 0.5) * CHART_KM, (middle // CHART_W + 0.5) * CHART_KM
+            cell = view.cell_of(fx, fy)
+            if cell is not None and cell not in view._taken and view.label(screen, cell, entry[0], "dim"):
+                shown += 1                           # a name somebody gave, where the feature lies
         return []
 
     def layer_winds(self) -> dict:
@@ -4904,7 +5277,7 @@ PLAIN_HELP = (
     "  `O`  post office and stores; from there `G`, the rigging loft, in towns",
     "  `H`  wait an hour for the wind               `N`  stay the night",
     "# THE MAP",
-    "  `@` you   `#` post is bound there   `o` town   `+` weather station   `Q` a pilot",
+    "  `@` you  `#` post bound there  `o` town  `+` station  `Q` a pilot  `C` the whole chart",
     "  A dotted trail with an arrow: where a choice would carry you. `%` a squall.",
     "  Without colour: `~` sea  `.` shore  `,` grass  `\"` forest  `:` plain  `n` hills  `^` peak",
     "# GOOD TO KNOW",

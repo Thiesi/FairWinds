@@ -139,6 +139,10 @@ def main(argv) -> int:
             print(name, f"{width * CELL_W}x{height * CELL_H} px")
             name = f"office-{width}x{height}-{depth}.html"
             (OUT / name).write_text(page(fly(width, height, depth, turns=("o", "2", "f")), name), encoding="utf-8")
+            name = f"atlas-{width}x{height}-{depth}.html"
+            (OUT / name).write_text(page(fly(width, height, depth, turns=("ENTER", "w", "ENTER", "ENTER", "ENTER",
+                                                                         "ENTER", "ENTER", "ENTER", "c")), name),
+                                    encoding="utf-8")
             name = f"help-{width}x{height}-{depth}.html"
             (OUT / name).write_text(page(fly(width, height, depth, view="help"), name), encoding="utf-8")
             name = f"loft-{width}x{height}-{depth}.html"

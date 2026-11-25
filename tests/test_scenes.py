@@ -191,7 +191,7 @@ class InSession(GameCase):
     def test_no_scene_of_a_turn_that_was_not_saved(self):
         game, session, clock = self.start(keys=[b"\r"])
         session.scenes_on = True
-        game.save = lambda action="": setattr(game, "saved_ok", False)
+        game.save = lambda action="", chart=(): setattr(game, "saved_ok", False)
         session.step()
         self.assertIsNone(session.scene)
         self.assertIsNone(game.pending_scene)
