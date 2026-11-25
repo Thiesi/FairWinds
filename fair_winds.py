@@ -3095,7 +3095,8 @@ class Store:
             app = db.execute("PRAGMA application_id").fetchone()[0]
             version = db.execute("PRAGMA user_version").fetchone()[0]
         finally:
-            db.execute("COMMIT")
+            if db.in_transaction:
+                db.execute("ROLLBACK")      # nothing was written; and it cannot hide the error that brought us here
         if (app, version, tables) != (0, 0, 0):
             if app != APPLICATION_ID:
                 raise StoreError(f"{self.path.name} is not a Fair Winds world")
@@ -3332,8 +3333,15 @@ def set_tempo(folder: Path, tempo: int, now=time.time) -> list[str]:
         db = sqlite3.connect(str(path), timeout=BUSY_TIMEOUT_SECONDS)
         try:
             meta = dict(db.execute("SELECT key, value FROM meta"))
+        except sqlite3.Error as error:
+            # A world some caller is in the middle of making, or a file that is not one: left alone, and said.
+            lines.append(f"{path.name}: skipped ({error})")
+            continue
         finally:
             db.close()
+        if "seed" not in meta:
+            lines.append(f"{path.name}: skipped (no world in it yet)")
+            continue
         store = Store(folder, int(meta["seed"]), meta.get("node", ""))
         try:
             local = local_time(now(), meta.get("timezone", "local"))
