@@ -541,15 +541,105 @@ class Screens(PlainCase):
     def test_help_explains_every_key(self):
         game = self.game()
         text = self.screen(game, view="help")
-        for key in ("W / S", "Enter", "J ", "P ", "L ", "N ", "?", "Q "):
+        for key in ("W S", "A D", "Enter", "J ", "P ", "L ", "M ", "O ", "G,", "H ", "N ", "?", "Ctrl-L", "Q "):
             self.assertIn(key, text)
-        for glyph in ("@", "#", "o", "+", "~", "%"):
+        for glyph in ("@", "#", "o", "+", "~", "%", "Q a pilot"):
             self.assertIn(glyph, text)
+        for heading in ("FLYING", "ON THE GROUND", "THE MAP", "GOOD TO KNOW"):
+            self.assertIn(heading, text)
+        self.assertNotIn("`", text, "the marks that say what is a key are not shown")
         self.assertIn("every turn is saved", text)
         self.assertIn("A world day opens at the same hour for everyone", text)
         self.assertLessEqual(len(fw.PLAIN_HELP), 21, "help fits the screen above the key row")
         self.assertIn("Within 12 km of a place counts", text)
-        self.assertTrue(all(len(line) <= 78 for line in fw.PLAIN_HELP))
+        self.assertTrue(all(len(line.replace("`", "")) <= 78 for line in fw.PLAIN_HELP))
+        self.assertTrue(all(line.count("`") % 2 == 0 for line in fw.PLAIN_HELP), "every mark is closed")
+
+    def test_help_shows_keys_and_headings_in_their_own_colours(self):
+        game = self.game()
+        session = self.session(game)
+        session.view = "help"
+        session.paint()
+        frame = session.frame
+        rows = ["".join(frame.ch[r * 80:(r + 1) * 80]) for r in range(24)]
+        heading = next(r for r, row in enumerate(rows) if row.strip() == "FLYING")
+        self.assertEqual(frame.fg[heading * 80 + 1], "accent")
+        keys = next(r for r, row in enumerate(rows) if "look at the layer above" in row)
+        col = rows[keys].index("W")
+        self.assertEqual(frame.fg[keys * 80 + col], "cool", "a key")
+        self.assertEqual(frame.fg[keys * 80 + rows[keys].index("look")], "text", "what it does")
+        tall = self.session(game, 132, 40)
+        tall.view = "help"
+        tall.paint()
+        rows = ["".join(tall.frame.ch[r * 132:(r + 1) * 132]) for r in range(40)]
+        ground = next(r for r, row in enumerate(rows) if row.strip() == "ON THE GROUND")
+        self.assertEqual(rows[ground - 1].strip(), "", "where there is room, a blank row sets a heading apart")
+
+    def test_names_and_figures_are_told_apart(self):
+        game = self.game()
+        session = self.session(game)
+        session.paint()
+        frame = session.frame
+        rows = ["".join(frame.ch[r * 80:(r + 1) * 80]) for r in range(24)]
+        stores = next(r for r, row in enumerate(rows) if "Fuel" in row and "Sacks" in row)
+        row = rows[stores]
+        self.assertEqual(frame.fg[stores * 80 + row.index("Fuel")], "label")
+        self.assertEqual(frame.fg[stores * 80 + row.index("60")], "value")
+        self.assertEqual(frame.fg[stores * 80 + row.index("Sacks")], "label")
+        head = rows[0]
+        self.assertEqual(frame.fg[head.index("Day")], "label")
+        self.assertEqual(frame.fg[head.index("06:00")], "value")
+        self.assertEqual(frame.fg[head.index("Nearest post")], "label")
+        self.assertEqual(frame.fg[head.index("Gull Post")], "value")
+        status = next(r for r, row in enumerate(rows) if "postmarks" in row)
+        self.assertEqual(frame.fg[status * 80 + rows[status].index("40")], "text")
+        self.assertEqual(frame.fg[status * 80 + rows[status].index("postmarks")], "dim")
+        self.assertNotIn("`", "".join(rows))
+        game.key("o")
+        session.paint()
+        rows = ["".join(session.frame.ch[r * 80:(r + 1) * 80]) for r in range(24)]
+        self.assertNotIn("`", "".join(rows))
+        game.key("g")
+        session.paint()
+        rows = ["".join(session.frame.ch[r * 80:(r + 1) * 80]) for r in range(24)]
+        self.assertNotIn("`", "".join(rows))
+        licence = next(r for r, row in enumerate(rows) if "LICENCE" in row)
+        self.assertEqual(session.frame.fg[licence * 80 + rows[licence].index("Fledgling")], "value")
+
+    def test_a_handle_cannot_smuggle_in_a_mark(self):
+        game = self.game(handle="Ma`ra`x")
+        text = self.screen(game)
+        self.assertNotIn("`", text.split("\n")[-2])
+
+    def test_a_date_format_cannot_smuggle_in_a_mark(self):
+        game = self.game(datetime_format="%d`%m %H:%M")
+        self.press(game, "ENTER")
+        game.state = dataclasses.replace(game.state, x=game.state.x + 40.0, status="stranded", fuel=0, turn=30)
+        self.press(game, "w")                            # two days on: the briefing now carries a date
+        session = self.session(game)
+        session.paint()
+        frame = session.frame
+        rows = ["".join(frame.ch[r * 80:(r + 1) * 80]) for r in range(24)]
+        status = next(r for r, row in enumerate(rows) if "postmarks" in row)
+        self.assertNotIn("`", rows[status])
+        self.assertIn(" opens on ", rows[status])
+        self.assertEqual(frame.fg[status * 80 + rows[status].index("postmarks")], "dim", "names are still names")
+        self.assertEqual(frame.fg[status * 80 + rows[status].index("postmarks") - 3], "text", "and figures figures")
+
+    def test_right_aligned_lines_end_where_they_should(self):
+        game = self.game()
+        for size in ((80, 24), (132, 40)):
+            session = self.session(game, *size)
+            session.paint()
+            head = "".join(session.frame.ch[:size[0]])
+            self.assertTrue(head.rstrip().endswith("NNW") and len(head.rstrip()) == size[0] - 1, head)
+        game.key("o")
+        session = self.session(game)
+        session.paint()
+        rows = ["".join(session.frame.ch[r * 80:(r + 1) * 80]) for r in range(3)]
+        self.assertEqual(len(rows[0].rstrip()), 79)
+        self.assertTrue(rows[0].rstrip().endswith("postmarks"))
+        self.assertTrue(rows[1].rstrip().endswith("weight") and len(rows[1].rstrip()) == 79)
 
     def test_sixteen_colours_and_ascii(self):
         game = self.game(color_depth="16", charset="ascii")

@@ -82,7 +82,8 @@ def page(screen: "fw.Screen", title: str) -> str:
             f'</style><pre>' + "\n".join(rows) + "</pre>")
 
 
-def fly(width: int, height: int, depth: str, charset: str = "utf-8", turns=("ENTER", "w", "ENTER", "ENTER", "w")):
+def fly(width: int, height: int, depth: str, charset: str = "utf-8", turns=("ENTER", "w", "ENTER", "ENTER", "w"),
+        view: str = "front"):
     """A game a few turns into its first flight, and the frame it shows."""
     info = {"door_api": 5, "handle": "Mara", "user_id": 12, "node_id": "capture-node", "node_name": "Test Node",
             "terminal_width": width, "terminal_height": height, "color_depth": depth, "charset": charset,
@@ -97,6 +98,7 @@ def fly(width: int, height: int, depth: str, charset: str = "utf-8", turns=("ENT
             def write(self, text):
                 pass
         session = fw.Session(launch, None, Quiet(), game=game)
+        session.view = view
         session.paint()
         game.close()                      # the folder cannot be removed while its records are open
         return session.frame
@@ -137,6 +139,8 @@ def main(argv) -> int:
             print(name, f"{width * CELL_W}x{height * CELL_H} px")
             name = f"office-{width}x{height}-{depth}.html"
             (OUT / name).write_text(page(fly(width, height, depth, turns=("o", "2", "f")), name), encoding="utf-8")
+            name = f"help-{width}x{height}-{depth}.html"
+            (OUT / name).write_text(page(fly(width, height, depth, view="help"), name), encoding="utf-8")
             name = f"loft-{width}x{height}-{depth}.html"
             (OUT / name).write_text(page(fly(width, height, depth, turns=("g", "p", "p", "z", "z", "z")), name),
                                     encoding="utf-8")

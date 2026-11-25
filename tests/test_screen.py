@@ -142,7 +142,8 @@ class Colours(unittest.TestCase):
 
     def test_named_inks_have_a_chosen_sixteen_colour_reading(self):
         expect = {"accent": "1;33", "dim": "36", "text": "37", "warn": "1;31", "bright": "1;37",
-                  "sea": "34", "land": "32", "cool": "1;36", "warm": "1;35"}
+                  "sea": "34", "land": "32", "cool": "1;36", "warm": "1;35", "label": "36", "value": "1;37",
+                  "cool_dim": "36", "warm_dim": "35", "accent_dim": "33"}
         self.assertEqual(set(expect), set(fw.INKS))
         for name, code in expect.items():
             screen = fw.Screen(4, 1, "16")
