@@ -146,6 +146,46 @@ class Opening(StoreCase):
         with self.assertRaises(fw.StoreUnavailable):
             fw.Store(blocker, SEED, "node")
 
+    def test_many_callers_creating_many_worlds_at_once(self):
+        # Seen once on the Windows job: a caller read the marks of a world another was half way through
+        # making, and refused it as somebody else's file. Several rounds, to give the race room.
+        code = ("import sys; sys.path.insert(0, sys.argv[1]); import fair_winds as fw; "
+                "s = fw.Store(sys.argv[2], int(sys.argv[4]), 'node'); s.claim(int(sys.argv[3]), 'ssh'); "
+                "s.commit(int(sys.argv[3]), 'P', {}, {'day': 1, 'turn': 0}); s.close()")
+        for seed in range(9000, 9004):
+            procs = [subprocess.Popen([sys.executable, "-c", code, str(ROOT), str(self.folder), str(n), str(seed)],
+                                      stderr=subprocess.PIPE) for n in range(8)]
+            for proc in procs:
+                _, err = proc.communicate(timeout=120)
+                self.assertEqual(proc.returncode, 0, err.decode()[-400:])
+            db = self.raw(seed)
+            self.assertEqual(db.execute("SELECT count(*) FROM pilots").fetchone()[0], 8)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], fw.SCHEMA_VERSION)
+            db.close()
+
+    def test_the_marks_of_a_world_are_read_as_one(self):
+        store = self.store()
+        seen = []
+        real = store.db
+
+        class Watching:
+            def __init__(self, db):
+                self.db = db
+
+            def execute(self, sql, *args):
+                seen.append((sql.split("(")[0].strip(), self.db.in_transaction))
+                return self.db.execute(sql, *args)
+
+            def __getattr__(self, name):
+                return getattr(self.db, name)
+        store.db = Watching(real)
+        store._prepare(SEED, "node")
+        store.db = real
+        reads = [inside for sql, inside in seen if sql.startswith(("SELECT count", "PRAGMA application_id",
+                                                                    "PRAGMA user_version"))][:3]
+        self.assertEqual(reads, [True, True, True], "all three inside one transaction")
+        self.assertFalse(real.in_transaction)
+
     def test_two_callers_creating_the_world_at_once(self):
         code = ("import sys; sys.path.insert(0, sys.argv[1]); import fair_winds as fw; "
                 "s = fw.Store(sys.argv[2], 4660, 'node'); s.claim(int(sys.argv[3]), 'ssh'); "

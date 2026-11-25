@@ -33,7 +33,7 @@ import zoneinfo
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "0.1.0.dev19"
+VERSION = "0.1.0.dev20"
 DOOR_API = 5
 MIN_WIDTH, MIN_HEIGHT = 80, 24
 MAX_DIMENSION = 1000
@@ -3086,9 +3086,16 @@ class Store:
 
     def _prepare(self, seed: int, node: str) -> None:
         db = self.db
-        app = db.execute("PRAGMA application_id").fetchone()[0]
-        version = db.execute("PRAGMA user_version").fetchone()[0]
-        tables = db.execute("SELECT count(*) FROM sqlite_master").fetchone()[0]
+        # The file's three marks are read as one: inside a read transaction, so that another caller who is
+        # creating the world at this very moment is seen either not at all or whole. Read one after another
+        # they could be caught between its writes, and a world in the making taken for somebody else's file.
+        db.execute("BEGIN")
+        try:
+            tables = db.execute("SELECT count(*) FROM sqlite_master").fetchone()[0]     # this takes the read lock
+            app = db.execute("PRAGMA application_id").fetchone()[0]
+            version = db.execute("PRAGMA user_version").fetchone()[0]
+        finally:
+            db.execute("COMMIT")
         if (app, version, tables) != (0, 0, 0):
             if app != APPLICATION_ID:
                 raise StoreError(f"{self.path.name} is not a Fair Winds world")
