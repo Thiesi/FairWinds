@@ -236,6 +236,12 @@ class StoredCalendar(CalendarCase):
         self.assertIn("tempo 4, day 1 today, day 2 opens", lines[0])
         game = support.new_game(launch(node_id="one"), self.folder)
         self.assertEqual(game.calendar["tempo"], 4)
+        (self.folder / "fair_winds-00000000000000aa.db").write_bytes(b"")       # a world not yet made
+        again = subprocess.run([sys.executable, str(ROOT / "fair_winds.py"), "--tempo", "2"],
+                               env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertIn("fair_winds-00000000000000aa.db: skipped", again.stdout)
+        self.assertEqual(again.stdout.count("tempo 2"), 2, "and the worlds that are there are set all the same")
         bad = subprocess.run([sys.executable, str(ROOT / "fair_winds.py"), "--tempo", "7"],
                              env=env, capture_output=True, text=True, timeout=60)
         self.assertNotEqual(bad.returncode, 0)
