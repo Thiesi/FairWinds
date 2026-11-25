@@ -276,7 +276,8 @@ class InTheGame(unittest.TestCase):
         glyphs = [frame.ch[y * 80 + x] for y in range(1, 17) for x in range(1, 53) if not frame.split[y * 80 + x]]
         self.assertEqual(glyphs.count("@"), 1)
         self.assertGreaterEqual(glyphs.count("#"), 1)
-        self.assertTrue(any(g in "123" for g in glyphs), "a track is drawn")
+        self.assertTrue(any(g in fw.TRACK_HEADS for g in glyphs), "a track is drawn, and ends in an arrow")
+        self.assertFalse(any(g in "123456" for g in glyphs), "no digits on the map any more")
         at = game.map.cell_of(game.state.x, game.state.y)
         self.assertEqual(frame.ch[at[1] * 80 + at[0]], "@")
         names = "".join(frame.ch[y * 80 + x] if not frame.split[y * 80 + x] else " " for y in range(1, 17) for x in range(1, 53))
@@ -339,3 +340,60 @@ class Cost(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TrailsInTheGame(InTheGame):
+    def test_a_cp437_caller_gets_plain_trails(self):
+        game, session = self.session(charset="cp437", color_depth="16")
+        game.key("ENTER")
+        self.paint(session)
+        glyphs = set(session.frame.ch)
+        self.assertFalse(glyphs & set(fw.TRACK_HEADS))
+        self.assertTrue(glyphs & set("<>^v"), "a head that points, in plain characters")
+
+    def test_the_chosen_trail_is_the_bright_one(self):
+        game, session = self.session()
+        game.key("ENTER")
+        self.paint(session)
+        frame = session.frame
+        heads = [k for k, g in enumerate(frame.ch) if g in fw.TRACK_HEADS]
+        self.assertGreaterEqual(len(heads), 1)
+        inks = {frame.fg[k] for k in heads}
+        chosen = fw.INKS[fw._TRACK_ROLES[game.choice]][0]
+        self.assertTrue(any(sum(ink) >= sum(chosen) * 0.5 for ink in inks if isinstance(ink, tuple)))
+
+
+class Trails(unittest.TestCase):
+    def points(self, *steps):
+        x, y, out = 0.0, 0.0, []
+        for dx, dy in steps:
+            x, y = x + dx, y + dy
+            out.append((x, y, 1))
+        return out
+
+    def test_a_dot_a_turn_a_heavier_one_on_the_hour_and_a_head(self):
+        glyphs = fw.track_glyphs(self.points(*[(5.0, 0.0)] * 9), (0.0, 0.0), True)
+        self.assertEqual(glyphs, [fw.TRACK_DOT] * 3 + [fw.TRACK_HOUR] + [fw.TRACK_DOT] * 3 + [fw.TRACK_HOUR, "\u2192"])
+        self.assertEqual(fw.track_glyphs([], (0.0, 0.0), True), [])
+        self.assertEqual(fw.track_glyphs(self.points((0.0, -3.0)), (0.0, 0.0), True), ["\u2191"], "one step is all head")
+
+    def test_the_head_points_where_the_track_is_going(self):
+        ways = {(1, 0): "\u2192", (1, 1): "\u2198", (0, 1): "\u2193", (-1, 1): "\u2199", (-1, 0): "\u2190",
+                (-1, -1): "\u2196", (0, -1): "\u2191", (1, -1): "\u2197"}
+        for (dx, dy), head in ways.items():
+            glyphs = fw.track_glyphs(self.points((1.0, 0.0), (dx * 4.0, dy * 4.0)), (0.0, 0.0), True)
+            self.assertEqual(glyphs[-1], head, (dx, dy))
+        self.assertEqual(fw.track_glyphs(self.points((4.0, 1.0)), (0.0, 0.0), True)[-1], "\u2192", "nearly east is east")
+
+    def test_without_utf8_no_byte_that_a_terminal_would_obey(self):
+        for dx, dy, head in ((1, 0, ">"), (-1, 0, "<"), (0, 1, "v"), (0, -1, "^"), (1, 1, ">"), (-1, -2, "^")):
+            glyphs = fw.track_glyphs(self.points((1.0, 0.0), (1.0, 0.0), (1.0, 0.0), (1.0, 0.0), (dx * 3.0, dy * 3.0)),
+                                     (0.0, 0.0), False)
+            self.assertEqual(glyphs[-1], head)
+            for g in glyphs:
+                self.assertTrue(g.isascii() and g.isprintable())
+        # Why: CP437 draws its arrows and its bullet in the range of the control codes (the left arrow sits
+        # where Escape is), so as text they cannot be sent at all.
+        for glyph in fw.TRACK_HEADS + (fw.TRACK_HOUR,):
+            with self.assertRaises(UnicodeEncodeError):
+                glyph.encode("cp437")

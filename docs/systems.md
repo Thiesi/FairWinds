@@ -365,8 +365,18 @@ its save and its placeholder rules, and keep its findings.
 balloon; a table of the layers with each one's wind, marked `~` where it is a
 forecast and not a reading; stores, daylight, ground wind and sky; the last
 three log lines; one sentence saying what the chosen action costs and where it
-leads; and the keys. Digits on the map are the tracks of the choices on offer,
-six turns ahead, the chosen one bright.
+leads; and the keys. The tracks of the choices on offer are drawn on the map,
+six turns ahead, the chosen one bright. S05 drew them as the layer's digit;
+the owner's play-test found the digits out of place, and they are now a dot
+for each turn, a heavier one on the hour, and an arrowhead where the track
+ends, in the colour of the choice (sinking cool, holding amber, climbing
+pink). Without UTF-8 the dots are `*` and the head one of `< > ^ v`: CP437
+draws its own arrows where the control codes are, so they cannot be sent.
+
+Wherever a name and its figure stand on one line (the stores, the heading, the
+status line, the post office, the loft) the name is drawn in one ink and the
+figure in another, brighter one. The help page has headings, and every key and
+map sign in it is in a colour of its own.
 
 **Keys.** W and S or the arrows step through sink, hold and climb. Enter or
 Space flies the choice. J chooses a jettison, L a landing, P releases a pibal

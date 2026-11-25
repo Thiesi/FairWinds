@@ -33,7 +33,7 @@ import zoneinfo
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "0.1.0.dev17"
+VERSION = "0.1.0.dev18"
 DOOR_API = 5
 MIN_WIDTH, MIN_HEIGHT = 80, 24
 MAX_DIMENSION = 1000
@@ -1817,6 +1817,9 @@ INKS = {
     "land": ((120, 180, 110), 2),
     "cool": ((120, 228, 255), 14),
     "warm": ((255, 150, 196), 13),
+    # What a figure is called, and the figure: told apart at a glance wherever both stand on a line.
+    "label": ((128, 146, 176), 6),
+    "value": ((240, 244, 250), 15),
 }
 _ASCII_RAMP = " .:-=+*#%@"
 HALF_BLOCK = "▀"           # upper half block: foreground on top, background below
@@ -1883,6 +1886,38 @@ def _rgb(ink):
 
 _ASCII_GLYPHS = {HALF_BLOCK: "#", LOWER_BLOCK: "#", "\u2588": "#", "\u2591": ".", "\u2592": ":", "\u2593": "#",
                  "\u00b7": "-", "\u2022": "*", "\u00b0": "o", "\u25a0": "#"}
+# A track on the map: a dot for each turn, a heavier one on the hour, and an arrowhead where it ends. CP437
+# draws its arrows where the control codes are (the left arrow sits on Escape), so they cannot be sent as
+# text: only UTF-8 gets arrows.
+TRACK_DOT, TRACK_HOUR = "\u00b7", "\u2022"
+TRACK_HEADS = ("\u2192", "\u2198", "\u2193", "\u2199", "\u2190", "\u2196", "\u2191", "\u2197")    # east, then clockwise
+TRACK_PLAIN = ("*", "*", (">", "v", "<", "^"))      # the same three where there is no UTF-8
+
+
+def track_glyphs(points: list, start: tuple, utf8: bool) -> list[str]:
+    """The glyph for each step of a track: dots, an hour mark every fourth turn, and a head that points the way."""
+    out = []
+    for i, (x, y, _) in enumerate(points):
+        if i < len(points) - 1:
+            out.append((TRACK_HOUR if utf8 else TRACK_PLAIN[1]) if (i + 1) % 4 == 0
+                       else (TRACK_DOT if utf8 else TRACK_PLAIN[0]))
+            continue
+        px, py = (points[i - 1][0], points[i - 1][1]) if i else start
+        dx, dy = x - px, y - py
+        if utf8:
+            # Eight ways: which of dx, dy dominates, or both.
+            ax, ay = abs(dx), abs(dy)
+            if ax > 2.414 * ay:
+                way = 0 if dx > 0 else 4
+            elif ay > 2.414 * ax:
+                way = 2 if dy > 0 else 6
+            else:
+                way = (1 if dy > 0 else 7) if dx > 0 else (3 if dy > 0 else 5)
+            out.append(TRACK_HEADS[way])
+        else:
+            heads = TRACK_PLAIN[2]
+            out.append((heads[0] if dx > 0 else heads[2]) if abs(dx) >= abs(dy) else (heads[1] if dy > 0 else heads[3]))
+    return out
 
 
 def safe_glyph(ch: str) -> str:
@@ -4273,15 +4308,18 @@ class PlainFlight:
     def _status(self, s: "Session", wide: int) -> str:
         """The line under the sentence: when the next day opens first, then as much else as there is room for."""
         launch = self.launch
-        status = self.briefing()
-        for part in (f"{self.postmarks} postmarks", f"{self.deliveries} delivered",
-                     f"{self.total_km + self.state.distance:.0f} km", launch.handle,
+        status = self.briefing()[:wide]
+        length = len(status)
+        for part in (f"`{self.postmarks}` postmarks", f"`{self.deliveries}` delivered",
+                     f"`{self.total_km + self.state.distance:.0f}` km", f"`{launch.handle.replace('`', ' ')}`",
                      f"{s.width} x {s.height} {launch.color_depth} {layout_tier(s.width, s.height)}"
                      f" {'standalone' if launch.host == 'standalone' else launch.transport}"):
-            if len(status) + 3 + len(part) > wide:
+            plain = len(part.replace("`", ""))
+            if length + 3 + plain > wide:
                 break
             status += "   " + part
-        return status[:wide]
+            length += 3 + plain
+        return status                     # marked: figures between backticks, for the line that draws it
 
     def _draw_loft(self, s: "Session") -> list[str]:
         """The rigging loft: the licence, the gear and what more can be fitted, and the envelope's design."""
@@ -4289,19 +4327,19 @@ class PlainFlight:
         town = self.place_of(self.here())
         out = [s._line(0, 1, "FAIR WINDS", "accent"),
                s._line(0, 13, f"The rigging loft at {town['name']}"[:wide - 30], "text")]
-        right = f"{self.postmarks} postmarks"
-        out.append(s._line(0, s.width - 1 - len(right), right, "text"))
+        right = f"`{self.postmarks}` postmarks"
+        out.append(s._kv(0, s.width - 1 - len(right) + 2, right))
         grade, score = self.grade(), self.score()
         after = f"{GRADES[grade + 1][0]} at {GRADES[grade + 1][1]}" if grade + 1 < len(GRADES) else "the highest there is"
         out.append(s._line(1, 1, "LICENCE", "accent"))
-        out.append(s._line(1, 10, f"{GRADES[grade][0]}   {score} points; {after}"[:wide - 9], "text"))
+        out.append(s._kv(1, 10, f"`{GRADES[grade][0]}`   `{score}` points; {after}", wide - 9))
         out.append(s._line(2, 1, "GEAR", "accent"))
         room = wide - (18 if s.width >= 100 and self.map.pixels else 0)
         for i, track in enumerate(TRACKS):
             tiers, have = UPGRADES[track]["tiers"], self.gear[track]
             label = TIER_NAMES[have] if len(tiers) > 2 else "fitted" if have else "-"
-            out.append(s._line(3 + i * 2, 1, f"{i + 1}  {UPGRADES[track]['name']:<12}{label:<7}"
-                                             f"{gear_text(track, tiers[have])}"[:room], "text"))
+            out.append(s._kv(3 + i * 2, 1, f"`{i + 1}`  {UPGRADES[track]['name']:<12}`{label:<7}"
+                                           f"{gear_text(track, tiers[have])}`", room, "text", "value"))
             if have + 1 >= len(tiers):
                 out.append(s._line(4 + i * 2, 6, "nothing more to fit"[:room], "dim"))
                 continue
@@ -4332,7 +4370,7 @@ class PlainFlight:
             out.append(s._line(s.height - 3, 1, s.notice[:wide], "warn"))
         elif not self.saved_ok:
             out.append(s._line(s.height - 3, 1, "This game cannot be saved here. Tell the SysOp. You can play on.", "warn"))
-        out.append(s._line(s.height - 2, 1, self._status(s, wide), "dim"))
+        out.append(s._kv(s.height - 2, 1, self._status(s, wide), wide, "dim", "text"))
         out += s._keys(s.height - 1, [(f"1-{len(TRACKS)}", "Fit the next"), ("Enter", "Back"), ("?", "Help"),
                                       ("Q", "Quit")])
         return out
@@ -4343,8 +4381,8 @@ class PlainFlight:
         place, town = self.place_of(ref), ref[0] == "town"
         out = [s._line(0, 1, "FAIR WINDS", "accent"),
                s._line(0, 13, f"{place['name']}, a {'town' if town else 'weather station'}"[:wide - 44], "text")]
-        right = f"Day {state.day}  {clock_text(state.minute)}   {self.postmarks} postmarks"
-        out.append(s._line(0, max(13, s.width - 1 - len(right)), right, "text"))
+        right = f"Day `{state.day}`  `{clock_text(state.minute)}`   `{self.postmarks}` postmarks"
+        out.append(s._kv(0, max(13, s.width - 1 - len(right) + 6), right))
         # Where there are rows to spare and pixels to paint with, the place itself looks in over the counter.
         vista = min(14, s.height - 24) if self.map.pixels else 0
         if vista >= 4:
@@ -4359,8 +4397,8 @@ class PlainFlight:
             vista = 0
         row = 1 + vista
         out.append(s._line(row, 1, "THE POST OFFICE", "accent"))
-        load = f"Aboard {self.weight()} of {self.lift()} weight"
-        out.append(s._line(row, s.width - 1 - len(load), load, "text"))
+        load = f"Aboard `{self.weight()}` of `{self.lift()}` weight"
+        out.append(s._kv(row, s.width - 1 - len(load) + 4, load))
         offers = self.offers()
         for i, offer in enumerate(offers):
             there = self.place_of(tuple(offer["dest"]))
@@ -4390,9 +4428,9 @@ class PlainFlight:
             out.append(s._line(row + 2 + i, 1, line[:wide], "text" if lines else "dim"))
         row += 2 + max(len(shown), 1)
         out.append(s._line(row + 1, 1, "STORES", "accent"))
-        out.append(s._line(row + 1, 9, f"Fuel {state.fuel}/{self.tank()}   Sacks {state.ballast}/{BALLAST_START}   "
-                                       f"Pibals {state.pibals}/{PIBALS_START}   Wear {state.wear}"
-                                       f"{'  too worn to fly' if state.grounded else ''}"[:wide - 8], "text"))
+        out.append(s._kv(row + 1, 9, f"Fuel `{state.fuel}`/{self.tank()}   Sacks `{state.ballast}`/{BALLAST_START}   "
+                                     f"Pibals `{state.pibals}`/{PIBALS_START}   Wear `{state.wear}`"
+                                     f"{'  too worn to fly' if state.grounded else ''}", wide - 8))
         fuel, sack, pibal, mend = (price_of(item, ref) for item in ("fuel", "sack", "pibal", "mend"))
         out += s._keys(row + 2, [("F", f"10 fuel, {10 * fuel}"), ("A", "Fill"), ("S", f"Sack, {sack}"),
                                  ("P", f"Pibal, {pibal}"), ("M", f"Mend, {mend} a point")])
@@ -4402,7 +4440,7 @@ class PlainFlight:
             out.append(s._line(s.height - 3, 1, s.notice[:wide], "warn"))
         elif not self.saved_ok:
             out.append(s._line(s.height - 3, 1, "This game cannot be saved here. Tell the SysOp. You can play on.", "warn"))
-        out.append(s._line(s.height - 2, 1, self._status(s, wide), "dim"))
+        out.append(s._kv(s.height - 2, 1, self._status(s, wide), wide, "dim", "text"))
         keys = [(f"1-{len(offers)}" if len(offers) > 1 else "1", "Take or put back")] if offers else []
         keys += [("G", "Rigging loft")] if self.at_loft() else []
         out += s._keys(s.height - 1, keys + [("Enter", "Back"), ("?", "Help"), ("Q", "Quit")])
@@ -4425,10 +4463,10 @@ class PlainFlight:
         self.map_cols, self.map_rows = s.width - panel - 2, s.height - 8
         self.panel_col, base, wide = s.width - panel + 1, s.height - 7, s.width - 2
         out = [s._line(0, 1, "FAIR WINDS", "accent"),
-               s._line(0, 13, f"Day {state.day}  {clock_text(state.minute)}", "text")]
+               s._kv(0, 13, f"Day `{state.day}`  `{clock_text(state.minute)}`")]
         distance, toward, nearest = self.bearings()[0]
-        post = f"{'Nearest post' if self.manifest else 'Nearest office'}: {nearest['name']}, {distance:.0f} km {toward}"
-        out.append(s._line(0, max(32, s.width - 1 - len(post)), post, "text"))
+        post = f"{'Nearest post' if self.manifest else 'Nearest office'}: `{nearest['name']}, {distance:.0f} km {toward}`"
+        out.append(s._kv(0, max(32, s.width - 1 - len(post) + 2), post))
         out += self._draw_map(s)
         out += self._draw_panel(s, phase)
         for i, line in enumerate(self.log[-3:]):
@@ -4441,7 +4479,7 @@ class PlainFlight:
             out.append(s._line(base + 3, 1, "You are visiting: nothing is kept when you leave.", "dim"))
         sentence, role = self._sentence(phase)
         out.append(s._line(base + 4, 1, sentence[:wide], role))
-        out.append(s._line(base + 5, 1, self._status(s, wide), "dim"))
+        out.append(s._kv(base + 5, 1, self._status(s, wide), wide, "dim", "text"))
         keys, gap = self._fit_keys(self._key_help(phase), wide)
         out += s._keys(base + 6, keys, gap)
         return out
@@ -4603,11 +4641,16 @@ class PlainFlight:
             order = [a for a in self.choices() if a != self.choice]
             if self.choice in ("sink", "hold", "climb", "launch", "jettison", "left", "right"):
                 order.insert(0, self.choice)        # the chosen track first: where tracks share a cell, it shows
+            utf8 = self.launch.charset == "utf-8"
             for action in order:
                 look = self.preview(action)
-                ink = _TRACK_ROLES[action] if action == self.choice else "dim"
-                for px, py, layer in look["points"]:
-                    view.mark(screen, px, py, str(layer), ink)
+                ink = INKS[_TRACK_ROLES[action]][0]
+                if action != self.choice:
+                    # The same colour, further off: it still says which choice it is.
+                    ink = (int(ink[0] * 0.75), int(ink[1] * 0.75), int(ink[2] * 0.75))
+                glyphs = track_glyphs(look["points"], (state.x, state.y), utf8)
+                for (px, py, _), glyph in zip(look["points"], glyphs):
+                    view.mark(screen, px, py, glyph, ink)
         for cell, place in cells:                    # names last, where there is room left for them
             if cell is not None:
                 view.label(screen, cell, place["name"], "accent")
@@ -4666,23 +4709,23 @@ class PlainFlight:
             row += 1
         out.append(s._line(row, col, "~ forecast, not read", "dim"))
         row += 2
-        out.append(s._line(row, col, f"Fuel {state.fuel:>3}   Sacks {state.ballast}", "text"))
-        out.append(s._line(row + 1, col, f"Pibals {state.pibals}   Wear {state.wear}", "text"))
+        out.append(s._kv(row, col, f"Fuel `{state.fuel:>3}`   Sacks `{state.ballast}`"))
+        out.append(s._kv(row + 1, col, f"Pibals `{state.pibals}`   Wear `{state.wear}`"))
         if state.pibal_until >= state.turn:
             out.append(s._line(row + 2, col, f"Pibal read: {state.pibal_until - state.turn + 1} turns", "cool"))
         left = max(0, DUSK_MINUTE - state.minute)
-        light = f"Dusk in {left // 60}h{left % 60:02d}" if left else "Night"
-        out.append(s._line(row + 3, col, light, "text" if left > 90 else "warn"))
+        light = f"Dusk in `{left // 60}h{left % 60:02d}`" if left else "`Night`"
+        out.append(s._kv(row + 3, col, light, None, "label", "value" if left > 90 else "warn"))
         # The ground wind is the lowest layer's wind, known only as well as that layer is.
         lowest = self.layer_winds()[low]
         ground = math.sqrt(lowest[0] * lowest[0] + lowest[1] * lowest[1])
-        out.append(s._line(row + 4, col, f"Ground wind {'' if lowest[2] else '~'}{ground:.0f} km/h", "text"))
+        out.append(s._kv(row + 4, col, f"Ground wind `{'' if lowest[2] else '~'}{ground:.0f}` km/h"))
         cloud, _ = frame.cloud(state.x, state.y)
         sky = "clear" if cloud < 0.2 else "broken cloud" if cloud < 0.6 else "overcast"
         if frame.fog(state.x, state.y) > FOG_THRESHOLD:
             sky = "fog on the ground"
-        out.append(s._line(row + 5, col, f"Sky {sky}", "text"))
-        out.append(s._line(row + 6, col, f"Forecast {'sharp' if cover > 0.66 else 'fair' if cover > 0.33 else 'vague'}", "dim"))
+        out.append(s._kv(row + 5, col, f"Sky `{sky}`"))
+        out.append(s._kv(row + 6, col, f"Forecast `{'sharp' if cover > 0.66 else 'fair' if cover > 0.33 else 'vague'}`"))
         for i, (distance, toward, place) in enumerate(self.bearings()[:POST_CHOICES]):
             out.append(s._line(14 + i, col, f"# {place['name'][:14]:<14}{distance:>4.0f} {toward}", "accent" if i == 0 else "text"))
         return out
@@ -4812,8 +4855,7 @@ class PlainFlight:
         if frame.fog(state.x, state.y) > FOG_THRESHOLD:
             sky = "fog on the ground"
         reach = self.coverage(state.x, state.y)
-        s._line(row + 1, col, f"Sky {sky}. Forecast {'sharp' if reach > 0.66 else 'fair' if reach > 0.33 else 'vague'}.",
-                "text")
+        s._kv(row + 1, col, f"Sky `{sky}`. Forecast `{'sharp' if reach > 0.66 else 'fair' if reach > 0.33 else 'vague'}`.")
 
         row += 3
         s._line(row, col, "POST FOR", "accent")
@@ -4841,27 +4883,30 @@ class PlainFlight:
         return []
 
 
+# The help page. A line that begins "# " is a heading. Between backticks is a key or a sign from the map,
+# shown in the colour keys have everywhere.
 PLAIN_HELP = (
-    "A balloon cannot steer. It can only climb or sink, and every layer of air",
-    "blows a different way. Each turn is fifteen minutes. Pick the layer whose",
-    "wind takes you to a place marked #: there is post aboard for it, and pay.",
-    "  W / S or arrows   look at the layer above or below; its track is drawn",
-    "  A / D             in the lowest layer: trail the rope, bear left or right",
-    "  Enter or Space    fly the choice for one turn",
-    "  J  drop a sack: up a layer for no fuel   P  pibal: true winds, four turns",
-    "  L  land (lowest layer)   M  drop mail within 30 km of where it is bound",
-    "  N  night   H  wait an hour on the ground   O  post office; there G, loft",
-    "  ?  this help   Ctrl-L  redraw   Q  leave (saved)",
-    "",
-    "The map: @ you, # places with post waiting, o towns, + weather stations,",
-    "~ sea  . shore  , grass  \" forest  : dry plain  n hills  ^ mountain  A snow,",
-    "% squall. Digits are tracks: where each layer would carry you, by forecast.",
-    "A wind marked ~ is a forecast: you have not read that layer. Your own layer",
-    "is always true. Climbing costs fuel, sinking is free, holding costs 1 (0 from",
-    "11:00 to 15:00, 2 after 20:00). Land in 15 km/h or less for a clean landing.",
-    "Within 12 km of a place counts as being there: two or three map cells.",
-    "A world day opens at the same hour for everyone and is flown once; up to",
-    "three wait for you. Leaving never loses anything: every turn is saved.",
+    "# FLYING",
+    "A balloon cannot steer. Each layer of air blows its own way: climb or sink",
+    "to the one that carries you to a place marked `#`. A turn is 15 minutes.",
+    "  `W` `S`  look at the layer above or below      `Enter`  fly the choice",
+    "  `A` `D`  lowest layer: trail the rope, bear left or right of the wind",
+    "  `J`  drop a sack: up a layer, no fuel        `P`  pibal: true winds, 4 turns",
+    "  `L`  land, from the lowest layer             `M`  drop mail within 30 km",
+    "# ON THE GROUND",
+    "  `O`  post office and stores; from there `G`, the rigging loft, in towns",
+    "  `H`  wait an hour for the wind               `N`  stay the night",
+    "# THE MAP",
+    "  `@` you   `#` post is bound there   `o` town   `+` weather station   `Q` a pilot",
+    "  A dotted trail with an arrow: where a choice would carry you. `%` a squall.",
+    "  Without colour: `~` sea  `.` shore  `,` grass  `\"` forest  `:` plain  `n` hills  `^` peak",
+    "# GOOD TO KNOW",
+    "  A wind marked `~` is a forecast. Your own layer is always read true.",
+    "  Climbing costs fuel, sinking is free, holding costs 1 (0 from 11:00 to",
+    "  15:00, 2 after 20:00). Land in 15 km/h or less for a clean landing.",
+    "  Within 12 km of a place counts as being there.",
+    "  A world day opens at the same hour for everyone and is flown once.",
+    "  `?` this help   `Ctrl-L` redraw   `Q` leave: every turn is saved.",
 )
 
 
@@ -5243,6 +5288,19 @@ class Session:
         self.frame.text(col, row, text, role)
         return ""
 
+    def _kv(self, row: int, col: int, text: str, wide: int | None = None, label="label", value="value") -> str:
+        """A line of names and figures: what stands between backticks is a figure, and is drawn as one.
+
+        wide is how many cells the line may take; what does not fit is left off.
+        """
+        room = self.width if wide is None else wide
+        for n, part in enumerate(text.split("`")):
+            part = part[:max(0, room)]
+            self.frame.text(col, row, part, value if n % 2 else label)
+            col += len(part)
+            room -= len(part)
+        return ""
+
     def paint(self) -> None:
         """Draw the current view onto a new frame and send what changed."""
         self.frame = Screen(self.width, self.height, self.launch.color_depth, self.launch.charset)
@@ -5329,7 +5387,17 @@ class Session:
         if self.game is not None:
             text = PLAIN_HELP
         out = [self._line(0, 1, "FAIR WINDS", "accent"), self._line(0, 13, "Help", "dim")]
-        out += [self._line(2 + i, 1, t) for i, t in enumerate(text)]
+        # On a tall screen a blank row sets each heading apart; at 24 rows every row is needed.
+        roomy = self.height >= 2 + len(text) + sum(t.startswith("# ") for t in text) + 2
+        row = 2
+        for t in text:
+            if t.startswith("# "):
+                if roomy and row > 2:
+                    row += 1
+                self._line(row, 1, t[2:], "accent")
+            else:
+                self._kv(row, 1, t, self.width - 2, "text", "cool")
+            row += 1
         out += self._keys(self.height - 1, [("B", "Back"), ("Q", "Back")])
         return out
 
