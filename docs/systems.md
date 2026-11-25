@@ -616,8 +616,8 @@ The chart is the first answer: a flight blown off course is a surveying flight.
   been flown over stands out from it in colour. The owner called the map
   beautiful; a black veil over nine tenths of it would have thrown that away.
 - Each turn that ends aloft charts the cells in sight from the layer it was
-  flown in, from halfway through the turn and from its end, by the weather at
-  its start. Every cell in sight is charted, water too, so lakes and islands
+  flown in, from points along the turn no further apart than that sight, by
+  the weather at its start. Every cell in sight is charted, water too, so lakes and islands
   can be found; only land pays.
 - First over a cell is settled where it is written: the cell is inserted if
   nobody has it, inside the turn's own transaction. Two pilots over the same

@@ -4347,11 +4347,19 @@ class PlainFlight:
             # What was seen from the basket this turn: from where the turn ended, at the height it was flown.
             layer = self.state.layer or before.layer or (self.engine.lowest_open(before.x, before.y)
                                                          if action == "launch" else 0)
-            # From halfway and from the end: a fast wind carries a balloon further in a turn than it sees.
-            seen = self.seen_cells(self.state.x, self.state.y, layer, before.day, before.minute)
-            half = self.seen_cells((before.x + self.state.x) / 2, (before.y + self.state.y) / 2, layer,
-                                   before.day, before.minute)
-            seen += [cell for cell in half if cell not in seen]
+            # Along the way, a sight's reach at a time: a fast wind carries a balloon further in a turn than
+            # it sees from one spot, and what it passed over was seen too.
+            reach = SIGHT_KM[min(max(layer, 1), len(SIGHT_KM)) - 1]
+            run = math.sqrt((self.state.x - before.x) ** 2 + (self.state.y - before.y) ** 2)
+            steps = max(1, int(math.ceil(run / reach)))
+            got: set = set()
+            for i in range(1, steps + 1):
+                t = i / steps
+                for cell in self.seen_cells(before.x + (self.state.x - before.x) * t,
+                                            before.y + (self.state.y - before.y) * t, layer, before.day, before.minute):
+                    if cell not in got:
+                        got.add(cell)
+                        seen.append(cell)
         self.save(action, seen)           # before anything is shown
         if self.ended:
             return

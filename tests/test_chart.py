@@ -205,8 +205,9 @@ class Shared(ChartCase):
         finally:
             fw.WeatherFrame.wind = real
         self.assertAlmostEqual(game.state.x, x)
-        middle = fw.cell_at(x - 30.0, y)
-        self.assertTrue(middle in game.chart or middle in game.known, "the ground under the middle of the turn")
+        for back in range(0, 60, 5):                     # layer 1 sees ten km: every stretch of the sixty was seen
+            under = fw.cell_at(x - back, y)
+            self.assertTrue(under in game.chart or under in game.known, f"the ground {back} km back along the turn")
 
     def test_the_share_is_counted_once_for_each_state_of_the_chart(self):
         game = self.game()
