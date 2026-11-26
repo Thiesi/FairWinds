@@ -333,7 +333,7 @@ class Flying(DriftCase):
         self.assertEqual((saved["seq"], saved["state"]["turn"], saved["state"]["fuel"]), (seq, 0, 60))
         game.key("x")
         self.assertIsNotNone(game.drift, "a practice is not thrown away by one slip of the finger")
-        self.assertTrue(any("X again leaves it" in line for line in game.heard))
+        self.assertTrue(any("`X` again leaves it" in line for line in game.heard))
         game.key("s")
         game.key("x")
         self.assertIsNotNone(game.drift, "another key in between and it asks again")

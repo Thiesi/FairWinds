@@ -538,7 +538,7 @@ class Atlas(ChartCase):
         self.assertIn("You were first over 0 cells of land.", text)
         self.assertIn(f"0 of {len(game.world.features)} features are found and named.", text)
         turn = game.state.turn
-        game.key("ENTER")
+        game.key("b")
         self.assertFalse(game.atlas)
         self.assertEqual(game.state.turn, turn, "the key that closes it flies nothing")
         game.key("ENTER")

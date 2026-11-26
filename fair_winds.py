@@ -20,6 +20,7 @@ import json
 import math
 import os
 import queue
+import re
 import shutil
 import signal
 import sqlite3
@@ -33,7 +34,7 @@ import zoneinfo
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "0.1.0.dev29"
+VERSION = "0.1.0.dev30"
 DOOR_API = 5
 MIN_WIDTH, MIN_HEIGHT = 80, 24
 MAX_DIMENSION = 1000
@@ -3589,14 +3590,18 @@ TRIALS = (
      "balloon": {}},
 )
 # The lessons of the first flight: what has to be done to pass each, and what is said to ask for it.
+# The way back from any screen: B, or Esc, or the key that opened it. Never Enter or Space: the screen a pilot
+# comes back to takes those for a move, and one press too many would launch.
+BACK_KEYS = ("b", "ESC")
 TUTOR_STEPS = (
-    ("look", "Each layer of air blows its own way. W and S look at the layer above and the one below; the dotted "
-             "trail is where it would carry you. Press W or S."),
-    ("launch", "Enter flies what you are looking at. Press Enter to launch."),
-    ("pibal", "A wind marked ~ is a forecast. P sends up a pibal: for four turns every layer is read true. Press P."),
-    ("jettison", "Climbing burns fuel. A sack over the side climbs for nothing: press J, then Enter."),
-    ("sink", "Sinking is free. Press S for the layer below, then Enter."),
-    ("land", "Last, because it ends the flight: you land from the lowest layer. Press L, then Enter. A gentle "
+    ("look", "Each layer of air blows its own way. `W` and `S` look at the layer above and the one below; the "
+             "dotted trail is where it would carry you. Press `W` or `S`."),
+    ("launch", "`Enter` flies what you are looking at. Press `Enter` to launch."),
+    ("pibal", "A wind marked ~ is a forecast. `P` sends up a pibal: for four turns every layer is read true. "
+              "Press `P`."),
+    ("jettison", "Climbing burns fuel. A sack over the side climbs for nothing: press `J`, then `Enter`."),
+    ("sink", "Sinking is free. Press `S` for the layer below, then `Enter`."),
+    ("land", "Last, because it ends the flight: you land from the lowest layer. Press `L`, then `Enter`. A gentle "
              "ground wind makes a clean landing."),
 )
 TRIAL_HELP = (
@@ -4707,7 +4712,7 @@ class PlainFlight:
                               "due": self.today + FIRST_ROUND_DAYS})
         self.log = []
         self._say(f"You are at {start['name']}. There is post aboard for {self._names()}.")
-        self._say("Read the winds and fly to whichever the day favours. New to it? R teaches.")
+        self._say("Read the winds and fly to whichever the day favours. New to it? `R` teaches.")
 
     _imported = False
     _dated = False                        # the pilot's days are the world's days
@@ -4981,7 +4986,7 @@ class PlainFlight:
             self._drift_seen = {"day": day, "table": [], "mine": None}
 
     def _drift_lobby_key(self, k: str) -> None:
-        if k in ("ESC", "b", "t", " "):
+        if k in BACK_KEYS + ("t",):
             self.drift_lobby = False
         elif k in ("p", "ENTER"):
             self._day_may_have_opened()
@@ -5010,10 +5015,10 @@ class PlainFlight:
                 return
             except (sqlite3.Error, ValueError, KeyError, TypeError) as error:
                 diagnose(f"the Drift could not be begun: {error}")
-                self.drift_note = "The Drift cannot be flown for the table just now. P practises."
+                self.drift_note = "The Drift cannot be flown for the table just now. `P` practises."
                 return
             if row["done"]:
-                self.drift_note = "You have flown today's Drift. The table stands. P practises."
+                self.drift_note = "You have flown today's Drift. The table stands. `P` practises."
                 self._drift_look()
                 return
         self._main = (self.state, self.engine, self.gear, self.choice, self.log, self.heard)
@@ -5024,7 +5029,7 @@ class PlainFlight:
         dx, dy = course["mx"] - course["x"], course["my"] - course["y"]
         self._say(f"The Daily Drift, {'for the table' if scored else 'in practice'}: from {course['start']} to the "
                   f"mark, {math.sqrt(dx * dx + dy * dy):.0f} km {bearing(dx, dy)}.")
-        self._say(f"{DRIFT_TURNS} turns from 09:00. Land as near the mark as you can. X leaves.")
+        self._say(f"{DRIFT_TURNS} turns from 09:00. Land as near the mark as you can. `X` leaves.")
         self._choose_default()
         if state.status not in ("ground", "aloft") or state.turn - DRIFT_START_TURN >= DRIFT_TURNS \
                 or (state.status == "ground" and state.turn > DRIFT_START_TURN):
@@ -5064,7 +5069,7 @@ class PlainFlight:
                 # The Drift is parked where the records have it.
                 diagnose(f"a turn of the Drift could not be saved: {error}")
                 self._drift_end(left=True)
-                self.drift_note = "That turn could not be written. The Drift waits where it was: Enter takes it up."
+                self.drift_note = "That turn could not be written. The Drift waits where it was: `Enter` takes it up."
                 return
         if action != "pibal":
             self.typed_ahead = True
@@ -5090,7 +5095,7 @@ class PlainFlight:
         self.frames_left = 0
         how = f"{km:.1f} km from the mark in {turns} turns with {fuel} fuel left"
         if left:
-            self.drift_note = ("Left part way. It waits as you left it until the day is out: Enter takes it up."
+            self.drift_note = ("Left part way. It waits as you left it until the day is out: `Enter` takes it up."
                                if drift["scored"] else "Practice left.")
         elif not drift["scored"]:
             self.drift_note = f"Practice: {how}. That would score {score}."
@@ -5108,7 +5113,7 @@ class PlainFlight:
             elif wrote:
                 self.drift_note = "Today's Drift is on the table already."
             else:
-                self.drift_note = "The score could not be written. Enter takes the Drift up again."
+                self.drift_note = "The score could not be written. `Enter` takes the Drift up again."
         self._drift_look()
         self._choose_default()
 
@@ -5146,7 +5151,7 @@ class PlainFlight:
             stand, keys = f"You scored {mine['score']} today.", []
         out.append(s._line(s.height - 4, 1, stand[:wide], "text"))
         if self.drift_note:
-            out.append(s._line(s.height - 3, 1, self.drift_note[:wide], "bright"))
+            out.append(s._told(s.height - 3, 1, self.drift_note, wide, "bright"))
         out.append(s._kv(s.height - 2, 1, self._status(s, wide), wide, "dim", "text"))
         out += s._keys(s.height - 1, keys + [("P", "Practise"), ("?", "The rules"), ("B", "Back")])
         return out
@@ -5160,7 +5165,7 @@ class PlainFlight:
             self.trial_at = min(len(TRIALS), self.trial_at + 1)
         elif k == "ENTER":
             self._trial_begin(self.trial_at - 1)
-        elif k in ("ESC", "b", "r", " "):
+        elif k in BACK_KEYS + ("r",):
             self.trials = False
 
     def _trial_begin(self, index: int) -> None:
@@ -5184,7 +5189,7 @@ class PlainFlight:
             trip = math.sqrt(dx * dx + dy * dy)
             bronze, silver, gold = trial_limits(trip)
             self._say(f"{spec['name']}. {spec['about']} The mark is {trip:.0f} km {bearing(dx, dy)}.")
-            self._say(f"Gold within {gold:.0f} km of it, silver {silver:.0f}, bronze {bronze:.0f}. X twice leaves.")
+            self._say(f"Gold within {gold:.0f} km of it, silver {silver:.0f}, bronze {bronze:.0f}. `X` twice leaves.")
         self._choose_default()
 
     def _tutor(self, did: str) -> None:
@@ -5273,7 +5278,7 @@ class PlainFlight:
             out.append(s._line(2 + row, 1, line[:wide], "bright" if chosen else
                                "accent" if i and self.medals[i - 1] == 3 else "text"))
         if self.trial_note:
-            out.append(s._line(s.height - 3, 1, self.trial_note[:wide], "bright"))
+            out.append(s._told(s.height - 3, 1, self.trial_note, wide, "bright"))
         out.append(s._kv(s.height - 2, 1, self._status(s, wide), wide, "dim", "text"))
         out += s._keys(s.height - 1, [("W/S", "Choose"), ("Enter", "Fly it"), ("?", "The rules"), ("B", "Back")])
         return out
@@ -5459,7 +5464,7 @@ class PlainFlight:
                                               "The eye of the Gyre: no pilot has been in it.")[:wide - 9],
                            "text" if first else "dim"))
         out.append(s._kv(s.height - 2, 1, self._status(s, wide), wide, "dim", "text"))
-        out += s._keys(s.height - 1, [("Enter", "Back")])
+        out += s._keys(s.height - 1, [("B", "Back")])
         return out
 
     # -- wonders -----------------------------------------------------------------
@@ -5617,7 +5622,7 @@ class PlainFlight:
         out.append(s._line(s.height - 3, 1, "* yours   - another pilot's   the rest: a hint, sharper as the chart "
                                             "grows"[:wide], "dim"))
         out.append(s._kv(s.height - 2, 1, self._status(s, wide), wide, "dim", "text"))
-        out += s._keys(s.height - 1, [("W/S", f"Page {self.album_page + 1} of {len(pages)}"), ("Enter", "Back")])
+        out += s._keys(s.height - 1, [("W/S", f"Page {self.album_page + 1} of {len(pages)}"), ("B", "Back")])
         return out
 
     # -- the almanac ---------------------------------------------------------
@@ -5723,7 +5728,7 @@ class PlainFlight:
             out.append(s._line(s.height - 3, 1, f"Fly one in layer {WIND_LAYERS} or below while it blows, on "
                                                 f"{WIND_DAYS} days: it is yours to enter."[:wide], "dim"))
         out.append(s._kv(s.height - 2, 1, self._status(s, wide), wide, "dim", "text"))
-        out += s._keys(s.height - 1, [("Enter", "Back")])
+        out += s._keys(s.height - 1, [("B", "Back")])
         return out
 
     # -- the chart -----------------------------------------------------------
@@ -6032,7 +6037,7 @@ class PlainFlight:
         def apply(done):
             if done is None:              # raised while this balloon was on its way
                 kept = " Your crates stay aboard for another station." if crates else ""
-                self._say(f"{hut['name']} is a mast now: its post office is open, O.{kept}")
+                self._say(f"{hut['name']} is a mast now: its post office is open, `O`.{kept}")
                 return
             name, restored, took = hut["name"], done["restored"], done["took"]
             pay = restored * RESUPPLY_PAY + took * CRATE_PAY
@@ -6163,7 +6168,7 @@ class PlainFlight:
             return []
 
     def _book_key(self, k: str) -> None:
-        if self.book_place() != self.book["station"] or k in ("ENTER", "ESC", "b", " "):
+        if self.book_place() != self.book["station"] or k in BACK_KEYS:
             self.book = None
         elif self.book_mode == "canned":
             if len(k) == 1 and k.isdigit() and 1 <= int(k) <= len(CANNED):
@@ -6223,7 +6228,7 @@ class PlainFlight:
         else:
             if book["note"]:
                 out.append(s._line(s.height - 3, 1, book["note"][:wide], "bright"))
-            keys = [(f"1-{len(CANNED)}", "Sign with a line") if canned else ("W", "Write a line"), ("Enter", "Back")]
+            keys = [(f"1-{len(CANNED)}", "Sign with a line") if canned else ("W", "Write a line"), ("B", "Back")]
         out += s._keys(s.height - 1, keys)
         return out
 
@@ -6242,7 +6247,7 @@ class PlainFlight:
         self.kits, self.postmarks = 1, self.postmarks - KIT_PRICE
         self.save("stores")
         return (f"Aboard: a station kit. Land in the wild, {STATION_APART_KM:.0f} km from any place, "
-                f"and K plants it.")
+                f"and `K` plants it.")
 
     def crate(self, count: int) -> str:
         """Buy a crate of mast freight at a town, or hand one back."""
@@ -6543,7 +6548,7 @@ class PlainFlight:
         return f"The envelope: {self.design['pattern']} in {names}."
 
     def _loft_key(self, k: str) -> None:
-        if not self.at_loft() or k in ("ENTER", "ESC", "b", "g", " "):
+        if not self.at_loft() or k in BACK_KEYS + ("g",):
             self.loft = False
             return
         if len(k) == 1 and k.isdigit() and 1 <= int(k) <= len(TRACKS):
@@ -6638,8 +6643,9 @@ class PlainFlight:
             self._book_key(k)
             return None
         if self.pages:
-            self.pages = False            # any key closes the almanac, and is used up
-            return None
+            if k in BACK_KEYS + ("v",):
+                self.pages = False
+            return None                   # any other key is used up and does nothing
         if self.drift_lobby:
             self._drift_lobby_key(k)
             return None
@@ -6655,7 +6661,7 @@ class PlainFlight:
                 else:
                     self.drift["leaving"] = True
                     self.heard = []
-                    self._say("Leave this flight? X again leaves it; any other key flies on.")
+                    self._say("Leave this flight? `X` again leaves it; any other key flies on.")
                 return None
             self.drift["leaving"] = False
             if self.drift.get("kind") == "trial" and k in ("w", "s", "UP", "DOWN"):
@@ -6678,7 +6684,7 @@ class PlainFlight:
                 self.album_page -= 1
             elif k in ("s", "DOWN"):
                 self.album_page = min(self.album_page + 1, len(self._album_pages()) - 1)
-            else:
+            elif k in BACK_KEYS + ("u",):
                 self.album_open = False
             self.album_page = max(0, self.album_page)
             return None
@@ -6687,8 +6693,9 @@ class PlainFlight:
             self.album_open = True
             return None
         if self.season_open:
-            self.season_open = False      # any key closes it, and is used up
-            return None
+            if k in BACK_KEYS + ("y",):
+                self.season_open = False
+            return None                   # any other key is used up and does nothing
         if k == "y" and not self.hub and not self.loft and self.drift is None:
             self._see_season()
             self.season_open = True
@@ -6758,7 +6765,7 @@ class PlainFlight:
 
     def _hub_key(self, k: str) -> None:
         """A key at the post office."""
-        if not self.at_office() or k in ("ENTER", "ESC", "b", "o", " "):
+        if not self.at_office() or k in BACK_KEYS + ("o",):
             self.hub = False
             return
         if k == "g" and self.at_loft():
@@ -6793,12 +6800,16 @@ class PlainFlight:
         """Add to the log, wrapped to the screen. The last three lines show."""
         self.heard.append(line)
         words, current = line.split(" "), ""
-        for word in words:
-            if current and len(current) + 1 + len(word) > 76:
+        for word in words:                           # a key named between backticks: the marks take no room
+            if current and len((current + word).replace("`", "")) + 1 > 76:
                 self.log.append(current)
                 current = "       " + word          # a continued line sits under the text, not the clock
             else:
                 current = f"{current} {word}" if current else word
+        if current.startswith("       ") and " " not in current.strip() and " " in self.log[-1].strip():
+            # One word alone on the last line: the word before it comes down to keep it company.
+            before, _, word = self.log[-1].rpartition(" ")
+            self.log[-1], current = before, f"       {word} {current.strip()}"
         self.log.append(current)
         del self.log[:-3]
 
@@ -6906,7 +6917,8 @@ class PlainFlight:
             caption = f"Day {state.day}, {clock_text(minute)}. Up and away" + (f" from {name}." if name else ".")
             sub = ""
         else:
-            lines = [line.split("  ", 1)[-1] if line[:2].isdigit() else line for line in self.heard]
+            lines = [(line.split("  ", 1)[-1] if line[:2].isdigit() else line).replace("`", "")
+                     for line in self.heard]
             caption = next((line for line in lines if line.startswith(("Down ", "Midnight"))),
                            lines[0] if lines else "Down.")
             sub = next((line for line in lines if line != caption
@@ -7322,7 +7334,7 @@ class PlainFlight:
             return
         view["note"] = ""
         if k in ("LEFT", "RIGHT", "UP", "DOWN") and view["zoom"] == 0:
-            view["note"] = "This is the whole continent. Z comes closer; then the arrows move about."
+            view["note"] = "This is the whole continent. `Z` comes closer; then the arrows move about."
         elif k in ("LEFT", "RIGHT", "UP", "DOWN"):
             # A third of the window at a time, and never past the edge of the world.
             x0, y0, wide, tall = self._atlas_window()
@@ -7343,7 +7355,7 @@ class PlainFlight:
             view["names"] = not view["names"]
         elif k == "/":
             view["find"] = ""
-        elif k in ("ENTER", "ESC", "b", "c", " "):
+        elif k in BACK_KEYS + ("c",):
             self.atlas = False
             view.update(find=None, found=None, note="")         # what was looked for is not marked for ever
 
@@ -7519,7 +7531,7 @@ class PlainFlight:
         if view["find"] is not None:
             out.append(s._line(s.height - 3, 1, f"Find: {view['find']}_"[:wide], "bright"))
         elif view["note"]:
-            out.append(s._line(s.height - 3, 1, view["note"][:wide], "bright"))
+            out.append(s._told(s.height - 3, 1, view["note"], wide, "bright"))
         elif board and not panel:
             line = "Most cells charted: " + "   ".join(f"{clean_text(name, 16).replace('`', ' ')} `{count}`"
                                                    for name, count in board)
@@ -7529,7 +7541,7 @@ class PlainFlight:
             out += s._keys(s.height - 1, [("Enter", "Find it"), ("Esc", "Leave it")])
         else:
             out += s._keys(s.height - 1, [("Arrows", "Pan"), ("Z", "In"), ("-", "Out"), ("I", "Isobars"),
-                                          ("N", "Names"), ("/", "Find"), ("Enter", "Back")], 2)
+                                          ("N", "Names"), ("/", "Find"), ("B", "Back")], 2)
         return out
 
     def _station_mark(self, station: dict) -> tuple[str, str]:
@@ -7582,13 +7594,13 @@ class PlainFlight:
             draw_balloon(s.frame, s.width - 9, 16, 7.0, flame=False, colours=design_rgb(self.design),
                          pattern=self.design["pattern"])
         if self.hub_note:
-            out.append(s._line(row + 2, 1, self.hub_note[:wide], "bright"))
+            out.append(s._told(row + 2, 1, self.hub_note, wide, "bright"))
         if s.notice:
             out.append(s._line(s.height - 3, 1, s.notice[:wide], "warn"))
         elif not self.saved_ok:
             out.append(s._line(s.height - 3, 1, "This game cannot be saved here. Tell the SysOp. You can play on.", "warn"))
         out.append(s._kv(s.height - 2, 1, self._status(s, wide), wide, "dim", "text"))
-        out += s._keys(s.height - 1, [(f"1-{len(TRACKS)}", "Fit the next"), ("Enter", "Back"), ("?", "Help"),
+        out += s._keys(s.height - 1, [(f"1-{len(TRACKS)}", "Fit the next"), ("B", "Back"), ("?", "Help"),
                                       ("Q", "Quit")])
         return out
 
@@ -7639,8 +7651,8 @@ class PlainFlight:
         out.append(s._line(row + 1, 1, "ABOARD", "accent"))
         going = self.forwardable()
         if going:
-            out.append(s._line(row + 1, 9, f"W sends on by road what is bound elsewhere: "
-                                           f"{sum(pay for _, pay in going)} postmarks"[:wide - 8], "cool"))
+            out.append(s._told(row + 1, 9, f"`W` sends on by road what is bound elsewhere: "
+                                           f"{sum(pay for _, pay in going)} postmarks", wide - 8, "cool"))
         lines = [self.cargo_text(item) + ("" if state.day <= item["due"] else " (late)") for item in self.manifest]
         freight = (["A station kit"] if self.kits else []) + \
             ([f"{self.crates} crate{'s' if self.crates != 1 else ''} of mast freight"] if self.crates else [])
@@ -7662,7 +7674,7 @@ class PlainFlight:
                                      ("T", f"Mast crate, {CRATE_PRICE}")] + ([("Y", "Crate back")] if self.crates else []))
             row += 1
         if self.hub_note:
-            out.append(s._line(row + 4, 1, self.hub_note[:wide], "bright"))
+            out.append(s._told(row + 4, 1, self.hub_note, wide, "bright"))
         if s.notice:
             out.append(s._line(s.height - 3, 1, s.notice[:wide], "warn"))
         elif not self.saved_ok:
@@ -7670,7 +7682,7 @@ class PlainFlight:
         out.append(s._kv(s.height - 2, 1, self._status(s, wide), wide, "dim", "text"))
         keys = [(f"1-{len(offers)}" if len(offers) > 1 else "1", "Take or put back")] if offers else []
         keys += [("G", "Rigging loft")] if self.at_loft() else []
-        out += s._keys(s.height - 1, keys + [("Enter", "Back"), ("?", "Help"), ("Q", "Quit")])
+        out += s._keys(s.height - 1, keys + [("B", "Back"), ("?", "Help"), ("Q", "Quit")])
         return out
 
     def draw(self, s: "Session") -> list[str]:
@@ -7718,8 +7730,12 @@ class PlainFlight:
         out.append(s._kv_right(0, s.width - 1, post, 32))
         out += self._draw_map(s)
         out += self._draw_panel(s, phase)
-        for i, line in enumerate(self.log[-3:]):
-            out.append(s._line(base + i, 1, line[:wide], "dim" if i < len(self.log[-3:]) - 1 else "text"))
+        said = self.log[-3:]
+        newest = len(said) - 1                      # the last thing said is bright, all the lines of it
+        while newest > 0 and said[newest].startswith("       "):
+            newest -= 1
+        for i, line in enumerate(said):
+            out.append(s._told(base + i, 1, line, wide, "dim" if i < newest else "text"))
         if s.notice:
             out.append(s._line(base + 3, 1, s.notice[:wide], "warn"))
         elif not self.saved_ok:
@@ -7727,7 +7743,7 @@ class PlainFlight:
         elif launch.guest:
             out.append(s._line(base + 3, 1, "You are visiting: nothing is kept when you leave.", "dim"))
         sentence, role = self._sentence(phase)
-        out.append(s._line(base + 4, 1, sentence[:wide], role))
+        out.append(s._told(base + 4, 1, sentence, wide, role))
         out.append(s._kv(base + 5, 1, self._status(s, wide), wide, "dim", "text"))
         keys, gap = self._fit_keys(self._key_help(phase), wide)
         out += s._keys(base + 6, keys, gap)
@@ -7818,9 +7834,9 @@ class PlainFlight:
             return f"Every day that has opened is flown. Day {state.day} opens {opens}: come back then.", "accent"
         if phase == "rest":
             if state.grounded:
-                return "The balloon is too worn to fly. The stores at the post office mend it: O.", "warn"
+                return "The balloon is too worn to fly. The stores at the post office mend it: `O`.", "warn"
             if state.fuel < COST_LAUNCH and state.turn < DAY_TURNS:
-                return "No fuel to launch with. The stores at the post office sell it: O.", "warn"
+                return "No fuel to launch with. The stores at the post office sell it: `O`.", "warn"
             return "Nothing more to do today. Sleep, and fly on at dawn.", "text"
         choice = self.choice
         if choice == "land":
@@ -7828,7 +7844,7 @@ class PlainFlight:
             if kind == "ditch":
                 return "Land here? This is water: you would ditch and lose the post.", "warn"
             wind = self.weather.frame(state.day, state.minute).surface_speed(state.x, state.y)
-            return f"Land here: a {kind} landing in {wind:.0f} km/h on the ground. Enter to land.", \
+            return f"Land here: a {kind} landing in {wind:.0f} km/h on the ground. `Enter` to land.", \
                    "warn" if kind != "clean" else "accent"
         if choice is None:
             return "", "text"
@@ -8796,6 +8812,19 @@ class Session:
             room -= len(part)
         return ""
 
+    def _told(self, row: int, col: int, text: str, wide: int | None = None, role: str = "text") -> str:
+        """A sentence that may name keys between backticks: a key stands out as it does on the key line.
+
+        In a sentence that is itself in the keys' colour a key is white; in
+        a dimmed one (something said earlier) it is dimmed with the rest.
+        """
+        parts = text.split("`")
+        if not len(parts) % 2 or not all(re.fullmatch(r"[A-Za-z0-9?/<>-]{1,5}", part) for part in parts[1::2]):
+            # Marks that are not about keys (a pilot's name with some in it): nothing is marked, none is shown.
+            text = text.replace("`", "")
+        key = role if role == "dim" else "value" if role == "accent" else "accent"
+        return self._kv(row, col, text, wide, role, key)
+
     def _kv_right(self, row: int, edge: int, text: str, least: int = 0) -> str:
         """A marked line ending at a column: it measures what will show, not the marks."""
         return self._kv(row, max(least, edge - len(text.replace("`", ""))), text)
@@ -8897,7 +8926,7 @@ class Session:
             else:
                 self._kv(row, 1, t, self.width - 2, "text", "cool")
             row += 1
-        out += self._keys(self.height - 1, [("B", "Back"), ("Q", "Back")])
+        out += self._keys(self.height - 1, [("B", "Back")])
         return out
 
     def _keys(self, row: int, keys, gap: int = 3) -> list[str]:
@@ -8924,7 +8953,7 @@ class Session:
         self.notice = ""
         lower = key.lower() if len(key) == 1 else key
         if self.view == "help":
-            if lower in ("q", "b", "ESC", "?", "ENTER", "CTRL-C"):
+            if lower in BACK_KEYS + ("?", "q", "CTRL-C"):
                 self.view = "front"
             return
         if self.game is not None and layout_tier(self.width, self.height) != "undersize":

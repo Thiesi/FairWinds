@@ -379,6 +379,14 @@ status line, the post office, the loft) the name is drawn in one ink and the
 figure in another, brighter one. The help page has headings, and every key and
 map sign in it is in a colour of its own.
 
+Wherever a sentence names a key (the log, the sentence under it, the notes on
+the Drift's, the Trials', the chart's and the post office's screens) the key
+is in the colour the key line gives its keys; in a sentence that is itself in
+that colour it is white. In the source a key stands between backticks
+(`Session._told`); the marks take no room when the log is wrapped. Of the
+log's three lines the last thing said is bright in all its lines, and what was
+said before it is dim, keys and all.
+
 **Keys.** W and S or the arrows step through sink, hold and climb. Enter or
 Space flies the choice. J chooses a jettison, L a landing, P releases a pibal
 at once. N stays the night. Keys typed before a turn's result is on screen are
@@ -1445,6 +1453,14 @@ sequences may arrive split. No key-up, no chords, no timing. Keys typed while a
 scene or a turn result is drawn are discarded, so a held key never commits
 turns unseen. The key for an action is the first letter of its label. `B` and
 Esc go back, `<` and `>` page, `/` finds, `?` shows help.
+
+**One way back.** Every screen laid over the flight (the help, the post
+office, the loft, the chart, the almanac, the album, the season, a visitors'
+book, the Drift's and the Trials' lists) is left by `B`, by Esc, or by the key
+that opened it, and its key line says `[B] Back` (`BACK_KEYS`). Enter and
+Space never leave a screen: the flight underneath takes them for a move, so
+one press too many would launch. On the almanac, the album and the season any
+other key is used up and does nothing. The help is also left by `Q`.
 
 ## 12. Storage
 

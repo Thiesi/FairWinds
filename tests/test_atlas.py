@@ -36,13 +36,16 @@ class Keys(AtlasCase):
         self.assertEqual(self.window(game), (0.0, 0.0, fw.WORLD_W, fw.WORLD_H))
         text = self.screen(game)
         for word in ("The chart", "[Arrows] Pan", "[Z] In", "[-] Out", "[I] Isobars", "[N] Names", "[/] Find",
-                     "[Enter] Back"):
+                     "[B] Back"):
             self.assertIn(word, text)
         game.key("x")
         self.assertTrue(game.atlas, "a key that means nothing here does not close it")
         game.key("ENTER")
+        game.key(" ")
+        self.assertTrue(game.atlas, "nor Enter, nor Space: the flight under it would take the next for a launch")
+        game.key("b")
         self.assertFalse(game.atlas)
-        for key in ("ESC", "b", "c", " "):
+        for key in ("ESC", "b", "c"):
             game.key("c")
             game.key(key)
             self.assertFalse(game.atlas, key)
@@ -139,7 +142,7 @@ class Keys(AtlasCase):
         text = self.words(game)
         self.assertIn(f"Found: {first['name']}.", text)
         self.assertIn(f"* {first['name']}", text)
-        game.key("ENTER")
+        game.key("b")
         game.key("c")
         self.assertIsNone(game.atlas_view["found"], "closing the chart takes the mark away")
         self.assertNotIn("*", self.words(game))
