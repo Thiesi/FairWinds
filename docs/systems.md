@@ -830,8 +830,9 @@ the ground. The tables are `ATLAS_ZOOMS`, `ISOBAR_HPA`, `ISOBAR_DEEP`,
   marks, a space apart and never run together; where not all fit, the places
   the pilot has post for come first. The Gyre is always named.
 - **Find.** `/`, a name or part of one, Enter. Towns, stations, found
-  features, stranded pilots and the Gyre can be found; a name that begins
-  with what was typed comes before one that only holds it. The place is
+  features, stranded pilots, winds in the almanac and the Gyre can be found;
+  a name that begins with what was typed (a leading "The" aside) comes
+  before one that only holds it, and of several the shortest. The place is
   brought to the middle, one step closer if the chart showed the whole
   continent, and marked `*` until the chart is closed. While a name is typed
   every printable key is part of it. Esc leaves the name, not the chart.
@@ -884,8 +885,9 @@ forecast when its conditions hold.
   4). The almanac adds nothing to the weather: it names where they come
   back.
 - **Flying one.** A turn that ends aloft in layer 2 or below, within 30 km
-  of a local wind's middle, while it blows, counts for that pilot and that
-  flying day. A day counts once. The first time on a day the log says what
+  of a local wind's middle, counts for that pilot and that flying day if the
+  wind was blowing when the turn began: a turn flies on the wind it sets
+  out on (section 5), so that is the wind it was in. A day counts once. The first time on a day the log says what
   kind of wind it is and how many of three days it has been flown.
 - **Entering one.** The third such day enters it, in the write of that turn:
   once, under the pilot whose third day it was, however many arrive

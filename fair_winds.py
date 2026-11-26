@@ -3264,7 +3264,10 @@ def local_winds(world: "World", weather: "Weather") -> list[dict]:
 
     Picked by turns from the strongest gaps, coasts and slopes that lie
     low enough to be flown in the lowest layer, each well apart from the
-    others. Not stored: the land and the seed say where they are.
+    others. Not stored: the land and the seed say where they are. The
+    records know a wind by its number here, so a change to how they are
+    picked moves the winds of every world already begun: a test holds one
+    world's winds to what they were.
     """
     if getattr(world, "_winds", None) is None:
         low, picked, used = LAYER_BLOCK_M[0], [], set()
@@ -4138,11 +4141,10 @@ class PlainFlight:
             return
 
         def earned(new, found, done=None):
-            career = self._charted(new, found)
+            self._charted(new, found)     # what the charting paid
             if deed is not None:
-                earn(done)
-                career = self._career()
-            return career
+                earn(done)                # and what the deed came to
+            return self._career()         # the career as it stands after both
         # What the turn earns is worked out inside its transaction. If the transaction does not go through,
         # the earnings must not stand either: or the ground would be paid for now and again by whoever is
         # written down as first over it.
@@ -5318,7 +5320,8 @@ class PlainFlight:
                     if cell not in got:
                         got.add(cell)
                         seen.append(cell)
-        # A local wind flown while it blew is written with the turn that flew it.
+        # A local wind flown while it blew is written with the turn that flew it. It blew when the turn
+        # began, and the balloon is in it where the turn ends: the wind of a turn is the wind it sets out on.
         wind = self.wind_here(self.state, before.day, before.minute)
         if wind is not None and wind["id"] not in self.almanac:
             launch, day = self.launch, before.day

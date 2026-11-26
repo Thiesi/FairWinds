@@ -77,6 +77,15 @@ class Generator(unittest.TestCase):
             self.assertEqual([(w["name"], w["cell"], w["kind"]) for w in fw.local_winds(again, fw.Weather(again))],
                              [(w["name"], w["cell"], w["kind"]) for w in winds], "the same every time")
 
+    def test_one_worlds_winds_are_where_they_were(self):
+        # The records know a wind by its number. If this fails, the generator has changed, and the winds
+        # entered in every world already begun now belong to other places.
+        world = fw.World(fw.world_seed("test-node"))
+        winds = fw.local_winds(world, fw.Weather(world))
+        self.assertEqual([(w["name"], w["cell"], w["kind"]) for w in winds[:4]],
+                         [("The Mallow Funnel", 11414, "pass"), ("The Alder Breeze", 10867, "sea"),
+                          ("The Flint Drain", 12847, "fall"), ("The Osier Rush", 5385, "pass")])
+
     def test_each_wind_comes_back_when_its_conditions_hold(self):
         for node in NODES[:3]:
             world = fw.World(fw.world_seed(node))
@@ -243,10 +252,28 @@ class Entering(AlmanacCase):
         db.execute(f"PRAGMA application_id={fw.APPLICATION_ID}")
         db.execute("PRAGMA user_version=4")
         db.executemany("INSERT INTO meta VALUES (?, ?)", (("seed", str(seed)), ("node", "relink-test"), ("created", "1")))
+        # A world that has been lived in: a pilot, charted ground, a mast with its givers, a call, a line.
+        probe = fw.PlainFlight(launch(user_id=2 ** 62 + 9, timezone="UTC", node_id="relink-test"), None, now=self.clock)
+        probe.key("ENTER")
+        spot = self.spot(probe)
+        db.execute("INSERT INTO pilots VALUES (12, 'Mara', 1.0, ?)", (fw.json.dumps(probe._career()),))
+        db.execute("INSERT INTO flights VALUES (12, 1, ?)", (fw.json.dumps(probe.state.to_dict()),))
+        db.execute("INSERT INTO charted VALUES (77, 12, 1)")
+        db.execute("INSERT INTO stations VALUES (3, 'Larch Hut', ?, ?, 12, 'Mara', 1, 14, 1, 4, 1)", spot)
+        db.execute("INSERT INTO contributions VALUES (3, 12, 'Mara', 4)")
+        db.execute("INSERT INTO calls (user_id, handle, x, y, day, fuel, repair) VALUES (40, 'Juno', 10.0, 10.0, 1, 15, 0)")
+        db.execute("INSERT INTO guestbook (station, user_id, handle, day, text) VALUES (3, 12, 'Mara', 1, 'still here')")
         db.commit()
         db.close()
+        probe.close()
         game = fw.PlainFlight(launch(user_id=12, timezone="UTC", node_id="relink-test"), self.folder, now=self.clock)
         self.assertTrue(game.saved_ok)
+        self.assertEqual(game.state.turn, 1, "the pilot is where they were")
+        self.assertIn(77, game.chart)
+        self.assertEqual((game.stations[3]["name"], game.stations[3]["given"]), ("Larch Hut", ["Mara"]))
+        self.assertEqual([call["handle"] for call in game.calls], ["Juno"])
+        self.assertEqual(game._book_lines(3), [(1, "Mara", "still here")])
+        self.assertEqual((game.almanac, game.flown), ({}, {}))
         self.days(1, game)
         self.assertTrue(self.fly(game, self.a_wind(game)))
         self.assertEqual(self.rows("PRAGMA user_version"), [(fw.SCHEMA_VERSION,)])
