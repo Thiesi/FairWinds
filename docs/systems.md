@@ -717,7 +717,10 @@ where the wind has put a pilot down: plant something there.
   chart of the continent shows them too.
 - The records gain two tables, `stations` and `contributions`, and the schema
   is version 3. A world from before is brought forward when it is next
-  opened. A build from before this one refuses a world at version 3.
+  opened. A build from before this one refuses a world at version 3, so there
+  is no going back to an older build without a copy from before:
+  `--backup FOLDER` makes one, and is worth running before a new build is
+  installed.
 - A visitor, or a caller whose records cannot be kept, plants and raises for
   that visit only.
 

@@ -3065,6 +3065,8 @@ def plant_station(db, world: "World", x: float, y: float, user_id: int, handle: 
     if any((x - px) ** 2 + (y - py) ** 2 < STATION_APART_KM ** 2 for _, px, py in rows):
         return None
     used = {place["name"] for place in world.towns + world.stations} | {row[0] for row in rows}
+    # The next number in line. Stations are never deleted, a silent one included, so the numbers have no gaps:
+    # a station's number is its place in every session's list, and cargo bound for a mast is addressed by it.
     sid, name = len(world.stations) + len(rows), station_name(world, x, y, used)
     db.execute("INSERT INTO stations (id, name, x, y, user_id, handle, day, stock, stock_day)"
                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (sid, name, x, y, user_id, handle, day, STOCK_FULL, day))
@@ -5698,7 +5700,7 @@ PLAIN_HELP = (
     "  Climbing costs fuel, sinking is free, holding costs 1 (0 from 11:00 to",
     "  15:00, 2 after 20:00). Land in 15 km/h or less. 12 km from a place is there.",
     "  `K` plants a station kit in the wild: a sharper forecast there for everyone.",
-    "  Land at a station to restock it. Crates from a town raise it into a mast.",
+    "  Landing at a station restocks it: no fuel there. Crates make it a mast.",
     "  `?` this help   `Ctrl-L` redraw   `Q` leave: every turn is saved.",
 )
 

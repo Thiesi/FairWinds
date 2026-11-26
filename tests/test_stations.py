@@ -521,7 +521,7 @@ class Records(StationCase):
 
     def test_the_help_names_them(self):
         text = " ".join(fw.PLAIN_HELP)
-        for word in ("`K` plants a station kit", "`Y` mast", "restock"):
+        for word in ("`K` plants a station kit", "`Y` mast", "restocks it", "no fuel there"):
             self.assertIn(word, text)
 
 
