@@ -4396,14 +4396,15 @@ class PlainFlight:
             if (call["x"] - self.state.x) ** 2 + (call["y"] - self.state.y) ** 2 > PLACE_RADIUS_KM ** 2:
                 continue
             who = clean_text(call["handle"], 16) or "A pilot"
-            spare = self.state.fuel - COST_LAUNCH
+            spare = max(0, self.state.fuel - COST_LAUNCH)     # patches alone can be given on any tank
             if call["fuel"] > spare:
                 self._say(f"{who} is stranded here and wants {call['fuel']} fuel: more than you can spare.")
                 continue
 
             def apply(done, who=who):
                 if done is None:
-                    self._say(f"Somebody reached {who} before you.")
+                    self._say(f"{who} is no longer waiting for what you can give: somebody was here first, "
+                              f"or they want more now.")
                     return
                 self.state = dataclasses.replace(self.state, fuel=max(0, self.state.fuel - done["fuel"]))
                 self.postmarks += RESCUE_PAY
@@ -4481,7 +4482,7 @@ class PlainFlight:
             out.append(s._line(2, 1, "Nobody has signed it yet.", "dim"))
         for i, (day, handle, text) in enumerate(book["lines"][:max(1, room)]):
             # Shown as plain text, and cleaned again here: what is in the records is not trusted to be clean.
-            line = f"Day {int(day)}  {book_text(str(handle))[:16]}: {book_text(str(text))}"
+            line = f"Day {int(day)}  {book_text(str(handle))[:16] or 'A pilot'}: {book_text(str(text))}"
             out.append(s._line(2 + i, 1, line[:wide], "text"))
         if canned:
             top = s.height - 4 - len(CANNED)

@@ -150,7 +150,7 @@ class Rescue(RescueCase):
         c._rescue()
         c._see_calls = real
         self.assertEqual((c.state.fuel, c.postmarks), was)
-        self.assertTrue(any("Somebody reached Ada before you" in line for line in c.heard))
+        self.assertTrue(any("Ada is no longer waiting" in line for line in c.heard))
         for game in (b, c):
             game.close()
 
@@ -188,6 +188,14 @@ class Rescue(RescueCase):
         self.assertEqual(self.rows("SELECT by_user FROM calls"), [(None,)])
         self.arrive(b, x, y, fuel=fw.RESCUE_FUEL + fw.COST_LAUNCH)
         self.assertEqual(b.state.fuel, fw.COST_LAUNCH, "enough left to launch again")
+
+    def test_patches_can_be_given_on_an_empty_tank(self):
+        a = self.game(user_id=1)
+        b = self.other(2)
+        x, y = self.strand(a, fuel=30, wear=fw.WEAR_GROUNDED)
+        was = b.postmarks
+        self.arrive(b, x, y, fuel=1)
+        self.assertEqual((b.state.fuel, b.postmarks), (1, was + fw.RESCUE_PAY))
         b.close()
 
     def test_too_far_off_is_no_rescue(self):
@@ -420,6 +428,7 @@ class Book(RescueCase):
         game.key("b")
         text = self.screen(game)
         self.assertIn("Mal[2Jory: wipe[2J[H", text)
+        self.assertEqual(fw.book_text("漢字")[:16] or "A pilot", "A pilot", "a name of wide letters still has a name")
         self.assertLessEqual(max(len(line) for line in text.split("\n")), 80)
 
     def test_canned_lines_only(self):
