@@ -806,6 +806,54 @@ as mail has) is for play.
 stranded, or were last seen aloft, with their envelope colours. Positions are
 read from the world when a screen is drawn. Nobody needs to be online together.
 
+**The chart, as built (S17).** `C` from the flying screen, in the air or on
+the ground. The tables are `ATLAS_ZOOMS`, `ISOBAR_HPA`, `ISOBAR_DEEP`,
+`ATLAS_PANEL`, `ATLAS_PANEL_FROM`, `ROUTE_KEPT` and `FIND_LIMIT`.
+
+- **The ground.** Charted land in colour, the rest sketched, as on the map.
+  The whole continent is drawn from the chart grid (10 km cells); zoomed in,
+  from the map's own shaded relief, a sample to a pixel.
+- **Zoom.** `Z` steps through the whole continent, a half of it across, a
+  quarter of it across, and back. The first step in is centred on the pilot.
+- **Pan.** The arrows move the window a third of itself, never past the edge
+  of the world. On the whole continent there is nowhere to go.
+- **Isobars.** `I`. A line wherever the pressure of the true weather at the
+  pilot's day and hour passes a multiple of 4 hPa between two neighbouring
+  pixels (below 992 hPa, of 20: the Gyre's core is too steep for more). The
+  field is `WeatherFrame.pressure`, from the same systems that turn the
+  wind. Each low and high is marked `L` or `H` with its pressure. Where the
+  map is drawn in characters there is no room for isobars among the glyphs,
+  so they start off and `I` asks for them.
+- **Names.** `N`. Towns, stations and found features are named beside their
+  marks, a space apart and never run together; where not all fit, the places
+  the pilot has post for come first. The Gyre is always named.
+- **Find.** `/`, a name or part of one, Enter. Towns, stations, found
+  features, stranded pilots and the Gyre can be found; a name that begins
+  with what was typed comes before one that only holds it. The place is
+  brought to the middle, one step closer if the chart showed the whole
+  continent, and marked `*`. While a name is typed every printable key is
+  part of it. Esc leaves the name, not the chart.
+- **Sites.** `o` town, `+` station (dim when silent), `Y` mast, `#` where
+  the pilot has post for, `Q` another pilot, `!` a stranded pilot with what
+  they want, `@` the pilot.
+- **The route so far.** Where each of the pilot's last 40 flights, walks and
+  boat rides ended, joined by dots, and on to where the balloon is now. It
+  is kept in the pilot's record (`route`); a pilot from before has none
+  until they next land.
+- **The panel**, from 120 columns: how much of the land is charted, features
+  named, stations and masts, who has charted the most, who is stranded and
+  how far off, and a key to the marks. Below 120 columns the two lines under
+  the map say the first and the fourth of those.
+- **Leaving.** Enter, Esc, Space, B or C. Other keys do nothing.
+- **Cost.** The ground and isobars are composed once for a window and kept
+  until what they show changes. Measured on the development host from warm
+  tiles: 4 ms at 80 x 24, 9 ms at 132 x 40, 16 ms at 168 x 46 (the plan
+  allows 60).
+
+**Not yet built here.** The season and the gazette have no panel because
+there is neither yet. A camp is not told from any other pilot on the ground.
+The winds are not drawn on the chart.
+
 **The almanac.** A local wind is entered when one pilot has flown through it
 while it was blowing on three different world days. It gets a name from the
 generator and that pilot's credit. An entered wind is drawn on every pilot's

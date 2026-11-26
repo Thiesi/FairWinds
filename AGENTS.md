@@ -34,8 +34,9 @@ for everyone, features are found and named) and S15 (stations planted in the
 wild, kept stocked, and raised into mooring masts with freight from the
 towns) and S16 (a stranded pilot's call for help on every map, rescue by
 landing beside them, and the stations' visitors' books) are built at the
-owner's asking, ahead of the play-test's verdict. The next slice is S17, the
-chart of the whole continent.
+owner's asking, ahead of the play-test's verdict. S17 (the chart of the whole
+continent: isobars, pan, zoom, find, names, the route so far) is built too.
+The next slice is S18, the almanac.
 
 To look at a screen, run `python scripts/capture.py`: it writes each size and
 colour depth as an HTML page under `.test-tmp/captures`, which headless Edge
