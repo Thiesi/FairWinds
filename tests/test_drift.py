@@ -198,7 +198,7 @@ class Flying(DriftCase):
         self.assertIn("[Enter] Take it up", self.screen(again))
         again.key("ENTER")
         self.assertEqual(again.state, part, "taken up exactly where it was left, not from the start")
-        again.key("x")
+        again.key("x")                                    # a scored Drift is parked by one X: nothing is lost
         self.assertIn("waits as you left it", again.drift_note)
         again.key("ENTER")
         self.assertEqual(again.state, part)
@@ -332,8 +332,61 @@ class Flying(DriftCase):
         saved = support.stored(self.folder)
         self.assertEqual((saved["seq"], saved["state"]["turn"], saved["state"]["fuel"]), (seq, 0, 60))
         game.key("x")
+        self.assertIsNotNone(game.drift, "a practice is not thrown away by one slip of the finger")
+        self.assertTrue(any("X again leaves it" in line for line in game.heard))
+        game.key("s")
+        game.key("x")
+        self.assertIsNotNone(game.drift, "another key in between and it asks again")
+        game.key("x")
         self.assertEqual((game.state.turn, game.state.fuel), (0, 60))
         self.assertEqual(game.drift_note, "Practice left.")
+
+    def test_a_turn_that_cannot_be_written_is_not_flown(self):
+        game = self.game()
+        game.key("t")
+        game.key("ENTER")
+        game.key("ENTER")
+        game.key("ENTER")
+        kept = game.state
+        real = game.store.write
+
+        def broken(*args, **kwargs):
+            raise sqlite3.OperationalError("disk I/O error")
+        game.store.write = broken
+        game.key("ENTER")
+        game.store.write = real
+        self.assertIsNone(game.drift, "the Drift is parked")
+        self.assertIn("could not be written", game.drift_note)
+        game.key("ENTER")
+        self.assertEqual(game.state, kept, "and taken up from the last turn on record, not the one that was lost")
+
+    def test_a_drift_is_not_written_by_a_session_that_has_lost_the_pilot(self):
+        game = self.game()
+        game.key("t")
+        game.key("ENTER")
+        game.key("ENTER")
+        text = self.rows("SELECT state FROM drifts")[0][0]
+        other = fw.Store(self.folder, game.world.seed, "test-node")
+        other.claim(12, "ssh", force=True)
+        real = game._mine
+        game._mine = lambda write=True: True               # the look before the turn still saw the pilot as ours
+        game.key("ENTER")
+        game._mine = real
+        self.assertEqual(game.ended, "taken")
+        self.assertEqual(self.rows("SELECT state FROM drifts")[0][0], text, "nothing was written")
+        other.close()
+
+    def test_a_day_that_opened_while_the_screen_stood_open_is_shown_before_it_is_flown(self):
+        game = self.game()
+        game.key("t")
+        day = game._drift_seen["day"]
+        self.clock.days(1)
+        game.key("ENTER")
+        self.assertIsNone(game.drift)
+        self.assertEqual(game._drift_seen["day"], day + 1)
+        self.assertIn("A new day has opened", self.screen(game))
+        game.key("ENTER")
+        self.assertEqual(game.drift["course"]["day"], day + 1)
 
     def test_not_from_the_air_and_the_drift_screen_fits(self):
         game = self.game()

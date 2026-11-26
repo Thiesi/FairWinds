@@ -948,11 +948,13 @@ and `DRIFT_SCOUT`; the rules a caller reads are `DRIFT_HELP`.
   (`drifts`): one row for a pilot and a day. Every turn is written to that
   row. Leaving the Drift (`X`), the door, or a dropped call leaves it part
   way; coming back the same day takes it up exactly there. There is no way
-  to begin it again. When it ends it is scored once, in the same write that
+  to begin it again. A turn that cannot be written is not flown: the Drift
+  is parked where the records have it. When it ends it is scored once, in the same write that
   pays the pilot a postmark for every 25 points. An attempt left unfinished
   when the day is out scores nothing.
 - **Practice** (`P`) is the same course as often as wanted, in memory only:
-  it writes nothing and is never on the table.
+  it writes nothing and is never on the table. `X` leaves a Drift; a
+  practice, which would be lost, asks for it twice.
 - **The table** is the day's top ten.
 - **What it leaves alone.** While a Drift is flown the pilot's own flight is
   set aside, and nothing of it is written: no turn, no chart, no delivery,

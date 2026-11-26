@@ -3757,9 +3757,19 @@ class Store:
             return seq
         return self._write(work)
 
-    def write(self, work):
-        """Something written to the shared world alone, as one transaction: a function of the database."""
-        return self._write(lambda: work(self.db))
+    def write(self, work, user_id: int | None = None):
+        """Something written to the shared world alone, as one transaction: a function of the database.
+
+        With a pilot named, only if the pilot is still this session's:
+        otherwise LeaseLost, and nothing is written.
+        """
+        def checked():
+            if user_id is not None:
+                row = self.db.execute("SELECT token FROM sessions WHERE user_id=?", (user_id,)).fetchone()
+                if row is None or row[0] != self.token:
+                    raise LeaseLost()
+            return work(self.db)
+        return self._write(checked)
 
     def read(self, query):
         """What a query of the shared world comes to: a function of the database. It writes nothing."""
@@ -4328,7 +4338,8 @@ class PlainFlight:
         """Read or write the shared world alone: the records, or with none this visit's own."""
         if self.store is None:
             return work(self._own_db())
-        return self.store.write(work) if write else self.store.read(work)
+        # A write is this pilot's only while the pilot is this session's.
+        return self.store.write(work, self.launch.user_id) if write else self.store.read(work)
 
     def _drift_open(self) -> None:
         self.drift_lobby, self.drift_note = True, ""
@@ -4347,10 +4358,14 @@ class PlainFlight:
     def _drift_lobby_key(self, k: str) -> None:
         if k in ("ESC", "b", "t", " "):
             self.drift_lobby = False
-        elif k == "p":
-            self._drift_begin(scored=False)
-        elif k in ("ENTER", "f"):
-            self._drift_begin(scored=True)
+        elif k in ("p", "ENTER"):
+            self._look_at_the_calendar()
+            if self.today != self._drift_seen["day"]:
+                # A day opened while the screen stood open: the course on it was yesterday's.
+                self._drift_look()
+                self.drift_note = "A new day has opened. This is its course."
+            else:
+                self._drift_begin(scored=k == "ENTER")
 
     def _drift_begin(self, scored: bool) -> None:
         """Set the pilot's own flight aside and stand the standard balloon at the start."""
@@ -4366,6 +4381,9 @@ class PlainFlight:
                 row = self._shared(lambda db: begin_drift(db, day, launch.user_id, launch.handle, text, self.now()),
                                    write=True)
                 state = FlightState.from_dict(json.loads(row["state"]))
+            except LeaseLost:
+                self.ended = "taken"
+                return
             except (sqlite3.Error, ValueError, KeyError, TypeError) as error:
                 diagnose(f"the Drift could not be begun: {error}")
                 self.drift_note = "The Drift cannot be flown for the table just now. P practises."
@@ -4408,8 +4426,16 @@ class PlainFlight:
             text, day, me = json.dumps(self.state.to_dict()), drift["course"]["day"], self.launch.user_id
             try:
                 self._shared(lambda db: turn_drift(db, day, me, text), write=True)
+            except LeaseLost:
+                self.ended = "taken"
+                return
             except sqlite3.Error as error:
+                # A turn that is not on record cannot count: or it could be flown again, knowing how it went.
+                # The Drift is parked where the records have it.
                 diagnose(f"a turn of the Drift could not be saved: {error}")
+                self._drift_end(left=True)
+                self.drift_note = "That turn could not be written. The Drift waits where it was: Enter takes it up."
+                return
         if action != "pibal":
             self.typed_ahead = True
             if self.motion:
@@ -4471,7 +4497,7 @@ class PlainFlight:
         for i, line in enumerate(lines):
             out.append(s._kv(2 + i, 1, line, wide))
         out.append(s._line(7, 1, "TODAY'S TABLE", "accent"))
-        me = clean_text(self.launch.handle, 16)
+        me = clean_text(self.launch.handle, 16).replace("`", " ")
         for i, (handle, score, km, turns) in enumerate(seen["table"][:max(1, s.height - 14)]):
             name = clean_text(str(handle), 16).replace("`", " ") or "A pilot"
             out.append(s._kv(8 + i, 1, f"{i + 1:>2}  {name:<17}`{int(score):>5}`   {float(km):>5.1f} km  "
@@ -5506,8 +5532,16 @@ class PlainFlight:
             return None
         if self.drift is not None:
             if k in ("x", "ESC"):
-                self._drift_end(left=True)
+                # X sits among the keys that fly. A scored Drift left by a slip waits where it was; a practice
+                # would be gone, so that one asks twice.
+                if self.drift["scored"] or self.drift.get("leaving"):
+                    self._drift_end(left=True)
+                else:
+                    self.drift["leaving"] = True
+                    self.heard = []
+                    self._say("Leave the practice? X again leaves it; any other key flies on.")
                 return None
+            self.drift["leaving"] = False
         elif k == "t" and not self.hub and not self.loft and self.state.status != "aloft":
             self._drift_open()
             return None
