@@ -35,7 +35,8 @@ class Keys(AtlasCase):
         game = self.chart()
         self.assertEqual(self.window(game), (0.0, 0.0, fw.WORLD_W, fw.WORLD_H))
         text = self.screen(game)
-        for word in ("The chart", "[Arrows] Pan", "[Z] Zoom", "[I] Isobars", "[N] Names", "[/] Find", "[Enter] Back"):
+        for word in ("The chart", "[Arrows] Pan", "[Z] In", "[-] Out", "[I] Isobars", "[N] Names", "[/] Find",
+                     "[Enter] Back"):
             self.assertIn(word, text)
         game.key("x")
         self.assertTrue(game.atlas, "a key that means nothing here does not close it")
@@ -59,11 +60,19 @@ class Keys(AtlasCase):
         self.screen(game)
         game.key("z")
         self.assertEqual(self.window(game), (0.0, 0.0, fw.WORLD_W, fw.WORLD_H))
+        game.key("z")
+        game.key("z")
+        game.key("-")
+        self.assertEqual(self.window(game)[2], fw.WORLD_W / 2, "a step back out")
+        game.key("-")
+        game.key("-")
+        self.assertEqual(self.window(game)[2], fw.WORLD_W, "and no further than the whole")
 
     def test_pan_moves_a_third_of_the_window_and_stops_at_the_edge(self):
         game = self.chart()
         game.key("RIGHT")
         self.assertEqual(self.window(game), (0.0, 0.0, fw.WORLD_W, fw.WORLD_H), "the whole continent has nowhere to go")
+        self.assertIn("Z comes closer", self.screen(game), "and says what to do about it")
         game.atlas_view.update(zoom=2, x=fw.WORLD_W / 2, y=fw.WORLD_H / 2)
         x0, y0, wide, tall = self.window(game)
         game.key("RIGHT")
@@ -130,6 +139,24 @@ class Keys(AtlasCase):
         text = self.words(game)
         self.assertIn(f"Found: {first['name']}.", text)
         self.assertIn(f"* {first['name']}", text)
+        game.key("ENTER")
+        game.key("c")
+        self.assertIsNone(game.atlas_view["found"], "closing the chart takes the mark away")
+        self.assertNotIn("*", self.words(game))
+
+    def test_the_route_hides_no_name(self):
+        game = self.chart()
+        bound = [game.place_of(ref)["name"] for ref in game.targets]
+        before = self.words(game)
+        for ref in game.targets:                          # a route straight through everywhere the pilot is bound
+            place = game.place_of(ref)
+            game._route_to(place["x"] - 300.0, place["y"])
+            game._route_to(place["x"] + 300.0, place["y"])
+        after = self.words(game)
+        self.assertGreater(after.count(fw.TRACK_DOT), 20)
+        for name in bound:
+            self.assertEqual(name in after, name in before, name)
+        self.assertIn("THE GYRE", after)
 
     def test_find_knows_the_gyre_stations_and_the_stranded_and_says_when_it_knows_nothing(self):
         a = self.game(user_id=1, handle="Ada")

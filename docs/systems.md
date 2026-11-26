@@ -815,8 +815,10 @@ the ground. The tables are `ATLAS_ZOOMS`, `ISOBAR_HPA`, `ISOBAR_DEEP`,
   from the map's own shaded relief, a sample to a pixel.
 - **Zoom.** `Z` steps through the whole continent, a half of it across, a
   quarter of it across, and back. The first step in is centred on the pilot.
+  `-` steps back out.
 - **Pan.** The arrows move the window a third of itself, never past the edge
-  of the world. On the whole continent there is nowhere to go.
+  of the world. On the whole continent there is nowhere to go, and the
+  chart says so.
 - **Isobars.** `I`. A line wherever the pressure of the true weather at the
   pilot's day and hour passes a multiple of 4 hPa between two neighbouring
   pixels (below 992 hPa, of 20: the Gyre's core is too steep for more). The
@@ -831,13 +833,14 @@ the ground. The tables are `ATLAS_ZOOMS`, `ISOBAR_HPA`, `ISOBAR_DEEP`,
   features, stranded pilots and the Gyre can be found; a name that begins
   with what was typed comes before one that only holds it. The place is
   brought to the middle, one step closer if the chart showed the whole
-  continent, and marked `*`. While a name is typed every printable key is
-  part of it. Esc leaves the name, not the chart.
+  continent, and marked `*` until the chart is closed. While a name is typed
+  every printable key is part of it. Esc leaves the name, not the chart.
 - **Sites.** `o` town, `+` station (dim when silent), `Y` mast, `#` where
   the pilot has post for, `Q` another pilot, `!` a stranded pilot with what
   they want, `@` the pilot.
 - **The route so far.** Where each of the pilot's last 40 flights, walks and
-  boat rides ended, joined by dots, and on to where the balloon is now. It
+  boat rides ended, joined by dots, and on to where the balloon is now. The
+  dots are drawn last and only where nothing else is: they hide no name. It
   is kept in the pilot's record (`route`); a pilot from before has none
   until they next land.
 - **The panel**, from 120 columns: how much of the land is charted, features

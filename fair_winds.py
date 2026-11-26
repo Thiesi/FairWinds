@@ -5511,8 +5511,9 @@ class PlainFlight:
                 view["find"] += key
             return
         view["note"] = ""
-        _, _, wide, tall = self._atlas_window()
-        if k in ("LEFT", "RIGHT", "UP", "DOWN"):
+        if k in ("LEFT", "RIGHT", "UP", "DOWN") and view["zoom"] == 0:
+            view["note"] = "This is the whole continent. Z comes closer; then the arrows move about."
+        elif k in ("LEFT", "RIGHT", "UP", "DOWN"):
             # A third of the window at a time, and never past the edge of the world.
             x0, y0, wide, tall = self._atlas_window()
             cx, cy = x0 + wide / 2, y0 + tall / 2
@@ -5524,6 +5525,8 @@ class PlainFlight:
             if view["zoom"] == 0:
                 view["x"], view["y"] = self.state.x, self.state.y      # the first step in is on the pilot
             view["zoom"] = (view["zoom"] + 1) % len(ATLAS_ZOOMS)
+        elif k in ("-", "x"):
+            view["zoom"] = max(0, view["zoom"] - 1)              # a step back out
         elif k == "i":
             view["isobars"] = not view["isobars"]
         elif k == "n":
@@ -5532,6 +5535,7 @@ class PlainFlight:
             view["find"] = ""
         elif k in ("ENTER", "ESC", "b", "c", " "):
             self.atlas = False
+            view.update(find=None, found=None, note="")         # what was looked for is not marked for ever
 
     def _draw_atlas(self, s: "Session") -> list[str]:
         """The chart of the whole continent: what is known, the weather over it, and whose work it is."""
@@ -5613,17 +5617,11 @@ class PlainFlight:
                              station, ink))
         for ox, oy, ink in self.others:
             mark(ox, oy, "Q", ink)
-        # The route so far: where each flight ended, joined up, and on to where the balloon is now.
         dot = TRACK_DOT if utf8 else TRACK_PLAIN[0]
-        legs = [tuple(point) for point in self.route] + [(state.x, state.y)]
-        for (ax, ay), (bx, by) in zip(legs, legs[1:]):
-            steps = max(1, int(max(abs(bx - ax) / vw * cols, abs(by - ay) / vh * rows)))
-            for i in range(1, steps):
-                mark(ax + (bx - ax) * i / steps, ay + (by - ay) * i / steps, dot, "accent")
         for cell, call in waiting:
             label(cell, f"{clean_text(call['handle'], 12)}: {need_text(call['fuel'], call['repair'])}", "warn")
         gyre = self.world.gyre
-        label(mark(gyre["x"], gyre["y"], "@" if not utf8 else "◎", "warn"), "THE GYRE", "warn")
+        label(mark(gyre["x"], gyre["y"], "&" if not utf8 else "◎", "warn"), "THE GYRE", "warn")
         if view["isobars"]:
             frame = self.weather.frame(state.day, state.minute)
             for sx, sy, _, strength, turn in frame.systems:
@@ -5646,6 +5644,13 @@ class PlainFlight:
                 if cell is not None and cell not in taken and label((cell[0] - 2, cell[1]), entry[0], "dim"):
                     shown += 1
 
+        # The route so far, last of all and only where nothing else is: where each flight ended, joined up,
+        # and on to where the balloon is now. A dot never takes the place of a mark or a name.
+        legs = [tuple(point) for point in self.route] + [(state.x, state.y)]
+        for (ax, ay), (bx, by) in zip(legs, legs[1:]):
+            steps = max(1, int(max(abs(bx - ax) / vw * cols, abs(by - ay) / vh * rows)))
+            for i in range(1, steps):
+                mark(ax + (bx - ax) * i / steps, ay + (by - ay) * i / steps, dot, "accent")
         named = sum(1 for entry in self.found.values() if entry)
         masts = sum(1 for station in self.stations if station.get("mast_day") is not None)
         board = []
@@ -5702,8 +5707,8 @@ class PlainFlight:
         if view["find"] is not None:
             out += s._keys(s.height - 1, [("Enter", "Find it"), ("Esc", "Leave it")])
         else:
-            out += s._keys(s.height - 1, [("Arrows", "Pan"), ("Z", "Zoom"), ("I", "Isobars"), ("N", "Names"),
-                                          ("/", "Find"), ("Enter", "Back")])
+            out += s._keys(s.height - 1, [("Arrows", "Pan"), ("Z", "In"), ("-", "Out"), ("I", "Isobars"),
+                                          ("N", "Names"), ("/", "Find"), ("Enter", "Back")], 2)
         return out
 
     def _station_mark(self, station: dict) -> tuple[str, str]:
