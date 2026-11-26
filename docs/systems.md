@@ -968,6 +968,58 @@ jet, a squall line, a flight with no ballast, a long drift on one tank. Attempts
 are unlimited. The tutorial teaches preview, commit, ballast, the pibal and
 landing by having the caller do each once.
 
+**As built (S20).** The tables are `TRIALS`, `TUTORIAL`, `TUTOR_STEPS`,
+`TRIAL_BALLOON`, `TRIAL_KM`, `TRIAL_PAY`, `TRIAL_SPARE_TURNS`, `TRIAL_DAY`
+and `TRIAL_FAR_KM`; the rules a caller reads are `TRIAL_HELP`.
+
+- **Where.** `R` from the pilot's own screen, whenever their own balloon is
+  not in the air. `W` and `S` choose, Enter flies.
+- **A trial** is a balloon, an hour to start at, and a flight written down in
+  the table. Its weather is a fixed day from day 500 on, far from the
+  calendar's, the same every time it is flown. The flight is flown from a
+  town; where it lands is the mark. Towns and days are tried in a fixed
+  order until the flight can be flown exactly as written and comes down on
+  land at least 10 km from its start. So every trial has a flight to gold,
+  in every world, and the tests fly each of them in five worlds.
+- **Medals.** Down on land within 6 km of the mark is gold, within 15 km
+  silver, within 30 km bronze. Water wins nothing. A trial allows eight
+  turns more than its own flight took; then the balloon comes down where it
+  is. The best medal for each trial is kept in the pilot's record. A medal
+  is worth 5, 12 or 25 postmarks, paid the first time, and a better one pays
+  the difference.
+
+| Trial | Balloon | Starts | The flight it is laid by |
+| --- | --- | --- | --- |
+| First Hop | standard | 09:00 | four holds |
+| Up and Over | standard | 09:00 | up a layer, four holds, down, a hold |
+| Top Floor | standard | 10:00 | up two layers, five holds, down two |
+| The Long Tank | 6 fuel | 11:00 | twelve holds in the midday sun |
+| No Ballast | no sacks | 09:00 | up a layer, six holds, down |
+| Sack Race | 8 fuel | 09:00 | two sacks over the side, three holds, down two |
+| Rope Trick | standard | 09:00 | the rope left, left, a hold, right, left |
+| Dawn Run | standard | 06:00 | eight holds |
+| Dusk Dash | standard | 17:00 | up a layer, six holds, down, a hold |
+| Night Mail | night gear | 20:30 | six holds |
+| The High Road | 60 fuel, layer 5 | 09:00 | up four layers, six holds, down four |
+| Long Haul | standard | 09:00 | six holds, up a layer, eight holds, down, three holds |
+
+  The standard balloon has 40 fuel, 3 sacks, 2 pibals and three layers.
+- **The first flight** is the tutorial: the same machinery, with six lessons
+  said in the log one at a time and passed by doing what each asks: look at
+  another layer (the preview), launch (the commit), send up a pibal, drop a
+  sack, sink, land. A lesson is not passed by doing something else. Landing
+  with every lesson done marks the pilot as taught. Scripted, it is eleven
+  keys.
+- **What they leave alone.** As the Drift: the pilot's own flight is set
+  aside, and nothing of a trial is written but a better medal, in the
+  pilot's own record. No day, no chart, no table.
+- No schema change: medals and the first flight are in the pilot's record.
+
+**Not yet tuned.** The medal distances and the trials themselves are a first
+table: they were laid out by what the engine allows, not by how they feel.
+The plan's "squall line" and "threading a pass" are not among them, because
+a flight through a squall is not the same flight twice.
+
 ## 9. Wonders, seasons and the Gyre
 
 **Wonders.** Forty. Each is a place, or a condition, or both: an aurora north

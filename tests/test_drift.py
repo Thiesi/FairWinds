@@ -424,7 +424,7 @@ class Flying(DriftCase):
         other.key("p")
         for size in ((80, 24), (132, 40)):
             text = self.screen(other, *size)
-            self.assertIn("Leave the Drift", text)
+            self.assertIn("[X] Leave it", text)
 
     def test_a_visitor_flies_it_for_the_visit(self):
         game = fw.PlainFlight(launch(user_id=5, timezone="UTC"), None, now=self.clock)
