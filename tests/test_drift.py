@@ -360,6 +360,30 @@ class Flying(DriftCase):
         game.key("ENTER")
         self.assertEqual(game.state, kept, "and taken up from the last turn on record, not the one that was lost")
 
+    def test_a_turn_no_row_took_is_not_flown_either(self):
+        game = self.game()
+        game.key("t")
+        game.key("ENTER")
+        game.key("ENTER")
+        db = sqlite3.connect(str(next(self.folder.glob("fair_winds-*.db"))))
+        db.execute("DELETE FROM drifts")
+        db.commit()
+        db.close()
+        game.key("ENTER")
+        self.assertIsNone(game.drift)
+        self.assertIn("could not be written", game.drift_note)
+
+    def test_the_key_after_a_slip_of_x_flies_as_it_was_pressed(self):
+        game = self.game()
+        game.key("t")
+        game.key("p")
+        game.key("ENTER")
+        turn = game.state.turn
+        game.key("x")
+        game.key("ENTER")
+        self.assertEqual(game.state.turn, turn + 1)
+        self.assertFalse(game.drift.get("leaving"))
+
     def test_a_drift_is_not_written_by_a_session_that_has_lost_the_pilot(self):
         game = self.game()
         game.key("t")

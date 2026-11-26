@@ -4347,7 +4347,7 @@ class PlainFlight:
 
     def _drift_look(self) -> None:
         """The day's table, and how this pilot's own Drift stands."""
-        self._look_at_the_calendar()
+        self._day_may_have_opened()       # the whole of it: a day that opened is the pilot's own flight's too
         day, me = self.today, self.launch.user_id
         try:
             self._drift_seen = {"day": day, "table": self._shared(lambda db: drift_table(db, day)),
@@ -4359,7 +4359,7 @@ class PlainFlight:
         if k in ("ESC", "b", "t", " "):
             self.drift_lobby = False
         elif k in ("p", "ENTER"):
-            self._look_at_the_calendar()
+            self._day_may_have_opened()
             if self.today != self._drift_seen["day"]:
                 # A day opened while the screen stood open: the course on it was yesterday's.
                 self._drift_look()
@@ -4371,7 +4371,6 @@ class PlainFlight:
         """Set the pilot's own flight aside and stand the standard balloon at the start."""
         if self.store is not None and not self._mine(write=False):
             return
-        self._look_at_the_calendar()
         day, launch = self.today, self.launch
         course = drift_course(self.world, self.weather, day)
         state = drift_state(course["x"], course["y"], day)
@@ -4424,8 +4423,11 @@ class PlainFlight:
             self._say(f"{clock_text(self.state.minute)}  Time is up: the balloon comes down where it is.")
         if drift["scored"]:
             text, day, me = json.dumps(self.state.to_dict()), drift["course"]["day"], self.launch.user_id
+            def written(db):
+                if not turn_drift(db, day, me, text):       # no row took it: as good as not written
+                    raise sqlite3.DatabaseError("the Drift's record is not there to be written to")
             try:
-                self._shared(lambda db: turn_drift(db, day, me, text), write=True)
+                self._shared(written, write=True)
             except LeaseLost:
                 self.ended = "taken"
                 return
