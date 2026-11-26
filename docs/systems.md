@@ -1135,23 +1135,33 @@ most three pilots. Nothing a pilot owns is reset. The map is never reset.
 - **The race** is the season's last seven days. A flight that ends on one of
   them counts by the straight line from where it launched to where it came
   down; each pilot's longest stands (`race`).
-- **The close.** A season is settled once it is three days past, when every
-  day of it has been flown or has lapsed: by the first session to look, in
-  one write, once. Whether the goal was met is fixed then. The race's first
+- **The close.** A season is settled once it is three days past: by the
+  first session to look, in one write, once, however long the node was
+  quiet in between. Whether the goal was met is fixed then, and so is who
+  had a hand in it (`season_hands`). A pilot whose logbook still stands on a
+  day of that season (stranded, or part way through a day) may add to its
+  count afterwards; that changes nothing that is owed. A flight begun in
+  the race and ended after the season was settled is told it came too
+  late. The race's first
   three take gold, silver and bronze (`season_medals`): the longest flight;
   of two alike, the one flown on the earlier day. No more than three pilots
   have a medal of a season. A race that is closed takes no more flights.
 - **Dues.** A closed season owes a pilot 60 postmarks if its goal was met
   and they had a hand in it, and 120, 70 or 40 for a medal. It is asked for
   once for each pilot and season (`season_claims`), in the same write that
-  pays, at their next call or look.
+  pays, at their next call or look, for every closed season however long
+  ago it was.
 - **Past seasons** are on the season's screen: the last three, with their
   goal, whether it was met, and their medals.
 - **Nothing is reset.** A new season changes the weather and the goal and
   nothing else: postmarks, licence, gear, medals, albums, stations and the
   chart are as they were.
-- The records gain `seasons`, `race`, `season_medals` and `season_claims`,
-  and the schema is version 8. A visitor, or a caller whose records cannot
+- A session settles seasons once for each day that opens, reads the season
+  under way at each look, and reads a closed season once. If settling
+  cannot be written it is tried again after a minute, not at every look.
+- The records gain `seasons`, `race`, `season_medals`, `season_claims` and
+  `season_hands`, an index on the day a cell was charted, and the schema is
+  version 8. A visitor, or a caller whose records cannot
   be kept, has no season.
 
 **Not yet tuned.** The targets and the pay are a first table. The goals the

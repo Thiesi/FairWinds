@@ -3803,6 +3803,7 @@ SEASON_GRACE = WAITING_DAYS          # a season is closed this many days on: eve
 GOAL_PAY = 60                        # to every pilot who had a hand in a goal that was met
 RACE_PAY = (120, 70, 40)             # the race's first three
 RACE_PLACES = ("gold", "silver", "bronze")
+SEASON_RETRY_SECONDS = 60.0          # how long before settling is tried again after it could not be written
 # What a node may be set to do in a season: how much of it, and how it is said. Each is counted from what
 # the records already hold for the days of the season. One active pilot can do any of them in a season
 # (about 10 flying days of charting; two kits; four crates; four sights; two winds); more pilots, sooner.
@@ -3872,17 +3873,23 @@ def begin_season(db, seed: int, season: int, winds: int) -> tuple[str, int]:
     return kind, SEASON_GOALS[kind]["target"]
 
 
-def race_fly(db, user_id: int, handle: str, km: float, day: int) -> bool:
-    """A flight flown in a season's race. Kept if it is the pilot's longest of that race, and the race is still open."""
+def race_fly(db, user_id: int, handle: str, km: float, day: int) -> int:
+    """A flight flown in a season's race: 1 if it is now the pilot's longest of that race, 0 if not.
+
+    -1 if the race is over: a flight begun in a season's last days and
+    ended after the season was settled counts for nothing, and is told so.
+    """
     season = season_of(day)[0]
-    if not in_race(day) or db.execute("SELECT 1 FROM seasons WHERE season=? AND closed=1", (season,)).fetchone():
-        return False
+    if not in_race(day):
+        return 0
+    if db.execute("SELECT 1 FROM seasons WHERE season=? AND closed=1", (season,)).fetchone():
+        return -1
     row = db.execute("SELECT km FROM race WHERE season=? AND user_id=?", (season, user_id)).fetchone()
     if row is not None and row[0] >= km:
-        return False
+        return 0
     db.execute("INSERT INTO race VALUES (?, ?, ?, ?, ?) ON CONFLICT (season, user_id) DO UPDATE SET"
                " km=excluded.km, day=excluded.day, handle=excluded.handle", (season, user_id, handle, km, day))
-    return True
+    return 1
 
 
 def close_season(db, seed: int, season: int, winds: int) -> bool:
@@ -3894,8 +3901,11 @@ def close_season(db, seed: int, season: int, winds: int) -> bool:
     kind, target = begin_season(db, seed, season, winds)
     if db.execute("UPDATE seasons SET closed=1 WHERE season=? AND closed=0", (season,)).rowcount != 1:
         return False
-    total, _ = goal_progress(db, kind, *season_span(season))
+    total, hands = goal_progress(db, kind, *season_span(season))
     db.execute("UPDATE seasons SET met=? WHERE season=?", (int(total >= target), season))
+    # Who had a hand in it is written down now. A pilot whose logbook still stands on a day of this season
+    # (stranded, or part way through a day) may add to its count later; that changes nothing that is owed.
+    db.executemany("INSERT OR IGNORE INTO season_hands VALUES (?, ?)", [(season, hand[0]) for hand in hands])
     places = db.execute("SELECT user_id, handle, km FROM race WHERE season=? ORDER BY km DESC, day ASC, user_id ASC"
                         " LIMIT ?", (season, len(RACE_PLACES))).fetchall()
     for place, (user_id, handle, km) in enumerate(places):
@@ -3909,10 +3919,30 @@ def claim_season(db, season: int, user_id: int) -> dict | None:
     if row is None or db.execute("INSERT OR IGNORE INTO season_claims VALUES (?, ?)",
                                  (season, user_id)).rowcount != 1:
         return None
-    _, hands = goal_progress(db, row[0], *season_span(season))
+    hand = db.execute("SELECT 1 FROM season_hands WHERE season=? AND user_id=?", (season, user_id)).fetchone()
     place = db.execute("SELECT place FROM season_medals WHERE season=? AND user_id=?", (season, user_id)).fetchone()
-    return {"season": season, "kind": row[0], "goal": bool(row[1]) and any(h[0] == user_id for h in hands),
+    return {"season": season, "kind": row[0], "goal": bool(row[1]) and hand is not None,
             "place": None if place is None else place[0]}
+
+
+def settle_seasons(db, seed: int, today: int, winds: int) -> list[int]:
+    """Set the goal of the season a world day is in, and settle every season that is over and not yet settled.
+
+    However long the node was quiet: each season between is given its
+    goal and closed in turn. Returns the seasons this call settled.
+    """
+    season = season_of(today)[0]
+    begin_season(db, seed, season, winds)
+    closed = {row[0] for row in db.execute("SELECT season FROM seasons WHERE closed=1")}
+    return [n for n in range(1, season) if n not in closed and today > season_span(n)[1] + SEASON_GRACE
+            and close_season(db, seed, n, winds)]
+
+
+def unclaimed_seasons(db, user_id: int) -> list[int]:
+    """The closed seasons that have not been asked what they owe this pilot, however long ago they were."""
+    return [row[0] for row in db.execute(
+        "SELECT season FROM seasons WHERE closed=1 AND season NOT IN (SELECT season FROM season_claims"
+        " WHERE user_id=?) ORDER BY season", (user_id,))]
 
 
 def read_season(db, season: int) -> dict:
@@ -4007,6 +4037,10 @@ MIGRATIONS = {
         " handle TEXT NOT NULL, km REAL NOT NULL, PRIMARY KEY (season, place)) WITHOUT ROWID",
         "CREATE TABLE season_claims (season INTEGER NOT NULL, user_id INTEGER NOT NULL,"
         " PRIMARY KEY (season, user_id)) WITHOUT ROWID",
+        # who had a hand in a season's goal, as it stood when the season was settled
+        "CREATE TABLE season_hands (season INTEGER NOT NULL, user_id INTEGER NOT NULL,"
+        " PRIMARY KEY (season, user_id)) WITHOUT ROWID",
+        "CREATE INDEX charted_by_day ON charted (day)",       # a season's charting is counted by its days
     ),
 }
 _NO_PLACE_TO_WRITE = ("readonly", "read-only", "unable to open", "locked", "disk i/o", "full", "busy")
@@ -4473,6 +4507,10 @@ class PlainFlight:
         self.season_now: dict = {"season": 0}     # the season as last read
         self.season_past: list = []       # the seasons before it, latest first
         self._claimed: set = set()        # closed seasons this session has asked its dues of
+        self._season_done = None          # the (season, day) the seasons were last settled for
+        self._season_wait = 0.0           # not before this moment, after a settling that could not be written
+        self._season_dues: list = []      # closed seasons that still owe this pilot an answer
+        self._seasons_read: dict = {}     # closed seasons as read: they change no more
         self.album_page = 0
         self._wonder_said = None          # the wonder last pointed out, so it is pointed out once
         self.drift: dict | None = None    # a Drift is being flown: its course, and whether it counts
@@ -5162,34 +5200,38 @@ class PlainFlight:
         """Take in how the season stands. Settle any season that is over, and take what one owes this pilot.
 
         True if anything is new. The season's goal is set by the first
-        session to look; a season is settled by the first to look once it
-        is three days past, when every day of it has been flown or lapsed.
+        session to look. A season is settled by the first to look once it
+        is three days past: whoever had a hand in its goal is written
+        down then, so what it owes nobody depends on when they ask.
         """
         if (self.store is None and self._own is None) or self.drift is not None:
             return False                  # no records, and nothing of this visit's own yet: no season to keep
-        season = season_of(self.today)[0]
-        seed, winds, me = self.world.seed, len(self.winds), self.launch.user_id
-        over = [n for n in range(max(1, season - 3), season) if self.today > season_span(n)[1] + SEASON_GRACE]
+        season, today = season_of(self.today)[0], self.today
+        seed, winds, me, now = self.world.seed, len(self.winds), self.launch.user_id, self.now()
+        before = self.season_now
         try:
-            before = self.season_now
-            if before.get("season") != season or before.get("kind") is None or \
-                    any(not any(p["season"] == n and p["closed"] for p in self.season_past) for n in over):
-                def settle(db):
-                    begin_season(db, seed, season, winds)
-                    for n in over:
-                        close_season(db, seed, n, winds)
-                self._shared(settle, write=True)
-            self.season_now = self._read(lambda db: read_season(db, season))
-            self.season_past = [self._read(lambda db, n=n: read_season(db, n))
-                                for n in range(season - 1, max(0, season - 4), -1)]
+            if self._season_done != (season, today) and now >= self._season_wait:
+                # Once for each day that opens: the goal of the season it is in, and every season now over.
+                self._season_wait = now + SEASON_RETRY_SECONDS      # if this cannot be written, not again at once
+                self._shared(lambda db: settle_seasons(db, seed, today, winds), write=True)
+                self._season_done, self._season_wait = (season, today), 0.0
+                self._season_dues = self._read(lambda db: unclaimed_seasons(db, me))
+            self.season_now = self._read(lambda db: read_season(db, season))        # the one that still changes
+            for n in range(season - 1, max(0, season - 4), -1):
+                if n not in self._seasons_read:                 # a closed season is read once: it changes no more
+                    past = self._read(lambda db, n=n: read_season(db, n))
+                    if not past["closed"]:
+                        break
+                    self._seasons_read[n] = past
+            self.season_past = [self._seasons_read[n] for n in range(season - 1, max(0, season - 4), -1)
+                                if n in self._seasons_read]
         except LeaseLost:
             self.ended = "taken"
             return False
         except sqlite3.Error:
             return False
-        for past in self.season_past:
-            if past["closed"]:
-                self._claim(past["season"])
+        for n in list(self._season_dues):
+            self._claim(n)
         return self.season_now != before
 
     def _claim(self, season: int) -> None:
@@ -5210,6 +5252,7 @@ class PlainFlight:
                 self._say(f"You took {RACE_PLACES[done['place']]} in the race of season {season}: {pay} postmarks.")
         if self._deed("season", lambda db: claim_season(db, season, me), apply):
             self._claimed.add(season)
+            self._season_dues = [n for n in self._season_dues if n != season]
 
     def _race(self, day: int) -> None:
         """A flight that has just ended in a season's last week: it stands if it is the pilot's longest of the race."""
@@ -5218,8 +5261,13 @@ class PlainFlight:
         km = math.sqrt((self.state.x - self.lift_off[0]) ** 2 + (self.state.y - self.lift_off[1]) ** 2)
         launch = self.launch
         try:
-            if km >= 1.0 and self._shared(lambda db: race_fly(db, launch.user_id, launch.handle, km, day), write=True):
+            took = self._shared(lambda db: race_fly(db, launch.user_id, launch.handle, km, day), write=True) \
+                if km >= 1.0 else 0
+            if took > 0:
                 self._say(f"{km:.0f} km in a straight line: your longest in this season's race.")
+            elif took < 0:
+                self._say(f"The race of season {season_of(day)[0]} is over and settled: this flight came too late "
+                          f"for it.")
         except LeaseLost:
             self.ended = "taken"
         except sqlite3.Error as error:
@@ -5748,7 +5796,7 @@ class PlainFlight:
         """With no records to share, the stations of this visit are its own: kept in memory, in the same tables."""
         if self._own is None:
             self._own = sqlite3.connect(":memory:", isolation_level=None)
-            for step in range(3, SCHEMA_VERSION + 1):     # every table of the shared world; none of the pilots'
+            for step in range(1, SCHEMA_VERSION + 1):     # the same tables as the records, so the same queries run
                 for statement in MIGRATIONS[step]:
                     self._own.execute(statement)
             for station in self.stations[len(self.world.stations):]:      # what was known when the records went

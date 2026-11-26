@@ -149,6 +149,71 @@ class Goal(SeasonCase):
         for game in (b, c):
             game.close()
 
+    def test_what_is_owed_does_not_depend_on_when_it_is_asked_for(self):
+        a = self.game(user_id=1, handle="Ada")
+        b = self.other(2, handle="Bo")
+        db = self.db()
+        db.execute("UPDATE seasons SET kind='chart', target=40")
+        db.executemany("INSERT INTO charted VALUES (?, 1, 3)", [(9000 + i,) for i in range(45)])
+        db.commit()
+        db.close()
+        was = (a.postmarks, b.postmarks)
+        self.to_day(29 + fw.SEASON_GRACE, a)              # a settles it and is paid; b has not looked yet
+        self.assertEqual(self.rows("SELECT user_id FROM season_hands WHERE season=1"), [(1,)])
+        db = self.db()
+        db.execute("INSERT INTO charted VALUES (9999, 2, 20)")     # b, whose logbook stood on day 20, charts now
+        db.commit()
+        db.close()
+        b._day_may_have_opened()
+        self.assertEqual((a.postmarks - was[0], b.postmarks - was[1]), (fw.GOAL_PAY, 0),
+                         "a hand put to it after it was settled is owed nothing")
+        self.assertEqual(self.rows("SELECT count(*) FROM season_claims WHERE season=1"), [(2,)])
+        b.close()
+
+    def test_a_pilot_long_away_is_still_given_what_old_seasons_owe(self):
+        a = self.game(user_id=1, handle="Ada")
+        db = self.db()
+        db.execute("UPDATE seasons SET kind='chart', target=40")
+        db.executemany("INSERT INTO charted VALUES (?, 1, 3)", [(9000 + i,) for i in range(45)])
+        db.executemany("INSERT INTO race VALUES (1, ?, ?, ?, 25)", ((1, "Ada", 200.0), (2, "Bo", 100.0)))
+        db.commit()
+        db.close()
+        was = a.postmarks
+        a.close()
+        self.clock.days(28 * 9 + fw.SEASON_GRACE + 1)     # nine seasons go by with nobody calling
+        back = self.game(user_id=1, handle="Ada")
+        self.assertEqual(fw.season_of(back.today)[0], 10)
+        self.assertEqual(back.postmarks, was + fw.GOAL_PAY + fw.RACE_PAY[0])
+        closed = dict(self.rows("SELECT season, closed FROM seasons"))
+        self.assertEqual([closed.get(n) for n in range(1, 11)], [1] * 9 + [0], "every season between is settled")
+        self.assertEqual(self.rows("SELECT count(*) FROM season_claims WHERE user_id=1"), [(9,)])
+
+    def test_the_look_is_cheap_once_the_day_is_settled_and_backs_off_when_it_cannot_write(self):
+        game = self.game()
+        self.to_day(40, game)
+        writes, reads = [], []
+        real_write, real_read = game.store.write, game.store.read
+        game.store.write = lambda *args, **kwargs: writes.append(1) or real_write(*args, **kwargs)
+        game.store.read = lambda *args, **kwargs: reads.append(1) or real_read(*args, **kwargs)
+        for _ in range(5):
+            game._see_season()
+        self.assertEqual(len(writes), 0, "nothing is written again for a day already settled")
+        self.assertEqual(len(reads), 5, "and only the season under way is read")
+
+        def broken(*args, **kwargs):
+            writes.append(1)
+            raise sqlite3.OperationalError("database is locked")
+        game.store.write = broken
+        self.clock.days(1)
+        game._look_at_the_calendar()
+        for _ in range(5):
+            game._see_season()
+        self.assertEqual(len(writes), 1, "a settling that cannot be written is not tried again at every look")
+        self.clock.now += fw.SEASON_RETRY_SECONDS + 1
+        game.store.write = real_write
+        game._see_season()
+        self.assertEqual(game._season_done, (fw.season_of(game.today)[0], game.today))
+
     def test_a_goal_that_was_not_met_pays_nobody(self):
         a = self.game(user_id=1)
         db = self.db()
@@ -212,8 +277,13 @@ class Race(SeasonCase):
         self.assertTrue(any("You took gold in the race of season 1" in line for line in games[2].log))
         db = self.db()
         self.assertFalse(fw.close_season(db, games[0].world.seed, 1, len(games[0].winds)), "settled already")
-        self.assertFalse(fw.race_fly(db, 9, "Late", 999.0, 26), "and a closed race takes no more flights")
+        self.assertEqual(fw.race_fly(db, 9, "Late", 999.0, 26), -1, "and a closed race takes no more flights")
         db.close()
+        late = games[4]
+        self.flight(late, 999.0, day=26)                  # Ed was stranded since the race, and lands only now
+        self.assertTrue(any("came too late" in line for line in late.log), late.log)
+        self.assertEqual(self.rows("SELECT handle FROM season_medals WHERE season=1 ORDER BY place"),
+                         [("Cy",), ("Bo",), ("Di",)])
         self.assertEqual(self.rows("SELECT count(*) FROM season_medals"), [(3,)])
         for game in games:
             game._day_may_have_opened()
