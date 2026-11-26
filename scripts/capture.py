@@ -128,6 +128,15 @@ def medals(game) -> None:
     game.taught = True
 
 
+def sights(game) -> None:
+    """An album with a few wonders in it, and a few more seen by others."""
+    for i, who in ((0, "Mara"), (2, "Juno"), (5, "Mara"), (6, "Bram"), (11, "Quill"), (12, "Mara")):
+        game.sighted[game.wonders[i]["id"]] = (70, who, 4 + i)
+        if who == "Mara":
+            game.album.add(game.wonders[i]["id"])
+    game._see_wonders = lambda: False
+
+
 def almanac(game) -> None:
     """The almanac with a few winds entered and one part way."""
     for i, (wind, who) in enumerate(zip(game.winds[:5], ("Juno", "Bram", "Mara", "Juno", "Quill"))):
@@ -172,7 +181,14 @@ def fly(width: int, height: int, depth: str, charset: str = "utf-8", turns=("ENT
         return session.frame
 
 
+WONDER_HOURS = {"aurora": 22.0, "salt": 12.2, "falls": 10.0, "cloudsea": 6.9, "lightning": 19.6, "alpenglow": 19.7,
+                "sealights": 22.5, "mist": 6.6, "eye": 13.0}
 SCENES = {
+    **{f"wonder-{family}": dict(kind="wonder", family=family, hour=hour, cloud=0.1,
+                                biome=fw.DRY if family == "salt" else fw.FOREST, seed=5 + i, steps=6,
+                                caption=fw.WONDER_KINDS[family]["name"].format("Kestrel"),
+                                sub="First seen by Mara on Day 12.")
+       for i, (family, hour) in enumerate(WONDER_HOURS.items())},
     "splash": dict(kind="splash", hour=6.6, seed=7, steps=99),
     "launch-noon": dict(kind="launch", hour=12.5, cloud=0.3, biome=fw.GRASS, seed=11, place=True, steps=5,
                         caption="Day 3, 12:30. Up and away from Gull Post.", sub=""),
@@ -229,6 +245,8 @@ def main(argv) -> int:
             name = f"tutorial-{width}x{height}-{depth}.html"
             (OUT / name).write_text(page(fly(width, height, depth, turns=("r", "ENTER", "w", "s", "ENTER")), name),
                                     encoding="utf-8")
+            name = f"album-{width}x{height}-{depth}.html"
+            (OUT / name).write_text(page(fly(width, height, depth, turns=("u",), setup=sights), name), encoding="utf-8")
             name = f"almanac-{width}x{height}-{depth}.html"
             (OUT / name).write_text(page(fly(width, height, depth, turns=(), setup=almanac), name), encoding="utf-8")
             name = f"book-{width}x{height}-{depth}.html"

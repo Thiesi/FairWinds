@@ -566,9 +566,9 @@ and refused with the grade it wants.
 
 "Preview reach" in the table above this section is built as what the
 instruments read: a layer read is known true, and its track starts from the
-truth; any other layer is a forecast. The camera waits for wonders (S19) and
-the engine for its own slice; neither is sold yet, because neither would do
-anything.
+truth; any other layer is a forecast. The camera is sold from S21, with the
+wonders. The engine waits for its own slice and is not sold yet, because it
+would do nothing.
 
 The gear a pilot owns is in their record as a tier for each track. The
 figures the engine flies by (ceiling, climb cost, night gear, oxygen, layers
@@ -1040,6 +1040,63 @@ first pilot is credited. Each capture shows a full-screen scene. Scenes come
 from about eight parametric families, not forty drawings. The album shows what
 has been seen, by whom first, and a hint for each wonder not yet seen; hints
 sharpen as the node's chart grows.
+
+**As built (S21).** The tables are `WONDER_KINDS`, `WONDER_COUNT`,
+`WONDER_APART_KM`, `WONDER_PAY`, `WONDER_POINTS`, `WONDER_HINTS` and
+`WONDER_SAMPLE`.
+
+| Kind | In a world | Seen within | From | When |
+| --- | --- | --- | --- | --- |
+| Lights (aurora) | 5, in the northern third | 40 km | layer 2 or above | after 20:30, cloud under 0.3 there |
+| Mirror (salt flat) | 5, on dry plain | 20 km | layer 3 or below | 11:00 to 13:30, cloud under 0.3 |
+| Falls | 5, on steep low ground | 12 km | the lowest layer | 07:00 to 19:00 |
+| Cloud Sea | 5, over hills | 40 km | above the cloud deck | 06:00 to 09:00, cloud 0.6 or more |
+| Storm Light (lightning) | 4, on low land | 40 km | any layer | after 18:00, a squall 25 to 65 km off and none overhead |
+| Rose (alpenglow) | 5, at high peaks | 40 km | any layer | 19:00 to 20:30, cloud under 0.4 |
+| Fire (sea lights) | 5, in shallow water by a coast | 15 km | the lowest layer | after 20:30 |
+| Mist | 5, on low grass or forest | 15 km | layer 2 or below | 06:00 to 08:15, fog lying there |
+| The Eye of the Gyre | 1, at its centre | 30 km | any layer | always |
+
+- **Forty.** Each kind's ground is gone through in an order drawn from the
+  seed. A place is taken if it is 150 km from the others of its kind (less
+  where the land does not allow it) and the sight does show there on at
+  least one of thirty sample days: no wonder is one that never comes. They
+  are not stored; the records know a wonder by its number, and a test holds
+  one world's wonders to where they were. Each is named from the word lists.
+- **Taking one.** `F`, when the balloon is aloft where and when a wonder
+  shows and it is not in the pilot's album. It takes no turn. The log says
+  so when one comes into view, and `[F] Wonder` heads the key line.
+- **Credit.** The first pilot on the node to take a wonder is named beside
+  it, once, whoever arrives together: 40 postmarks and 20 points. Any other
+  pilot taking it for their own album has 12 and 6.
+- **The camera** (rigging loft, 160 postmarks, from Pilot) sees every wonder
+  from half as far again.
+- **The picture.** Taking a wonder plays a scene: the sky and land of the
+  hour, the wonder painted over it by its kind's own hand, the pilot's
+  balloon small to one side, the wonder's name and who saw it first. Nine
+  pictures (the Eye is the Cloud Sea's with the storm's wall on either
+  hand). Lights shimmer, water falls, lightning strikes on some frames, the
+  sea's light drifts. It stays about four seconds; any key ends it.
+- **The album** is `U`. Three kinds to a page, `W` and `S` turn pages. Each
+  kind has a heading, and under it its wonders. A wonder in the pilot's
+  album is named, with where it is and who saw it first. One another pilot
+  has seen is named, with where and by whom. One nobody has seen has a
+  hint: what kind of sight; from a tenth of the land charted also where.
+  How a kind is seen (its hours, weather and layers) stands in its heading
+  once anybody has seen one of that kind, or three tenths of the land are
+  charted, or one of its places has been charted.
+- The records gain `wonders` and `seen`, and the schema is version 7.
+
+**What "reachable" was tested as.** For every wonder of three worlds there is
+a turn of a flying day within a year at which it shows, and in one world a
+balloon stood there at that turn takes each of the forty through the game's
+own keys. A pilot's day begins wherever they came down the day before, so
+the dawn kinds are reached by landing near one in the evening: the tests
+launch from the ground at a mist site at 06:00 and take it on the first
+turn. No route from a town to each wonder was searched for.
+
+**Not yet built here.** A wonder cannot be looked at again from the album.
+In 256 colours the night pictures are coarse.
 
 **Seasons.** 28 world days. Each has a weather regime (a turn of the prevailing
 flow and a pulse of the Gyre), a node goal generated to be reachable by one

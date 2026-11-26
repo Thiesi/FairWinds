@@ -33,7 +33,7 @@ import zoneinfo
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "0.1.0.dev26"
+VERSION = "0.1.0.dev27"
 DOOR_API = 5
 MIN_WIDTH, MIN_HEIGHT = 80, 24
 MAX_DIMENSION = 1000
@@ -2883,6 +2883,9 @@ UPGRADES = {
     "oxygen": {"name": "Oxygen", "tiers": (
         {"oxygen": False},
         {"price": 300, "grade": 4, "oxygen": True, "needs": ("envelope", 2)})},
+    "camera": {"name": "Camera", "tiers": (
+        {"range": 1.0},
+        {"price": 160, "grade": 2, "range": 1.5})},
 }
 TRACKS = tuple(UPGRADES)
 TIER_NAMES = ("I", "II", "III")
@@ -2911,6 +2914,8 @@ def gear_text(track: str, tier: dict) -> str:
         return f"forecasts from places {tier['reach']:.0f} km off"
     if track == "night":
         return "better night landings, no night fuel penalty" if tier["night"] else "none"
+    if track == "camera":
+        return "wonders from half as far again" if tier["range"] > 1.0 else "none"
     return f"layer {LAYERS}" if tier["oxygen"] else "none"
 
 
@@ -3630,6 +3635,162 @@ def trial_medal(km: float, down: str, trip: float = 1000.0) -> int:
 
 
 # --------------------------------------------------------------------------
+# Wonders (S21). Forty sights in every world, each a place and the hour and
+# weather it is seen in: lights in the northern night, a salt flat at noon,
+# a cloud sea at dawn from above the deck. A pilot who is there when it
+# shows may take it for the album; the first on the node is credited.
+# --------------------------------------------------------------------------
+
+WONDER_COUNT = 40
+WONDER_APART_KM = 150.0              # two of a kind are this far apart where the land allows
+WONDER_PAY, WONDER_POINTS = (12, 40), (6, 20)        # seen for oneself; and seen first of anyone on the node
+WONDER_HINTS = (0.10, 0.30)          # of the land charted: when a hint says where, and when it says how
+WONDER_SAMPLE = range(2, 122, 4)     # the days a site is tried on when the world's wonders are chosen
+# Each kind: how its sights are named, what is said of it before anyone knows more, how near and in which
+# layers it is seen, between which hours, and the picture it is shown as. What weather it wants is in
+# wonder_shows, by name.
+WONDER_KINDS = {
+    "aurora": {"name": "The {} Lights", "title": "Lights", "km": 40.0, "layers": (2, 6), "hours": (20.5, 24.0), "count": 5,
+               "hint": "lights in the northern night sky",
+               "how": "after 20:30 under a clear sky, from layer 2 or above"},
+    "salt": {"name": "The {} Mirror", "title": "Mirrors", "km": 20.0, "layers": (1, 3), "hours": (11.0, 13.5), "count": 5,
+             "hint": "a dry plain that shines at noon",
+             "how": "between 11:00 and 13:30 under a clear sky, no higher than layer 3"},
+    "falls": {"name": "{} Falls", "title": "Falls", "km": 12.0, "layers": (1, 1), "hours": (7.0, 19.0), "count": 5,
+              "hint": "water coming off steep ground",
+              "how": "by day, from the lowest layer the ground leaves open"},
+    "cloudsea": {"name": "The {} Cloud Sea", "title": "Cloud seas", "km": 40.0, "layers": (1, 6), "hours": (6.0, 9.0), "count": 5,
+                 "hint": "a floor of cloud over hills at dawn",
+                 "how": "06:00 to 09:00 over overcast hills, from above the deck: layer 4 or 5"},
+    "lightning": {"name": "{} Storm Light", "title": "Storm light", "km": 40.0, "layers": (1, 6), "hours": (18.0, 24.0), "count": 4,
+                  "hint": "an evening squall seen from a safe way off",
+                  "how": "after 18:00 with a squall 25 to 65 km off and none overhead"},
+    "alpenglow": {"name": "The {} Rose", "title": "Roses", "km": 40.0, "layers": (1, 6), "hours": (19.0, 20.5), "count": 5,
+                  "hint": "high peaks in the last light",
+                  "how": "between 19:00 and 20:30 under a clear sky"},
+    "sealights": {"name": "The {} Fire", "title": "Sea fire", "km": 15.0, "layers": (1, 1), "hours": (20.5, 24.0), "count": 5,
+                  "hint": "shallow water that glows after dark",
+                  "how": "after 20:30, from the lowest layer the ground leaves open"},
+    "mist": {"name": "{} Mist", "title": "Mists", "km": 15.0, "layers": (1, 2), "hours": (6.0, 8.25), "count": 5,
+             "hint": "low ground at dawn on a calm morning",
+             "how": "between 06:00 and 08:15 when mist lies there, no higher than layer 2"},
+    "eye": {"name": "The Eye of the Gyre", "title": "The Gyre", "km": 30.0, "layers": (1, 6), "hours": (0.0, 24.0), "count": 1,
+            "hint": "the still middle of the great storm",
+            "how": "at any hour, within 30 km of the storm's centre"},
+}
+
+
+def _wonder_ground(world: "World", weather: "Weather", kind: str, k: int) -> bool:
+    """Is this chart cell the kind of ground such a sight belongs to?"""
+    biome, m = world.chart_biome[k], world.chart_elevation[k]
+    if kind == "aurora":
+        return biome >= SHORE and k // CHART_W < CHART_H * 0.3
+    if kind == "salt":
+        return biome == DRY
+    if kind == "falls":
+        return 0 <= m < LAYER_BLOCK_M[0] and weather.slope[k][0] ** 2 + weather.slope[k][1] ** 2 > 0.2
+    if kind == "cloudsea":
+        return biome == HILLS
+    if kind == "lightning":
+        return biome >= SHORE and m < LAYER_BLOCK_M[0]
+    if kind == "alpenglow":
+        return biome in (MOUNTAIN, SNOW)
+    if kind == "sealights":
+        return biome == SEA_SHALLOW and weather.coast[k][0] ** 2 + weather.coast[k][1] ** 2 > 0.25
+    return biome in (GRASS, FOREST) and 0 <= m < 250          # mist
+
+
+def wonder_shows(weather: "Weather", wonder: dict, day: int, minute: int) -> bool:
+    """Is this wonder to be seen at this hour of this day? Its hour and its weather, at the place itself."""
+    kind = wonder["kind"]
+    low, high = WONDER_KINDS[kind]["hours"]
+    if not low * 60 <= minute < high * 60:
+        return False
+    x, y = wonder["x"], wonder["y"]
+    if kind in ("falls", "sealights", "eye"):
+        return True
+    frame = weather.frame(day, minute)
+    if kind in ("aurora", "salt"):
+        return frame.cloud(x, y)[0] < 0.3
+    if kind == "alpenglow":
+        return frame.cloud(x, y)[0] < 0.4
+    if kind == "cloudsea":
+        return frame.cloud(x, y)[0] >= 0.6
+    if kind == "mist":
+        return frame.fog(x, y) > FOG_THRESHOLD
+    # Lightning: a squall some way off in any direction, and none here.
+    if frame.squall(x, y) > 0.1:
+        return False
+    return any(frame.squall(x + dx * r, y + dy * r) >= 0.4 for r in (25.0, 45.0, 65.0)
+               for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1), (0.7, 0.7), (-0.7, 0.7), (0.7, -0.7), (-0.7, -0.7)))
+
+
+def wonders_of(world: "World", weather: "Weather") -> list[dict]:
+    """The world's forty wonders: where each is, what kind, and its name. The same every time.
+
+    For each kind, the ground it belongs to is gone through in a keyed
+    order, and a place is taken if it is well away from the others of its
+    kind and the sight does show there on at least one of the days it is
+    tried on: so none of the forty is a sight that never comes. Not
+    stored; the records know a wonder by its number here.
+    """
+    if getattr(world, "_wonders", None) is None:
+        picked: list = []
+        used: set = set()
+        for kind, spec in WONDER_KINDS.items():
+            if kind == "eye":
+                picked.append({"id": len(picked), "kind": kind, "x": world.gyre["x"], "y": world.gyre["y"],
+                               "name": spec["name"]})
+                continue
+            ground = sorted((k for k in range(CHART_W * CHART_H)
+                             if 3 <= k % CHART_W < CHART_W - 3 and 3 <= k // CHART_W < CHART_H - 3
+                             and _wonder_ground(world, weather, kind, k)),
+                            key=lambda k: draw_unit(world.seed, "wonder", kind, k))
+            low, high = spec["hours"]
+            hours = [int((low + (high - low) * i / 3.0) * 60) for i in range(3)]
+            mine: list = []
+            for apart in (WONDER_APART_KM, WONDER_APART_KM / 2, 30.0, 0.0):
+                tried = 0
+                for k in ground:
+                    if len(mine) >= spec["count"] or tried >= 60:
+                        break
+                    x, y = (k % CHART_W + 0.5) * CHART_KM, (k // CHART_W + 0.5) * CHART_KM
+                    if any(w["cell"] == k or (x - w["x"]) ** 2 + (y - w["y"]) ** 2 < apart * apart for w in mine):
+                        continue
+                    tried += 1
+                    site = {"kind": kind, "x": x, "y": y, "cell": k}
+                    if not any(wonder_shows(weather, site, day, minute) for day in WONDER_SAMPLE for minute in hours):
+                        continue                # a sight that would never come, here
+                    for attempt in range(200):
+                        name = spec["name"].format(
+                            _NAME_FIRST[draw(world.seed, "wonder-name", kind, k, attempt) % len(_NAME_FIRST)])
+                        if name not in used:
+                            break
+                    used.add(name)
+                    mine.append(dict(site, name=name))
+            for site in mine:
+                picked.append(dict(site, id=len(picked)))
+        world._wonders = picked
+    return world._wonders
+
+
+def see_wonder(db, wonder: int, user_id: int, handle: str, day: int) -> dict:
+    """A pilot takes a wonder for the album. Says whether it is new to them, and whether they are the node's first."""
+    new = db.execute("INSERT OR IGNORE INTO seen VALUES (?, ?, ?)", (wonder, user_id, day)).rowcount == 1
+    first = new and db.execute("INSERT OR IGNORE INTO wonders VALUES (?, ?, ?, ?)",
+                               (wonder, user_id, handle, day)).rowcount == 1
+    by = db.execute("SELECT user_id, handle, day FROM wonders WHERE wonder=?", (wonder,)).fetchone()
+    return {"new": new, "first": first, "by": tuple(by) if by else None}       # by: whoever was first, as it stands
+
+
+def read_wonders(db, user_id: int) -> tuple[dict, set]:
+    """The wonders seen on the node: number -> (user, handle, day). And the ones this pilot has seen."""
+    first = {row[0]: tuple(row[1:]) for row in db.execute("SELECT wonder, user_id, handle, day FROM wonders")}
+    mine = {row[0] for row in db.execute("SELECT wonder FROM seen WHERE user_id=?", (user_id,))}
+    return first, mine
+
+
+# --------------------------------------------------------------------------
 # The world's records (S10): one SQLite file for each world, shared by every
 # caller of that node. Writes are short transactions that take the write
 # lock at once; none is open while a caller thinks. A process killed at any
@@ -3637,7 +3798,7 @@ def trial_medal(km: float, down: str, trip: float = 1000.0) -> int:
 # --------------------------------------------------------------------------
 
 APPLICATION_ID = 0x46574442          # "FWDB": says the file is a Fair Winds world
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 LEASE_STALE_SECONDS = 90.0           # a session not heard from for this long may be replaced without asking
 HEARTBEAT_SECONDS = 20.0
 BUSY_TIMEOUT_SECONDS = 5.0           # how long a write waits for another caller's write
@@ -3687,6 +3848,13 @@ MIGRATIONS = {
         "CREATE TABLE drifts (day INTEGER NOT NULL, user_id INTEGER NOT NULL, handle TEXT NOT NULL,"
         " state TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0, score INTEGER, km REAL, turns INTEGER,"
         " fuel INTEGER, at REAL NOT NULL, PRIMARY KEY (day, user_id)) WITHOUT ROWID",
+    ),
+    7: (
+        # wonders: who saw each first on the node. seen: every pilot's own album.
+        "CREATE TABLE wonders (wonder INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, handle TEXT NOT NULL,"
+        " day INTEGER NOT NULL)",
+        "CREATE TABLE seen (wonder INTEGER NOT NULL, user_id INTEGER NOT NULL, day INTEGER NOT NULL,"
+        " PRIMARY KEY (wonder, user_id)) WITHOUT ROWID",
     ),
 }
 _NO_PLACE_TO_WRITE = ("readonly", "read-only", "unable to open", "locked", "disk i/o", "full", "busy")
@@ -4145,6 +4313,12 @@ class PlainFlight:
         self.almanac: dict = {}           # local winds entered: number -> (user, handle, day)
         self.flown: dict = {}             # days this pilot has flown each local wind while it blew
         self.pages = False                # the almanac is open
+        self.wonders = wonders_of(self.world, self.weather)
+        self.sighted: dict = {}           # wonders seen on the node: number -> (user, handle, day)
+        self.album: set = set()           # the wonders this pilot has seen
+        self.album_open = False           # the album is open
+        self.album_page = 0
+        self._wonder_said = None          # the wonder last pointed out, so it is pointed out once
         self.drift: dict | None = None    # a Drift is being flown: its course, and whether it counts
         self.drift_lobby = False          # the Daily Drift's own screen is open
         self.drift_note = ""
@@ -4219,6 +4393,7 @@ class PlainFlight:
         self._see_chart()
         self._see_calls()
         self._see_almanac()
+        self._see_wonders()
         self._sync_call()
         if self._imported and self.saved_ok and self.store is not None and not self.ended:
             # Only once the database has the pilot. And never over an earlier file of that name.
@@ -4476,7 +4651,7 @@ class PlainFlight:
         # written down as first over it.
         kept = (self.charted, self.postmarks, self.points, self.flight_cells, self.flight_pay, set(self.chart),
                 dict(self.found), list(self.naming), list(self.log), list(self.heard), self.chart_version,
-                dict(self.almanac), dict(self.flown))
+                dict(self.almanac), dict(self.flown), dict(self.sighted), set(self.album))
         try:
             self.store.commit(self.launch.user_id, self.launch.handle,
                               earned if cells or deed is not None else self._career(),
@@ -4488,7 +4663,8 @@ class PlainFlight:
         except (LeaseLost, sqlite3.Error) as error:
             if cells or deed is not None:
                 (self.charted, self.postmarks, self.points, self.flight_cells, self.flight_pay, self.chart,
-                 self.found, self.naming, self.log, self.heard, self.chart_version, self.almanac, self.flown) = kept
+                 self.found, self.naming, self.log, self.heard, self.chart_version, self.almanac, self.flown,
+                 self.sighted, self.album) = kept
             if isinstance(error, LeaseLost):
                 self.ended = "taken"
             else:
@@ -4823,6 +4999,164 @@ class PlainFlight:
         out += s._keys(s.height - 1, [("W/S", "Choose"), ("Enter", "Fly it"), ("?", "The rules"), ("B", "Back")])
         return out
 
+    # -- wonders -----------------------------------------------------------------
+
+    def _see_wonders(self) -> bool:
+        """Take in the wonders seen on the node and this pilot's own album. True if anything is new."""
+        if self.store is None and self._own is None:
+            return False
+        try:
+            first, mine = self._read(lambda db: read_wonders(db, self.launch.user_id))
+        except sqlite3.Error:
+            return False
+        changed = first != self.sighted or mine != self.album
+        self.sighted, self.album = first, mine
+        return changed
+
+    def wonder_in_view(self, wonder: dict, state: FlightState | None = None) -> bool:
+        """Is the balloon where this wonder is seen from: aloft, near enough, in a layer it shows from, at its hour?"""
+        state = state or self.state
+        if state.status != "aloft" or self.drift is not None:
+            return False
+        spec = WONDER_KINDS[wonder["kind"]]
+        reach = spec["km"] * self.fitted("camera")["range"]
+        if (wonder["x"] - state.x) ** 2 + (wonder["y"] - state.y) ** 2 > reach * reach:
+            return False
+        low, high = spec["layers"]
+        if wonder["kind"] in ("falls", "sealights"):
+            low = high = self.engine.lowest_open(state.x, state.y)       # "the lowest layer" is the lowest there is
+        if not low <= state.layer <= high:
+            return False
+        if not wonder_shows(self.weather, wonder, state.day, state.minute):
+            return False
+        if wonder["kind"] == "cloudsea":       # from above the deck, not under it or in it
+            return state.layer > self.weather.frame(state.day, state.minute).cloud(wonder["x"], wonder["y"])[1]
+        return True
+
+    def wonder_here(self) -> dict | None:
+        """A wonder the pilot could take for the album now: in view, and not in their album yet."""
+        state = self.state
+        key = (state.day, state.turn, state.x, state.y, state.layer, state.status, len(self.album),
+               self.gear["camera"], self.drift is None)
+        if self._wonder_at is None or self._wonder_at[0] != key:       # worked out once for a turn, not for every paint
+            found = next((w for w in self.wonders if w["id"] not in self.album and self.wonder_in_view(w)), None)
+            self._wonder_at = (key, found)
+        return self._wonder_at[1]
+
+    _wonder_at = None
+
+    def _point_out(self) -> None:
+        """Say so when a wonder comes into view. Once for each time it does."""
+        wonder = self.wonder_here()
+        mark = None if wonder is None else wonder["id"]
+        if mark is not None and mark != self._wonder_said:
+            self._say("There is something to see from here that is not in your album: F.")
+        self._wonder_said = mark
+
+    def _capture(self) -> None:
+        """Take the wonder in view for the album. It takes no turn."""
+        wonder = self.wonder_here()
+        if wonder is None or (self.store is not None and not self._mine(write=False)):
+            return
+        launch, day = self.launch, self.state.day
+        self.heard = []
+
+        def earn(done):
+            if done is None or not done["new"]:
+                return
+            first = done["first"]
+            self.album.add(wonder["id"])
+            if done["by"] is not None:        # who was first, from the records: this pilot or one who got there since
+                self.sighted[wonder["id"]] = done["by"]
+            self.postmarks += WONDER_PAY[first]
+            self.points += WONDER_POINTS[first]
+            self._say(f"{wonder['name']}. " + (f"Nobody here had seen it: {WONDER_PAY[1]} postmarks, and your name "
+                                               f"beside it." if first else f"In your album: {WONDER_PAY[0]} postmarks."))
+        self.save("wonder", (), lambda db: see_wonder(db, wonder["id"], launch.user_id, launch.handle, day), earn)
+        if self.ended:
+            return
+        if wonder["id"] in self.album and self.saved_ok:
+            self.pending_scene = self._wonder_scene(wonder)
+        self._promote()
+        self._wonder_said = None
+
+    def _wonder_scene(self, wonder: dict) -> dict:
+        """What the wonder looked like: its kind, the hour, the land under it, and its name."""
+        state = self.state
+        frame = self.weather.frame(state.day, state.minute)
+        who = self.sighted.get(wonder["id"])
+        sub = f"First seen by {clean_text(str(who[1]), 16)} on Day {int(who[2])}." if who else ""
+        return {"kind": "wonder", "family": wonder["kind"], "hour": state.minute / 60.0,
+                "cloud": frame.cloud(state.x, state.y)[0], "biome": self.world.sample(wonder["x"], wonder["y"])[1],
+                "place": False, "seed": wonder["id"] * 7919 + 31, "caption": wonder["name"], "sub": sub,
+                "design": dict(self.design)}
+
+    def _hint_level(self, wonder: dict) -> int:
+        """How much is told of a wonder nobody has seen: 0 its kind, 1 also where, 2 also how."""
+        share = self.charted_share()
+        if cell_at(wonder["x"], wonder["y"]) in self.chart or share >= WONDER_HINTS[1]:
+            return 2
+        return 1 if share >= WONDER_HINTS[0] else 0
+
+    def wonder_hint(self, wonder: dict) -> str:
+        """What the album says of a wonder nobody on the node has seen: more as the chart grows."""
+        spec = WONDER_KINDS[wonder["kind"]]
+        share = self.charted_share()
+        known = cell_at(wonder["x"], wonder["y"]) in self.chart
+        text = spec["hint"][0].upper() + spec["hint"][1:]
+        if wonder["kind"] == "eye":
+            return text + "."
+        if share >= WONDER_HINTS[0] or known:
+            text += f", {self._near(wonder['x'], wonder['y'])}"
+        if share >= WONDER_HINTS[1] or known:
+            text += f": {spec['how']}"
+        return text + "."
+
+    def _album_pages(self) -> list[list]:
+        """The album's pages: the kinds of wonder, three to a page."""
+        kinds = list(WONDER_KINDS)
+        return [kinds[i:i + 3] for i in range(0, len(kinds), 3)]
+
+    def _draw_album(self, s: "Session") -> list[str]:
+        """The album: the forty wonders by kind, who saw each first, and a hint for each nobody has."""
+        wide = s.width - 2
+        pages = self._album_pages()
+        self.album_page = max(0, min(self.album_page, len(pages) - 1))
+        out = [s._line(0, 1, "FAIR WINDS", "accent"), s._line(0, 13, "The album", "text")]
+        out.append(s._kv_right(0, s.width - 1, f"You have seen `{len(self.album)}` of `{len(self.wonders)}`; the node "
+                                               f"`{len(self.sighted)}`"))
+        row = 2
+        for kind in pages[self.album_page]:
+            spec = WONDER_KINDS[kind]
+            mine = [w for w in self.wonders if w["kind"] == kind]
+            # How a kind is seen heads its wonders, once somebody has seen one or the chart has grown enough.
+            told = any(w["id"] in self.sighted or w["id"] in self.album or self._hint_level(w) >= 2 for w in mine)
+            out.append(s._line(row, 1, spec["title"].upper(), "accent"))
+            out.append(s._line(row, 3 + len(spec["title"]), (spec["how"] if told else "nobody knows yet how")
+                               [:max(0, wide - 3 - len(spec["title"]))], "cool" if told else "dim"))
+            row += 1
+            for wonder in mine:
+                if row >= s.height - 3:
+                    break
+                who = self.sighted.get(wonder["id"])
+                name = clean_text(str(who[1]), 16) if who else ""
+                where = self._near(wonder["x"], wonder["y"])
+                if wonder["id"] in self.album:
+                    text, ink = f"* {wonder['name']}, {where}" + (f". First: {name}, Day {int(who[2])}" if who else ""), "text"
+                elif who:
+                    text, ink = f"- {wonder['name']}, {where}. Seen by {name}", "text"
+                else:
+                    hint = spec["hint"][0].upper() + spec["hint"][1:]
+                    text = f"  {hint}" + (f", {where}" if self._hint_level(wonder) >= 1 and kind != "eye" else "")
+                    ink = "dim"
+                out.append(s._line(row, 1, text[:wide], ink))
+                row += 1
+        out.append(s._line(s.height - 3, 1, "* yours   - another pilot's   the rest: a hint, sharper as the chart "
+                                            "grows"[:wide], "dim"))
+        out.append(s._kv(s.height - 2, 1, self._status(s, wide), wide, "dim", "text"))
+        out += s._keys(s.height - 1, [("W/S", f"Page {self.album_page + 1} of {len(pages)}"), ("Enter", "Back")])
+        return out
+
     # -- the almanac ---------------------------------------------------------
 
     def _see_almanac(self) -> bool:
@@ -5064,6 +5398,7 @@ class PlainFlight:
         charted = self._see_stations() or charted     # and planted, stocked and raised
         charted = self._see_calls() or charted        # and who is stranded; or that help has come
         charted = self._see_almanac() or charted      # and what winds have been entered
+        charted = self._see_wonders() or charted      # and what wonders have been seen
         if not self._look_at_the_calendar():
             return self.others != before or charted
         if self._catch_up():
@@ -5865,6 +6200,22 @@ class PlainFlight:
             self._see_almanac()
             self.pages = True
             return None
+        if self.album_open:
+            if k in ("w", "UP"):
+                self.album_page -= 1
+            elif k in ("s", "DOWN"):
+                self.album_page = min(self.album_page + 1, len(self._album_pages()) - 1)
+            else:
+                self.album_open = False
+            self.album_page = max(0, self.album_page)
+            return None
+        if k == "u" and not self.hub and not self.loft and self.drift is None:
+            self._see_wonders()
+            self.album_open = True
+            return None
+        if k == "f" and not self.hub and not self.loft and self.wonder_here() is not None:
+            self._capture()
+            return None
         if k == "b" and not self.hub and not self.loft and self.book_place() is not None:
             station = self.book_place()
             self.book = {"station": station, "lines": self._book_lines(station), "note": ""}
@@ -6043,6 +6394,7 @@ class PlainFlight:
         self._sync_call()                 # stranded: the call for help goes out
         if self.ended:
             return
+        self._point_out()                 # a wonder that has come into view
         if (action == "launch" or landed) and self.saved_ok:
             # No picture of a turn that is not on disk: the screen says it was not saved instead.
             self.pending_scene = self._scene_for("launch" if action == "launch" else "landing")
@@ -6830,6 +7182,8 @@ class PlainFlight:
             self.book = self.writing = None
         if self.pages and not self.naming:
             return self._draw_almanac(s)
+        if self.album_open and not self.naming:
+            return self._draw_album(s)
         if self.drift_lobby and not self.naming:
             return self._draw_drift(s)
         if self.trials and not self.naming:
@@ -6921,6 +7275,8 @@ class PlainFlight:
                 keys.append(("P", "Pibal"))
             if self.drift is not None:
                 keys.append(("X", "Leave"))
+            if self.wonder_here() is not None:
+                keys.insert(0, ("F", "Wonder"))       # first on the line: it may not be there next turn
             return keys + [("?", "Help"), ("Q", "Quit")]
         if self.drift is not None:
             return [("Enter", "Launch"), ("X", "Leave it"), ("?", "The rules"), leave]
@@ -7335,7 +7691,7 @@ PLAIN_HELP = (
     "  `H`  wait an hour for the wind               `N`  stay the night",
     "# THE MAP",
     "  `@` you  `#` post for there  `o` town  `+` station  `Y` mast  `Q` a pilot  `C` chart",
-    "  Dots: where a choice carries you. `%` squall. `!` stranded pilot: land to help.",
+    "  Dots: a choice's track. `%` squall. `!` stranded: land to help. `F` a wonder.",
     "  Without colour: `~` sea  `.` shore  `,` grass  `\"` forest  `:` plain  `n` hills  `^` peak",
     "# GOOD TO KNOW",
     "  `~` marks a forecast; your own layer is read true. A world day is flown once.",
@@ -7343,7 +7699,7 @@ PLAIN_HELP = (
     "  after 20:00). Land in 15 km/h or less. 12 km from a place is there.",
     "  `K` plants a station kit in the wild: a sharper forecast there for everyone.",
     "  Landing at a station restocks it: no fuel there. Crates make it a mast.",
-    "  `T` Drift  `R` Trials  `V` almanac  `?` help  `Ctrl-L` redraw  `Q` leave: all is saved.",
+    "  `T` Drift `R` Trials `V` almanac `U` album `?` help `Ctrl-L` redraw `Q` leave (saved)",
 )
 
 
@@ -7545,15 +7901,19 @@ class Scene:
 
     def __init__(self, kind: str, width: int, height: int, pixels: bool, motion: bool, hour: float = 6.6,
                  cloud: float = 0.0, biome: int = GRASS, seed: int = 1, place: bool = False,
-                 caption: str = "", sub: str = "", flat: bool = False, design: dict | None = None):
+                 caption: str = "", sub: str = "", flat: bool = False, design: dict | None = None,
+                 family: str = ""):
         self.kind, self.width, self.height = kind, width, height
+        self.family, self.seed = family, seed       # for a wonder: which kind of sight, and which one of them
+        self.flat = flat
         self.design = design_of(design)
         self.pixels, self.caption, self.sub = pixels, caption, sub
         self.hold = kind == "splash"
         moving = pixels and motion
-        self.frames = {"splash": 16, "launch": 11, "landing": 14}[kind] if moving else 1
-        # A still picture stays a moment, and so does a landing once it is down.
-        self.linger = 0 if self.hold else 8 if not moving else 4 if kind == "landing" else 0
+        self.frames = {"splash": 16, "launch": 11, "landing": 14, "wonder": 14}[kind] if moving else 1
+        # A still picture stays a moment, and so does a landing once it is down. A wonder stays longest.
+        self.linger = 0 if self.hold else 12 if kind == "wonder" else 8 if not moving else \
+            4 if kind == "landing" else 0
         self.index = 0
         self.backdrop = Backdrop(width, height, hour, cloud, biome, seed, place, flat) if pixels else None
 
@@ -7588,7 +7948,13 @@ class Scene:
         t = self._eased()
         scale = max(1, (w - 8) // 60)
         title_y = max(2, int(back.h * 0.14))
-        if self.kind == "splash":
+        if self.kind == "wonder":
+            self._wonder(screen)
+            r = max(2.0, back.h / 11.0)                 # small, and off to one side: the sight is the picture
+            cx, cy = w * (0.14 + 0.06 * t), back.h * (0.2 if self.family in ("aurora", "alpenglow") else 0.3)
+            if self.family in ("aurora", "lightning"):
+                cy = back.h * 0.45
+        elif self.kind == "splash":
             rest = title_y + 7 * scale + 3 + r          # it comes to rest under the title, clear of it
             cx, cy = w * 0.74, back.h + r + (rest - back.h - r) * t
         elif self.kind == "launch":
@@ -7596,6 +7962,8 @@ class Scene:
         else:
             cx, cy = w * 0.24 + w * 0.1 * t, -r * 1.5 + (ground + r * 1.5) * t
         night = back.hour < 5.5 or back.hour >= 20.5
+        if self.kind == "wonder" and self.flat:
+            night = False                               # in 256 colours a balloon dimmed for the night is a grey smudge
         draw_balloon(screen, cx, cy, r, (0.5, 0.52, 0.66) if night else (1.0, 1.0, 1.0),
                      flame=self.kind != "landing" or t < 0.9, colours=design_rgb(self.design),
                      pattern=self.design["pattern"])
@@ -7608,6 +7976,190 @@ class Scene:
         else:
             self._over(screen, 2, h - 3, self.caption, "bright")
             self._over(screen, 2, h - 2, self.sub, "accent")
+
+    # -- wonders: one picture for each kind, painted over the sky and land of the hour ----------
+
+    def _wonder(self, screen: Screen) -> None:
+        """Paint the wonder over the backdrop. Each kind has its own hand; the frame number moves what moves."""
+        back, n, family = self.backdrop, self.index, self.family
+        w, h, hz = back.w, back.h, back.horizon
+        seed = (self.seed * 2654435761 + 97) & 0xFFFFFFFF
+
+        def under(x: int, y: int):
+            x, y = min(w - 1, max(0, x)), min(h - 1, max(0, y))
+            return (back.tops if y % 2 == 0 else back.bottoms)[y // 2][x]
+
+        def put(x: int, y: int, c) -> None:
+            if 0 <= x < w and 0 <= y < h:
+                screen.pixel(x, y, (int(c[0]), int(c[1]), int(c[2])))
+
+        def ridge(x: int, top: float, amp: float, scale: float, key: int) -> float:
+            return top - amp * _noise(seed, key, x / scale, key * 1.7) - amp * 0.4 * _noise(seed, key + 1, x / (scale * 0.3), 2.2)
+
+        if family == "aurora":
+            # Curtains of green that fade to violet at the foot, hung from a line that wanders across the sky.
+            for x in range(w):
+                band = _smooth(_noise(seed, 3, x / (w * 0.09) + n * 0.07, 0.4), 0.3, 0.72)
+                band = max(band, 0.7 * _smooth(_noise(seed, 5, x / (w * 0.21) - n * 0.05, 3.3), 0.4, 0.8))
+                if band <= 0.02:
+                    continue
+                top = h * 0.07 + h * 0.2 * _noise(seed, 4, x / (w * 0.3), 1.1)
+                length = h * (0.24 + 0.2 * _noise(seed, 6, x / (w * 0.13), 5.5))
+                for y in range(int(top), int(min(hz - 2, top + length))):
+                    f = (y - top) / length
+                    glow = band * (1.0 - f) ** 1.3 * (0.75 + 0.25 * _lattice(seed, 8, x, n // 2))
+                    colour = _mix((96, 246, 150), (150, 96, 226), f)
+                    put(x, y, _mix(under(x, y), colour, min(0.88, glow)))
+        elif family == "salt":
+            # The ground turned to a white pan that holds the sky, cracked into plates that shrink toward the horizon.
+            for x in range(w):
+                gy = int(back.ground_y[x]) - 2
+                for y in range(gy, h):
+                    depth = (y - gy) / max(1.0, h - gy)
+                    sky = under(x, max(0, gy - int((y - gy) * 1.4) - 2))
+                    c = _mix((240, 238, 230), sky, 0.5 - 0.25 * depth)
+                    plate = 3 + int(depth * 9)
+                    shift = (y // max(2, plate // 2)) * 3
+                    if (x + shift) % plate == 0 or (y - gy) % max(2, plate // 2) == 0:
+                        c = _mix(c, (150, 150, 150), 0.3 + 0.2 * depth)
+                    put(x, y, c)
+        elif family == "falls":
+            # A dark cliff on the right, and a white thread down it into spray.
+            foot = int(h * 0.9)
+            lip = {}
+            for x in range(int(w * 0.44), w):
+                edge = _smooth(x, w * 0.44, w * 0.56)
+                top = int(ridge(x, hz - h * 0.3 * edge, h * 0.06, w * 0.12, 21))
+                lip[x] = top
+                for y in range(top, h):
+                    rock = _mix((56, 62, 74), (96, 104, 112), _noise(seed, 23, x / 3.0, y / 9.0))
+                    if y < top + 2:
+                        rock = (74, 110, 70)                    # turf along the lip
+                    put(x, y, rock)
+            fx = int(w * 0.68)
+            for y in range(lip.get(fx, int(hz * 0.6)) + 1, foot):
+                spread = 1 + (y - lip.get(fx, 0)) // max(1, h // 10)
+                for dx in range(-spread, spread + 1):
+                    streak = _lattice(seed, 25, fx + dx, (y - n * 3) // 3)
+                    put(fx + dx, y, _mix((236, 244, 252), (170, 200, 232), streak * (0.3 + 0.4 * abs(dx) / (spread + 1))))
+            for x in range(fx - h // 5, fx + h // 5 + 1):
+                for y in range(foot - h // 12, min(h, foot + h // 14)):
+                    d = ((x - fx) / (h / 5.0)) ** 2 + ((y - foot) / (h / 12.0)) ** 2
+                    if d < 1.0:
+                        puff = (1.0 - d) * (0.55 + 0.35 * _lattice(seed, 27, x // 2, y // 2 + n))
+                        put(x, y, _mix(under(x, y) if x < w * 0.44 else (80, 88, 100), (238, 244, 250), min(0.9, puff)))
+        elif family in ("cloudsea", "eye"):
+            # A floor of cloud lit from the low sun, with the tops of the hills standing out of it.
+            peaks = [(w * (0.2 + 0.3 * i + 0.1 * _lattice(seed, 31, i, 0)), h * (0.1 + 0.08 * _lattice(seed, 32, i, 0)))
+                     for i in range(3)]
+            lit, shade = _mix((250, 236, 220), under(w // 2, hz - 2), 0.25), (146, 150, 176)
+            for x in range(w):
+                top = ridge(x, hz - h * 0.02, h * 0.05, w * 0.1, 33) + h * 0.012 * math.sin(x / 5.0 + n * 0.2)
+                if family == "cloudsea":
+                    for px, ph in peaks:
+                        rise = ph * (1.0 - abs(x - px) / (ph * 1.6))
+                        if rise > 0:
+                            for y in range(int(top - rise), int(top) + 1):
+                                snow = y < top - rise * 0.55
+                                put(x, y, (228, 226, 232) if snow else (52, 54, 80))
+                else:
+                    # The wall of the storm on either hand, towering, and nothing but still air between.
+                    wall = max(_smooth(w * 0.24 - x, 0, w * 0.2), _smooth(x - w * 0.76, 0, w * 0.2))
+                    if wall > 0:
+                        for y in range(int(h * 0.04 + (1.0 - wall) * h * 0.5), int(top)):
+                            f = _noise(seed, 37, x / (w * 0.06), y / (h * 0.07))
+                            put(x, y, _mix(_mix(shade, lit, f * 0.8), under(x, y), 0.25 * (1.0 - wall)))
+                for y in range(int(top), h):
+                    depth = (y - top) / max(1.0, h - top)
+                    f = _noise(seed, 35, x / (w * 0.08) + n * 0.03, y / (h * 0.045))
+                    c = _mix(lit, shade, min(1.0, 0.15 + 0.6 * f + 0.3 * depth))
+                    put(x, y, c)
+        elif family == "lightning":
+            # A bank of cloud standing off to the right, and a bolt out of it on some frames.
+            strike = n % 5 in (1, 2)
+            cx, cy = w * 0.72, h * 0.24
+            for x in range(int(w * 0.4), w):
+                for y in range(0, int(hz * 0.78)):
+                    d = ((x - cx) / (w * 0.3)) ** 2 + ((y - cy) / (h * 0.24)) ** 2
+                    edge = d + 0.5 * _noise(seed, 41, x / (w * 0.06), y / (h * 0.06)) - 0.25
+                    if edge < 1.0:
+                        c = _mix((30, 32, 52), (74, 76, 104), _noise(seed, 43, x / 4.0, y / 5.0))
+                        if strike:
+                            near = max(0.0, 1.0 - abs(x - cx) / (w * 0.16))
+                            c = _mix(c, (226, 222, 250), near * 0.6)
+                        put(x, y, _mix(under(x, y), c, min(1.0, (1.0 - edge) * 3.0)))
+            if strike:
+                x, y = int(cx), int(cy + h * 0.14)
+                ground = int(back.ground_y[min(w - 1, x)])
+                while y < ground:
+                    put(x, y, (255, 250, 214))
+                    put(x + 1, y, (190, 190, 255))
+                    x += int(_lattice(seed, 45 + n // 5, y, 0) * 3) - 1
+                    y += 1
+        elif family == "alpenglow":
+            # A wall of high peaks: sharp, rose on the faces the last sun reaches, blue in their own shadow
+            # and below the line the light has already left.
+            tops = []
+            for x in range(w):
+                sharp = abs(_noise(seed, 51, x / (w * 0.11), 0.7) - 0.5) * 2.0          # a ridge that comes to points
+                tops.append(hz - h * 0.08 - h * 0.46 * (1.0 - sharp) ** 1.6
+                            - h * 0.05 * _noise(seed, 52, x / (w * 0.025), 4.1))
+            for x in range(w):
+                top = int(tops[x])
+                lean = tops[min(w - 1, x + 2)] - tops[max(0, x - 2)]       # rising to the right: a face turned from the sun
+                shadow = _smooth(lean, -1.0, 2.5)
+                line = hz - h * 0.14 + h * 0.03 * _noise(seed, 53, x / (w * 0.1), 0.0)
+                for y in range(max(0, top), int(back.ground_y[x]) + 1):
+                    grain = _noise(seed, 55, x / 4.0, y / 6.0)
+                    if y < line:
+                        lit = _mix((255, 170, 150), (255, 214, 176), grain)
+                        dark = _mix((150, 96, 140), (176, 120, 150), grain)
+                        c = _mix(lit, dark, shadow * 0.85)
+                        c = _mix(c, (104, 84, 136), 0.55 * _smooth(y, line - h * 0.1, line))
+                    else:
+                        c = _mix((50, 50, 94), (74, 70, 118), grain)
+                    put(x, y, c)
+        elif family == "sealights":
+            # Black water, a dark shore, and a scatter of cold light on the sea that moves.
+            shore = int(hz + h * 0.02)
+            for x in range(w):
+                land = ridge(x, shore, h * 0.07, w * 0.14, 61) if x > w * 0.6 else shore + 1
+                for y in range(shore - int(h * 0.1), h):
+                    if y < land and x > w * 0.6:
+                        continue
+                    if x > w * 0.6 and y < shore + (x - w * 0.6) * 0.25:
+                        put(x, y, (14, 16, 30))
+                        continue
+                    if y < shore:
+                        continue
+                    depth = (y - shore) / max(1.0, h - shore)
+                    c = _mix((8, 18, 40), (4, 10, 26), depth)
+                    drift = _noise(seed, 63, x / (w * 0.12) + n * 0.06, y / (h * 0.03))
+                    if _lattice(seed, 65, x + (n // 2) * (y % 3 - 1), y) < 0.05 + 0.2 * _smooth(drift, 0.5, 0.8):
+                        c = _mix((60, 236, 214), (150, 250, 236), _lattice(seed, 67, x, y + n))
+                    put(x, y, c)
+        elif family == "mist":
+            # Low ground at dawn: rank behind rank of dark tree-tops, and white lying in every hollow between.
+            floor = int(hz - h * 0.03)
+            ranks = 4
+            band = max(3.0, (h - floor) / ranks)
+            for x in range(w):
+                for y in range(floor, h):
+                    i = min(ranks - 1, int((y - floor) / band))
+                    line = floor + i * band + band * 0.25 * _noise(seed, 71 + i, x / (w * 0.18), i * 2.3)
+                    tooth = abs((x + i * 3) % (4 + i) - (2 + i // 2)) * (0.6 + 0.25 * i)
+                    crown = line + tooth
+                    if y < crown:
+                        if i == 0:
+                            continue                    # above the first rank: the sky and the far hills
+                        prev = floor + (i - 1) * band
+                        lay = _smooth((y - prev) / band, 0.2, 0.75)
+                        put(x, y, _mix((26, 40, 40), (236, 232, 238), min(0.94, lay + 0.1)))
+                        continue
+                    lay = _smooth((y - crown) / band, 0.25, 0.9)
+                    lay *= 0.75 + 0.25 * _noise(seed, 75, x / (w * 0.1) + n * 0.03, y / 3.0)
+                    dark = _mix((22, 38, 38), (40, 58, 50), _noise(seed, 77, x / 3.0, y / 3.0))
+                    put(x, y, _mix(dark, (236, 232, 238), min(0.94, lay)))
 
     def _title(self, screen: Screen, x: int, y: int, text: str, scale: int) -> None:
         for layer, colour in ((1, (40, 24, 72)), (0, None)):
@@ -7959,7 +8511,8 @@ class Session:
         self.scene = Scene(asked["kind"], self.width, self.height, True, self.game.motion, hour=asked["hour"],
                            cloud=asked["cloud"], biome=asked["biome"], seed=asked["seed"], place=asked["place"],
                            caption=asked["caption"], sub=asked["sub"],
-                           flat=self.launch.color_depth != "truecolor", design=asked.get("design"))
+                           flat=self.launch.color_depth != "truecolor", design=asked.get("design"),
+                           family=asked.get("family", ""))
         self._next_frame = self._scene_at = None
         self._dirty = True
 

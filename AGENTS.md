@@ -40,7 +40,9 @@ S18 (the almanac: each world's local winds, entered by flying them on three
 days) is built as well, which completes P4. Of P5, S19 (the Daily Drift: one
 course a world day on a standard balloon, one scored attempt, a table) is
 built, and so is S20 (the Trials: a first flight that teaches, and twelve
-set flights with medals). The next slice is S21, the wonders.
+set flights with medals) and S21 (forty wonders in every world, taken for an
+album when the balloon is there as they show, each with a picture). The next
+slice is S22, the seasons.
 
 To look at a screen, run `python scripts/capture.py`: it writes each size and
 colour depth as an HTML page under `.test-tmp/captures`, which headless Edge
