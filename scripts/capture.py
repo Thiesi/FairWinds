@@ -137,6 +137,22 @@ def sights(game) -> None:
     game._see_wonders = lambda: False
 
 
+def season(game) -> None:
+    """A second season under way, with the first one settled."""
+    db = game.store.db
+    db.execute("INSERT OR REPLACE INTO seasons VALUES (1, 'plant', 2, 1, 1)")
+    db.executemany("INSERT INTO season_medals VALUES (1, ?, ?, ?, ?)",
+                   ((0, 70, "Juno", 412.0), (1, 71, "Bram", 288.0), (2, 12, "Mara", 190.0)))
+    db.execute("INSERT OR REPLACE INTO seasons VALUES (2, 'chart', 200, 0, 0)")
+    db.executemany("INSERT OR IGNORE INTO charted VALUES (?, ?, 40)", [(9000 + i, 70 if i < 80 else 12) for i in range(131)])
+    db.execute("INSERT OR REPLACE INTO pilots VALUES (70, 'Juno', 1.0, '{}')")
+    db.executemany("INSERT INTO race VALUES (2, ?, ?, ?, 52)", ((70, "Juno", 301.0), (12, "Mara", 244.0)))
+    game.today = 52
+    game._see_season = lambda: False
+    game.season_now = fw.read_season(db, 2)
+    game.season_past = [fw.read_season(db, 1)]
+
+
 def almanac(game) -> None:
     """The almanac with a few winds entered and one part way."""
     for i, (wind, who) in enumerate(zip(game.winds[:5], ("Juno", "Bram", "Mara", "Juno", "Quill"))):
@@ -247,6 +263,8 @@ def main(argv) -> int:
                                     encoding="utf-8")
             name = f"album-{width}x{height}-{depth}.html"
             (OUT / name).write_text(page(fly(width, height, depth, turns=("u",), setup=sights), name), encoding="utf-8")
+            name = f"season-{width}x{height}-{depth}.html"
+            (OUT / name).write_text(page(fly(width, height, depth, turns=("y",), setup=season), name), encoding="utf-8")
             name = f"almanac-{width}x{height}-{depth}.html"
             (OUT / name).write_text(page(fly(width, height, depth, turns=(), setup=almanac), name), encoding="utf-8")
             name = f"book-{width}x{height}-{depth}.html"

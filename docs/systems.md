@@ -1105,6 +1105,59 @@ a region, supply a frontier town), and a race in its last seven days (the
 longest straight-line flight in one flying day). At the close, medals go to at
 most three pilots. Nothing a pilot owns is reset. The map is never reset.
 
+**Seasons, as built (S22).** The tables are `SEASON_DAYS`, `RACE_DAYS`,
+`SEASON_GRACE`, `SEASON_GOALS`, `GOAL_PAY`, `RACE_PAY` and `RACE_PLACES`.
+
+- **The season** of a world day is `(day - 1) // 28 + 1`. Its screen is `Y`.
+- **The regime** is the weather's own (section 4) and has been since S04:
+  for each season a lean of the whole column, a swing and a speed for each
+  layer within a fifth of its base, in about a third of seasons the two
+  lowest layers running the other way as trades, a pulse of the Gyre from
+  0.85 to 1.15, and in about three in ten a cold season with ice from layer
+  4. The first day of a season eases from the old regime to the new. The
+  season's screen says it in a line.
+- **The goal** is one of five, set by the first session to look at the
+  season and the same for everyone after. The kinds are gone through in an
+  order drawn for the season; one the world has no more room for is passed
+  over. Progress is counted from what the records already hold for the days
+  of the season, so nothing new is written as pilots play.
+
+| Goal | To do | Counted from | One pilot |
+| --- | --- | --- | --- |
+| Chart | 200 cells nobody has seen | `charted`, by day | about ten flying days |
+| Plant | 2 weather stations | `stations`, by day planted | two kits |
+| Mast | 1 mooring mast | `stations`, by day raised | four crates, two flights |
+| Wonders | be first to 4 | `wonders`, by day | four sights |
+| Winds | enter 2 in the almanac | `almanac`, by day | six flights |
+
+  Each is within what one active pilot does in a season; what several do is
+  added together, so more pilots are sooner there.
+- **The race** is the season's last seven days. A flight that ends on one of
+  them counts by the straight line from where it launched to where it came
+  down; each pilot's longest stands (`race`).
+- **The close.** A season is settled once it is three days past, when every
+  day of it has been flown or has lapsed: by the first session to look, in
+  one write, once. Whether the goal was met is fixed then. The race's first
+  three take gold, silver and bronze (`season_medals`): the longest flight;
+  of two alike, the one flown on the earlier day. No more than three pilots
+  have a medal of a season. A race that is closed takes no more flights.
+- **Dues.** A closed season owes a pilot 60 postmarks if its goal was met
+  and they had a hand in it, and 120, 70 or 40 for a medal. It is asked for
+  once for each pilot and season (`season_claims`), in the same write that
+  pays, at their next call or look.
+- **Past seasons** are on the season's screen: the last three, with their
+  goal, whether it was met, and their medals.
+- **Nothing is reset.** A new season changes the weather and the goal and
+  nothing else: postmarks, licence, gear, medals, albums, stations and the
+  chart are as they were.
+- The records gain `seasons`, `race`, `season_medals` and `season_claims`,
+  and the schema is version 8. A visitor, or a caller whose records cannot
+  be kept, has no season.
+
+**Not yet tuned.** The targets and the pay are a first table. The goals the
+plan gives as examples ("a chain of masts through a pass", "supply a frontier
+town") are not among them: these five are the ones the records can count.
+
 **The Gyre.** Three bands around the centre. In the outer band forecast
 coverage is capped at half. In the inner band it is capped at zero and nothing
 can be planted. The eyewall needs layer 5 or above, or the engine. Inside is the

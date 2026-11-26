@@ -33,7 +33,7 @@ import zoneinfo
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "0.1.0.dev27"
+VERSION = "0.1.0.dev28"
 DOOR_API = 5
 MIN_WIDTH, MIN_HEIGHT = 80, 24
 MAX_DIMENSION = 1000
@@ -3791,6 +3791,146 @@ def read_wonders(db, user_id: int) -> tuple[dict, set]:
 
 
 # --------------------------------------------------------------------------
+# Seasons (S22). Twenty-eight world days: a turn of the prevailing winds (the
+# weather has always had it), a goal for the whole node, and in the last
+# week a race. When a season is over its goal is settled and the race is
+# scored, once; at most three pilots take its medals. Nothing a pilot owns
+# is ever reset, and nor is the map.
+# --------------------------------------------------------------------------
+
+RACE_DAYS = 7                        # the race is the season's last so many days
+SEASON_GRACE = WAITING_DAYS          # a season is closed this many days on: every day of it has lapsed by then
+GOAL_PAY = 60                        # to every pilot who had a hand in a goal that was met
+RACE_PAY = (120, 70, 40)             # the race's first three
+RACE_PLACES = ("gold", "silver", "bronze")
+# What a node may be set to do in a season: how much of it, and how it is said. Each is counted from what
+# the records already hold for the days of the season. One active pilot can do any of them in a season
+# (about 10 flying days of charting; two kits; four crates; four sights; two winds); more pilots, sooner.
+SEASON_GOALS = {
+    "chart": {"target": 200, "text": "Chart {n} cells nobody has seen", "unit": "cells"},
+    "plant": {"target": 2, "text": "Plant {n} weather stations", "unit": "stations"},
+    "mast": {"target": 1, "text": "Raise a mooring mast", "unit": "mast"},
+    "wonders": {"target": 4, "text": "Be the first to {n} wonders", "unit": "wonders"},
+    "winds": {"target": 2, "text": "Enter {n} winds in the almanac", "unit": "winds"},
+}
+
+
+def season_of(day: int) -> tuple[int, int]:
+    """The season a world day is in, counted from 1, and the day of that season, from 1 to 28."""
+    return (day - 1) // SEASON_DAYS + 1, (day - 1) % SEASON_DAYS + 1
+
+
+def season_span(season: int) -> tuple[int, int]:
+    """The first and the last world day of a season."""
+    return (season - 1) * SEASON_DAYS + 1, season * SEASON_DAYS
+
+
+def in_race(day: int) -> bool:
+    return season_of(day)[1] > SEASON_DAYS - RACE_DAYS
+
+
+def goal_progress(db, kind: str, first: int, last: int) -> tuple[int, list]:
+    """How far a goal has come in a span of days, and who did how much of it: (user, handle, amount), most first."""
+    if kind == "chart":
+        rows = db.execute("SELECT c.user_id, coalesce(p.handle, '?'), count(*) FROM charted c LEFT JOIN pilots p"
+                          " USING (user_id) WHERE c.day BETWEEN ? AND ? GROUP BY c.user_id", (first, last)).fetchall()
+    elif kind == "plant":
+        rows = db.execute("SELECT user_id, handle, count(*) FROM stations WHERE day BETWEEN ? AND ?"
+                          " GROUP BY user_id", (first, last)).fetchall()
+    elif kind == "mast":
+        # A mast is the work of everyone whose crates are in it.
+        total = db.execute("SELECT count(*) FROM stations WHERE mast_day BETWEEN ? AND ?", (first, last)).fetchone()[0]
+        rows = db.execute("SELECT c.user_id, c.handle, sum(c.crates) FROM contributions c JOIN stations s"
+                          " ON s.id=c.station WHERE s.mast_day BETWEEN ? AND ? GROUP BY c.user_id",
+                          (first, last)).fetchall()
+        return total, sorted(rows, key=lambda r: (-r[2], r[0]))
+    elif kind == "wonders":
+        rows = db.execute("SELECT user_id, handle, count(*) FROM wonders WHERE day BETWEEN ? AND ?"
+                          " GROUP BY user_id", (first, last)).fetchall()
+    else:
+        rows = db.execute("SELECT user_id, handle, count(*) FROM almanac WHERE day BETWEEN ? AND ?"
+                          " GROUP BY user_id", (first, last)).fetchall()
+    return sum(row[2] for row in rows), sorted(rows, key=lambda r: (-r[2], r[0]))
+
+
+def begin_season(db, seed: int, season: int, winds: int) -> tuple[str, int]:
+    """The season's goal: set once, by whoever is first to look, and the same for everyone after.
+
+    The kinds are gone through in an order drawn for the season; one that
+    the world has no more room for is passed over.
+    """
+    row = db.execute("SELECT kind, target FROM seasons WHERE season=?", (season,)).fetchone()
+    if row is not None:
+        return row[0], row[1]
+    room = {"winds": winds - db.execute("SELECT count(*) FROM almanac").fetchone()[0],
+            "wonders": WONDER_COUNT - db.execute("SELECT count(*) FROM wonders").fetchone()[0],
+            "chart": CHART_W * CHART_H - db.execute("SELECT count(*) FROM charted").fetchone()[0]}
+    order = sorted(SEASON_GOALS, key=lambda kind: draw_unit(seed, "season-goal", season, kind))
+    kind = next((k for k in order if room.get(k, 10 ** 9) >= SEASON_GOALS[k]["target"] * 2), "plant")
+    db.execute("INSERT OR IGNORE INTO seasons (season, kind, target) VALUES (?, ?, ?)",
+               (season, kind, SEASON_GOALS[kind]["target"]))
+    return kind, SEASON_GOALS[kind]["target"]
+
+
+def race_fly(db, user_id: int, handle: str, km: float, day: int) -> bool:
+    """A flight flown in a season's race. Kept if it is the pilot's longest of that race, and the race is still open."""
+    season = season_of(day)[0]
+    if not in_race(day) or db.execute("SELECT 1 FROM seasons WHERE season=? AND closed=1", (season,)).fetchone():
+        return False
+    row = db.execute("SELECT km FROM race WHERE season=? AND user_id=?", (season, user_id)).fetchone()
+    if row is not None and row[0] >= km:
+        return False
+    db.execute("INSERT INTO race VALUES (?, ?, ?, ?, ?) ON CONFLICT (season, user_id) DO UPDATE SET"
+               " km=excluded.km, day=excluded.day, handle=excluded.handle", (season, user_id, handle, km, day))
+    return True
+
+
+def close_season(db, seed: int, season: int, winds: int) -> bool:
+    """Settle a season that is over: whether its goal was met, and who takes the race's medals. Once.
+
+    False if somebody has settled it already. A season nobody looked at
+    while it ran is given its goal now and settled all the same.
+    """
+    kind, target = begin_season(db, seed, season, winds)
+    if db.execute("UPDATE seasons SET closed=1 WHERE season=? AND closed=0", (season,)).rowcount != 1:
+        return False
+    total, _ = goal_progress(db, kind, *season_span(season))
+    db.execute("UPDATE seasons SET met=? WHERE season=?", (int(total >= target), season))
+    places = db.execute("SELECT user_id, handle, km FROM race WHERE season=? ORDER BY km DESC, day ASC, user_id ASC"
+                        " LIMIT ?", (season, len(RACE_PLACES))).fetchall()
+    for place, (user_id, handle, km) in enumerate(places):
+        db.execute("INSERT INTO season_medals VALUES (?, ?, ?, ?, ?)", (season, place, user_id, handle, km))
+    return True
+
+
+def claim_season(db, season: int, user_id: int) -> dict | None:
+    """What a closed season owes a pilot, the one time it is asked for: a share in the goal, a place in the race."""
+    row = db.execute("SELECT kind, met FROM seasons WHERE season=? AND closed=1", (season,)).fetchone()
+    if row is None or db.execute("INSERT OR IGNORE INTO season_claims VALUES (?, ?)",
+                                 (season, user_id)).rowcount != 1:
+        return None
+    _, hands = goal_progress(db, row[0], *season_span(season))
+    place = db.execute("SELECT place FROM season_medals WHERE season=? AND user_id=?", (season, user_id)).fetchone()
+    return {"season": season, "kind": row[0], "goal": bool(row[1]) and any(h[0] == user_id for h in hands),
+            "place": None if place is None else place[0]}
+
+
+def read_season(db, season: int) -> dict:
+    """A season as the records have it: its goal and how far it has come, the race so far, and its medals."""
+    row = db.execute("SELECT kind, target, closed, met FROM seasons WHERE season=?", (season,)).fetchone()
+    out = {"season": season, "kind": None, "target": 0, "closed": False, "met": False, "total": 0, "hands": [],
+           "race": [], "medals": []}
+    if row is not None:
+        total, hands = goal_progress(db, row[0], *season_span(season))
+        out.update(kind=row[0], target=row[1], closed=bool(row[2]), met=bool(row[3]), total=total, hands=hands)
+    out["race"] = db.execute("SELECT handle, km FROM race WHERE season=? ORDER BY km DESC, day ASC, user_id ASC"
+                             " LIMIT 5", (season,)).fetchall()
+    out["medals"] = db.execute("SELECT place, handle, km FROM season_medals WHERE season=? ORDER BY place",
+                               (season,)).fetchall()
+    return out
+
+
+# --------------------------------------------------------------------------
 # The world's records (S10): one SQLite file for each world, shared by every
 # caller of that node. Writes are short transactions that take the write
 # lock at once; none is open while a caller thinks. A process killed at any
@@ -3798,7 +3938,7 @@ def read_wonders(db, user_id: int) -> tuple[dict, set]:
 # --------------------------------------------------------------------------
 
 APPLICATION_ID = 0x46574442          # "FWDB": says the file is a Fair Winds world
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 LEASE_STALE_SECONDS = 90.0           # a session not heard from for this long may be replaced without asking
 HEARTBEAT_SECONDS = 20.0
 BUSY_TIMEOUT_SECONDS = 5.0           # how long a write waits for another caller's write
@@ -3855,6 +3995,18 @@ MIGRATIONS = {
         " day INTEGER NOT NULL)",
         "CREATE TABLE seen (wonder INTEGER NOT NULL, user_id INTEGER NOT NULL, day INTEGER NOT NULL,"
         " PRIMARY KEY (wonder, user_id)) WITHOUT ROWID",
+    ),
+    8: (
+        # a season's goal, and once it is over whether it was met; each pilot's longest flight of its race;
+        # the race's first three; and who has been given what a closed season owed them
+        "CREATE TABLE seasons (season INTEGER PRIMARY KEY, kind TEXT NOT NULL, target INTEGER NOT NULL,"
+        " closed INTEGER NOT NULL DEFAULT 0, met INTEGER NOT NULL DEFAULT 0)",
+        "CREATE TABLE race (season INTEGER NOT NULL, user_id INTEGER NOT NULL, handle TEXT NOT NULL,"
+        " km REAL NOT NULL, day INTEGER NOT NULL, PRIMARY KEY (season, user_id)) WITHOUT ROWID",
+        "CREATE TABLE season_medals (season INTEGER NOT NULL, place INTEGER NOT NULL, user_id INTEGER NOT NULL,"
+        " handle TEXT NOT NULL, km REAL NOT NULL, PRIMARY KEY (season, place)) WITHOUT ROWID",
+        "CREATE TABLE season_claims (season INTEGER NOT NULL, user_id INTEGER NOT NULL,"
+        " PRIMARY KEY (season, user_id)) WITHOUT ROWID",
     ),
 }
 _NO_PLACE_TO_WRITE = ("readonly", "read-only", "unable to open", "locked", "disk i/o", "full", "busy")
@@ -4317,6 +4469,10 @@ class PlainFlight:
         self.sighted: dict = {}           # wonders seen on the node: number -> (user, handle, day)
         self.album: set = set()           # the wonders this pilot has seen
         self.album_open = False           # the album is open
+        self.season_open = False          # the season's screen is open
+        self.season_now: dict = {"season": 0}     # the season as last read
+        self.season_past: list = []       # the seasons before it, latest first
+        self._claimed: set = set()        # closed seasons this session has asked its dues of
         self.album_page = 0
         self._wonder_said = None          # the wonder last pointed out, so it is pointed out once
         self.drift: dict | None = None    # a Drift is being flown: its course, and whether it counts
@@ -4394,6 +4550,7 @@ class PlainFlight:
         self._see_calls()
         self._see_almanac()
         self._see_wonders()
+        self._see_season()
         self._sync_call()
         if self._imported and self.saved_ok and self.store is not None and not self.ended:
             # Only once the database has the pilot. And never over an earlier file of that name.
@@ -4999,6 +5156,145 @@ class PlainFlight:
         out += s._keys(s.height - 1, [("W/S", "Choose"), ("Enter", "Fly it"), ("?", "The rules"), ("B", "Back")])
         return out
 
+    # -- seasons -----------------------------------------------------------------
+
+    def _see_season(self) -> bool:
+        """Take in how the season stands. Settle any season that is over, and take what one owes this pilot.
+
+        True if anything is new. The season's goal is set by the first
+        session to look; a season is settled by the first to look once it
+        is three days past, when every day of it has been flown or lapsed.
+        """
+        if (self.store is None and self._own is None) or self.drift is not None:
+            return False                  # no records, and nothing of this visit's own yet: no season to keep
+        season = season_of(self.today)[0]
+        seed, winds, me = self.world.seed, len(self.winds), self.launch.user_id
+        over = [n for n in range(max(1, season - 3), season) if self.today > season_span(n)[1] + SEASON_GRACE]
+        try:
+            before = self.season_now
+            if before.get("season") != season or before.get("kind") is None or \
+                    any(not any(p["season"] == n and p["closed"] for p in self.season_past) for n in over):
+                def settle(db):
+                    begin_season(db, seed, season, winds)
+                    for n in over:
+                        close_season(db, seed, n, winds)
+                self._shared(settle, write=True)
+            self.season_now = self._read(lambda db: read_season(db, season))
+            self.season_past = [self._read(lambda db, n=n: read_season(db, n))
+                                for n in range(season - 1, max(0, season - 4), -1)]
+        except LeaseLost:
+            self.ended = "taken"
+            return False
+        except sqlite3.Error:
+            return False
+        for past in self.season_past:
+            if past["closed"]:
+                self._claim(past["season"])
+        return self.season_now != before
+
+    def _claim(self, season: int) -> None:
+        """Take what a closed season owes this pilot, once: said, and paid, in one write."""
+        if season in self._claimed or self.ended:
+            return
+        me = self.launch.user_id
+
+        def apply(done):
+            if done is None:
+                return
+            if done["goal"]:
+                self.postmarks += GOAL_PAY
+                self._say(f"Season {season} is over and its goal was met. You had a hand in it: {GOAL_PAY} postmarks.")
+            if done["place"] is not None:
+                pay = RACE_PAY[done["place"]]
+                self.postmarks += pay
+                self._say(f"You took {RACE_PLACES[done['place']]} in the race of season {season}: {pay} postmarks.")
+        if self._deed("season", lambda db: claim_season(db, season, me), apply):
+            self._claimed.add(season)
+
+    def _race(self, day: int) -> None:
+        """A flight that has just ended in a season's last week: it stands if it is the pilot's longest of the race."""
+        if not in_race(day) or self.lift_off is None or self.ended:
+            return
+        km = math.sqrt((self.state.x - self.lift_off[0]) ** 2 + (self.state.y - self.lift_off[1]) ** 2)
+        launch = self.launch
+        try:
+            if km >= 1.0 and self._shared(lambda db: race_fly(db, launch.user_id, launch.handle, km, day), write=True):
+                self._say(f"{km:.0f} km in a straight line: your longest in this season's race.")
+        except LeaseLost:
+            self.ended = "taken"
+        except sqlite3.Error as error:
+            diagnose(f"a race flight could not be kept: {error}")
+
+    def season_weather(self, season: int) -> str:
+        """The season's turn of the weather, in a line."""
+        layers, pulse, cold = self.weather._season(season - 1)
+        low = "easterly trades down low" if layers[0][2] < 0 else "westerlies from the ground up"
+        gyre = "the Gyre strong" if pulse > 1.05 else "the Gyre slack" if pulse < 0.95 else "the Gyre as ever"
+        return f"{low[0].upper()}{low[1:]}, {gyre}" + (", and ice from layer 4" if cold else "") + "."
+
+    def _draw_season(self, s: "Session") -> list[str]:
+        """The season: its weather, the node's goal and how far it has come, the race, and the seasons before."""
+        wide, now = s.width - 2, self.season_now
+        season, day = season_of(self.today)
+        out = [s._line(0, 1, "FAIR WINDS", "accent"), s._line(0, 13, f"Season {season}", "text")]
+        out.append(s._kv_right(0, s.width - 1, f"day `{day}` of `{SEASON_DAYS}`"))
+        out.append(s._line(2, 1, self.season_weather(season)[:wide], "text"))
+        out.append(s._line(4, 1, "THE NODE'S GOAL", "accent"))
+        row = 5
+        if now.get("kind"):
+            spec = SEASON_GOALS[now["kind"]]
+            done = min(now["total"], now["target"])
+            out.append(s._line(row, 1, (spec["text"].format(n=now["target"]) + " before the season is out.")[:wide], "text"))
+            width = min(30, wide - 24)
+            filled = round(done / max(1, now["target"]) * width)
+            for i in range(width):
+                s.frame.put(1 + i, row + 1, "\u2588" if i < filled else "\u00b7", (120, 214, 160) if i < filled else "dim")
+            out.append(s._kv(row + 1, width + 3, f"`{now['total']}` of `{now['target']}`"
+                                                  + ("   met" if now["total"] >= now["target"] else ""), wide - width - 2))
+            hands = "   ".join(f"{clean_text(str(h[1]), 16).replace('`', ' ')} `{h[2]}`" for h in now["hands"][:4])
+            out.append(s._kv(row + 2, 1, hands or "Nobody has put a hand to it yet.", wide))
+            out.append(s._line(row + 3, 1, f"Met, it pays everyone who had a hand in it {GOAL_PAY} postmarks at the "
+                                           f"season's end."[:wide], "dim"))
+        else:
+            out.append(s._line(row, 1, "There is no goal on record: the season's is set when the records can be kept."
+                               [:wide], "dim"))
+        row += 5
+        out.append(s._line(row, 1, "THE RACE", "accent"))
+        opens = SEASON_DAYS - RACE_DAYS + 1
+        if day < opens:
+            out.append(s._line(row + 1, 1, f"From day {opens}: the longest straight line from launch to landing in "
+                                           f"one flight."[:wide], "text"))
+        else:
+            out.append(s._line(row + 1, 1, f"On now, until day {SEASON_DAYS}: the longest straight line from launch "
+                                           f"to landing."[:wide], "text"))
+        standing = "   ".join(f"{i + 1} {clean_text(str(name), 16).replace('`', ' ')} `{km:.0f}` km"
+                              for i, (name, km) in enumerate(now.get("race", [])[:4]))
+        out.append(s._kv(row + 2, 1, standing or ("Nobody has flown in it yet." if day >= opens else
+                                                  f"Gold, silver and bronze: {RACE_PAY[0]}, {RACE_PAY[1]} and "
+                                                  f"{RACE_PAY[2]} postmarks."), wide))
+        row += 4
+        out.append(s._line(row, 1, "SEASONS PAST", "accent"))
+        shown = 0
+        for past in self.season_past:
+            if row + 1 + shown * 2 >= s.height - 3:
+                break
+            if past["kind"] is None and not past["medals"]:
+                continue
+            spec = SEASON_GOALS.get(past["kind"])
+            goal = "no goal" if spec is None else spec["text"].format(n=past["target"]).lower()
+            state = "being settled" if not past["closed"] else "met" if past["met"] else "not met"
+            out.append(s._line(row + 1 + shown * 2, 1, f"Season {past['season']}: {goal}: {state}."[:wide], "text"))
+            medals = "   ".join(f"{RACE_PLACES[place]} {clean_text(str(name), 16).replace('`', ' ')} `{km:.0f}` km"
+                                for place, name, km in past["medals"])
+            out.append(s._kv(row + 2 + shown * 2, 3, medals or "Nobody flew its race.", wide - 2))
+            shown += 1
+        if not shown:
+            out.append(s._line(row + 1, 1, "None yet. Nothing a pilot owns is taken back when a season ends, nor "
+                                           "is the map."[:wide], "dim"))
+        out.append(s._kv(s.height - 2, 1, self._status(s, wide), wide, "dim", "text"))
+        out += s._keys(s.height - 1, [("Enter", "Back")])
+        return out
+
     # -- wonders -----------------------------------------------------------------
 
     def _see_wonders(self) -> bool:
@@ -5399,8 +5695,10 @@ class PlainFlight:
         charted = self._see_calls() or charted        # and who is stranded; or that help has come
         charted = self._see_almanac() or charted      # and what winds have been entered
         charted = self._see_wonders() or charted      # and what wonders have been seen
+        charted = self._see_season() or charted       # and how the season stands
         if not self._look_at_the_calendar():
             return self.others != before or charted
+        self._see_season()                # a day has opened: it may be a new season's, or settle an old one
         if self._catch_up():
             self.save()
         self._choose_default()
@@ -6213,6 +6511,13 @@ class PlainFlight:
             self._see_wonders()
             self.album_open = True
             return None
+        if self.season_open:
+            self.season_open = False      # any key closes it, and is used up
+            return None
+        if k == "y" and not self.hub and not self.loft and self.drift is None:
+            self._see_season()
+            self.season_open = True
+            return None
         if k == "f" and not self.hub and not self.loft and self.wonder_here() is not None:
             self._capture()
             return None
@@ -6389,6 +6694,7 @@ class PlainFlight:
         if landed:
             self._visit()                 # a station here is seen to, in a write of its own
             self._rescue()                # and a pilot stranded here is helped
+            self._race(before.day)        # and in a season's last week the flight is one of its race
             if self.ended:
                 return
         self._sync_call()                 # stranded: the call for help goes out
@@ -7184,6 +7490,8 @@ class PlainFlight:
             return self._draw_almanac(s)
         if self.album_open and not self.naming:
             return self._draw_album(s)
+        if self.season_open and not self.naming:
+            return self._draw_season(s)
         if self.drift_lobby and not self.naming:
             return self._draw_drift(s)
         if self.trials and not self.naming:
@@ -7699,7 +8007,7 @@ PLAIN_HELP = (
     "  after 20:00). Land in 15 km/h or less. 12 km from a place is there.",
     "  `K` plants a station kit in the wild: a sharper forecast there for everyone.",
     "  Landing at a station restocks it: no fuel there. Crates make it a mast.",
-    "  `T` Drift `R` Trials `V` almanac `U` album `?` help `Ctrl-L` redraw `Q` leave (saved)",
+    "  `T` Drift `R` Trials `V` winds `U` album `Y` season `Ctrl-L` redraw `Q` leave (saved)",
 )
 
 
