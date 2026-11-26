@@ -921,6 +921,45 @@ to land as near the target as possible, in few turns, with fuel to spare. The
 formula and tie-break are shown in help. One scored attempt per world day;
 practice is unlimited and unranked. The standings table is the top ten.
 
+**As built (S19).** The tables are `DRIFT_START_TURN`, `DRIFT_TURNS`,
+`DRIFT_BALLOON`, `DRIFT_SCORE`, `DRIFT_PAY_PER`, `DRIFT_TOP`, `DRIFT_MARK_KM`
+and `DRIFT_SCOUT`; the rules a caller reads are `DRIFT_HELP`.
+
+- **Where.** `T` from the pilot's own screen, whenever their own balloon is
+  not in the air: on the ground, at rest, or waiting for a day to open.
+- **The course** of a world day is a town to start from and a mark to come
+  down by. The town is a keyed draw on the day. A plain flight (launch, five
+  holds, a climb, five holds) is flown from it on that day's true wind, and
+  the mark is set down on land 8 to 20 km from where that flight ends. So
+  the mark can always be reached, and not by doing nothing clever. Nothing
+  is stored: the same day gives the same course in every process.
+- **The standard balloon.** 40 fuel, 3 sacks, 1 pibal, the first envelope,
+  burner and instruments, whatever the pilot owns. Hazards are drawn on the
+  Drift's own key, so they are the same for everyone too.
+- **The clock.** It starts at 09:00 in the weather of the world day it
+  belongs to and is over 24 turns later: a balloon still up comes down
+  where it is.
+- **The score.** 1000, less 8 for each km between the landing and the mark,
+  less 4 for each turn, plus 2 for each unit of fuel left; never below
+  nothing; water scores nothing. Level scores are placed by the nearer
+  landing, then the fewer turns, then whoever finished first. The Drift's
+  screen says this in short and `?` there shows it in full.
+- **One scored attempt.** Enter begins it, and that moment is written
+  (`drifts`): one row for a pilot and a day. Every turn is written to that
+  row. Leaving the Drift (`X`), the door, or a dropped call leaves it part
+  way; coming back the same day takes it up exactly there. There is no way
+  to begin it again. When it ends it is scored once, in the same write that
+  pays the pilot a postmark for every 25 points. An attempt left unfinished
+  when the day is out scores nothing.
+- **Practice** (`P`) is the same course as often as wanted, in memory only:
+  it writes nothing and is never on the table.
+- **The table** is the day's top ten.
+- **What it leaves alone.** While a Drift is flown the pilot's own flight is
+  set aside, and nothing of it is written: no turn, no chart, no delivery,
+  no route, no day of the calendar. The post office, the loft, books, the
+  mail drop, waiting and the night are not there.
+- The records gain `drifts`, and the schema is version 6.
+
 **Trials.** A tutorial flight and twelve challenge flights with fixed weather
 and bronze, silver and gold thresholds: threading a pass, a night run on the
 jet, a squall line, a flight with no ballast, a long drift on one tank. Attempts

@@ -114,6 +114,14 @@ def frontier(game) -> None:
     game._choose_default()
 
 
+def drifters(game) -> None:
+    """A few pilots on today's Drift table."""
+    rows = [(game.today, 70 + i, who, "{}", 1, score, km, turns, 9, float(i))
+            for i, (who, score, km, turns) in enumerate((("Juno", 912, 3.4, 15), ("Bram", 871, 7.9, 16),
+                                                         ("Quill", 640, 31.0, 22), ("Nib", 0, 12.0, 9)))]
+    game.store.db.executemany("INSERT INTO drifts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
+
+
 def almanac(game) -> None:
     """The almanac with a few winds entered and one part way."""
     for i, (wind, who) in enumerate(zip(game.winds[:5], ("Juno", "Bram", "Mara", "Juno", "Quill"))):
@@ -203,6 +211,11 @@ def main(argv) -> int:
             (OUT / name).write_text(page(fly(width, height, depth, turns=("c",), setup=frontier), name), encoding="utf-8")
             name = f"chart-near-{width}x{height}-{depth}.html"
             (OUT / name).write_text(page(fly(width, height, depth, turns=("c", "z", "z"), setup=frontier), name),
+                                    encoding="utf-8")
+            name = f"drift-{width}x{height}-{depth}.html"
+            (OUT / name).write_text(page(fly(width, height, depth, turns=("t",), setup=drifters), name), encoding="utf-8")
+            name = f"drift-flying-{width}x{height}-{depth}.html"
+            (OUT / name).write_text(page(fly(width, height, depth, turns=("t", "p", "ENTER", "ENTER", "ENTER")), name),
                                     encoding="utf-8")
             name = f"almanac-{width}x{height}-{depth}.html"
             (OUT / name).write_text(page(fly(width, height, depth, turns=(), setup=almanac), name), encoding="utf-8")

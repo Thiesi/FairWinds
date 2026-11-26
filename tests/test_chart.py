@@ -418,7 +418,7 @@ class Records(ChartCase):
         db = sqlite3.connect(path)
         db.execute("DROP TABLE charted")
         db.execute("DROP TABLE features")
-        for table in ("stations", "contributions", "calls", "guestbook", "sightings", "almanac"):
+        for table in ("stations", "contributions", "calls", "guestbook", "sightings", "almanac", "drifts"):
             db.execute(f"DROP TABLE {table}")
         db.execute("PRAGMA user_version=1")
         db.commit()

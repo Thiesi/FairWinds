@@ -37,8 +37,9 @@ landing beside them, and the stations' visitors' books) are built at the
 owner's asking, ahead of the play-test's verdict. S17 (the chart of the whole
 continent: isobars, pan, zoom, find, names, the route so far) is built too.
 S18 (the almanac: each world's local winds, entered by flying them on three
-days) is built as well, which completes P4. The next slice is S19, the Daily
-Drift, the first of P5.
+days) is built as well, which completes P4. Of P5, S19 (the Daily Drift: one
+course a world day on a standard balloon, one scored attempt, a table) is
+built. The next slice is S20, the Trials.
 
 To look at a screen, run `python scripts/capture.py`: it writes each size and
 colour depth as an HTML page under `.test-tmp/captures`, which headless Edge
