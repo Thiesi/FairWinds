@@ -24,6 +24,9 @@ class StationCase(ChartCase):
         found = 0
         for cell in sorted(game.world._land):
             x, y = (cell % fw.CHART_W + 0.5) * fw.CHART_KM, (cell // fw.CHART_W + 0.5) * fw.CHART_KM
+            gyre = game.world.gyre                        # (and clear of the Gyre, which has rules of its own)
+            if (gyre["x"] - x) ** 2 + (gyre["y"] - y) ** 2 <= (fw.GYRE_OUTER_KM + 10.0) ** 2:
+                continue
             if all((p["x"] - x) ** 2 + (p["y"] - y) ** 2 >= least * least for p in game.world.towns + game.stations):
                 if found == skip:
                     return x, y

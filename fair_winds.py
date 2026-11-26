@@ -33,7 +33,7 @@ import zoneinfo
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "0.1.0.dev28"
+VERSION = "0.1.0.dev29"
 DOOR_API = 5
 MIN_WIDTH, MIN_HEIGHT = 80, 24
 MAX_DIMENSION = 1000
@@ -754,6 +754,14 @@ SYSTEM_REACH = (0.35, 0.6, 0.85, 1.0, 1.15, 1.3)      # how much of a system eac
 SEASON_DAYS = 28
 SYSTEM_SLOT_DAYS = 1.5
 GYRE_RADIUS, GYRE_SPEED = 150.0, 110.0
+# The Gyre's bands, by distance from its centre (S23). Out to the outer band a forecast is worth half at most;
+# inside the inner band nothing is forecast and nothing can be planted; the wall is crossed only from the
+# wall's layer up; and inside the wall is the eye.
+GYRE_OUTER_KM, GYRE_INNER_KM, GYRE_WALL_KM, GYRE_EYE_KM = 300.0, 150.0, 60.0, 30.0
+GYRE_OUTER_COVER = 0.5               # the most a forecast is worth in the outer band
+GYRE_WALL_LAYER = 5                  # the lowest layer that gets through the wall
+GYRE_WEAR = 4                        # what the wall does to a balloon it throws back
+EYE_PAY, EYE_POINTS = (50, 200), (30, 100)       # for reaching the eye; and for being the first on the node to
 MINUTES_PER_DAY = 1440
 TURN_MINUTES = 15
 
@@ -1297,6 +1305,15 @@ class Flight:
     def over_water(self, x: float, y: float) -> bool:
         return self.world.sample(x, y)[1] < SHORE
 
+    def gyre_km(self, x: float, y: float) -> float:
+        """How far a place is from the middle of the Gyre."""
+        gyre = self.world.gyre
+        return math.sqrt((x - gyre["x"]) ** 2 + (y - gyre["y"]) ** 2)
+
+    def in_wall(self, x: float, y: float) -> bool:
+        """Is this place in the wall of the Gyre: between the eye and the wall's outer edge?"""
+        return GYRE_EYE_KM < self.gyre_km(x, y) <= GYRE_WALL_KM
+
     def is_night(self, state: FlightState) -> bool:
         return state.minute >= DUSK_MINUTE
 
@@ -1426,9 +1443,16 @@ class Flight:
                         stranded = True
                         break
                     layer += 1
+        if layer < GYRE_WALL_LAYER and self.in_wall(x, y):
+            # The wall of the Gyre lets nothing through below its layer: the balloon is thrown back where it was.
+            x, y = state.x, state.y
+            wear += GYRE_WEAR
+            events.append(("wall",))
         moved = math.sqrt((x - state.x) * (x - state.x) + (y - state.y) * (y - state.y))
         if moved:
             events.append(("drift", round(moved, 1), compass(vx, vy)))
+        if self.gyre_km(x, y) <= GYRE_EYE_KM < self.gyre_km(state.x, state.y):
+            events.append(("eye",))
         after = dataclasses.replace(state, x=x, y=y, layer=layer, status="aloft", fuel=fuel, ballast=ballast,
                                     wear=wear, turn=state.turn + 1, distance=state.distance + moved)
         if stranded:
@@ -1507,7 +1531,8 @@ class Flight:
           sacks    ballast sacks the forced climbs would spend
           stop     why the track ends early: "ridge" (ground above the
                    ceiling), "high_ground" (a forced climb that cannot be
-                   paid for), "fuel" (nothing left to hold with), or None
+                   paid for), "fuel" (nothing left to hold with), "wall"
+                   (the Gyre's wall, below the layer that crosses it), or None
         """
         offered = self.actions(state)
         if action not in offered or action in ("land", "pibal"):
@@ -1543,6 +1568,9 @@ class Flight:
             if action in ("left", "right") and layer == first:
                 vx, vy = roped(vx, vy, action)          # the track of staying on the rope, while it still reaches
             nx, ny = x + vx * TURN_HOURS, y + vy * TURN_HOURS
+            if layer < GYRE_WALL_LAYER and self.in_wall(nx, ny):
+                stop = "wall"                           # the track ends at the wall of the Gyre
+                break
             need = self.lowest_open(nx, ny)
             if need > layer:
                 blocked = True
@@ -3084,6 +3112,8 @@ def plant_station(db, world: "World", x: float, y: float, user_id: int, handle: 
     rows = db.execute("SELECT name, x, y FROM stations").fetchall()
     if any((x - px) ** 2 + (y - py) ** 2 < STATION_APART_KM ** 2 for _, px, py in rows):
         return None
+    if (x - world.gyre["x"]) ** 2 + (y - world.gyre["y"]) ** 2 <= GYRE_INNER_KM ** 2:
+        return None                             # nothing stands inside the Gyre's inner band
     used = {place["name"] for place in world.towns + world.stations} | {row[0] for row in rows}
     # The next number in line. Stations are never deleted, a silent one included, so the numbers have no gaps:
     # a station's number is its place in every session's list, and cargo bound for a mast is addressed by it.
@@ -3961,6 +3991,22 @@ def read_season(db, season: int) -> dict:
 
 
 # --------------------------------------------------------------------------
+# The hall (S23): what was done first on the node and is kept for good. For
+# now it has one line: the first pilot into the eye of the Gyre.
+# --------------------------------------------------------------------------
+
+def enter_hall(db, feat: str, user_id: int, handle: str, day: int) -> dict:
+    """Write a pilot into the hall for a feat, if nobody is there. Says whether they are, and who is."""
+    first = db.execute("INSERT OR IGNORE INTO hall VALUES (?, ?, ?, ?)", (feat, user_id, handle, day)).rowcount == 1
+    by = db.execute("SELECT user_id, handle, day FROM hall WHERE feat=?", (feat,)).fetchone()
+    return {"first": first, "by": tuple(by)}
+
+
+def read_hall(db) -> dict:
+    return {row[0]: tuple(row[1:]) for row in db.execute("SELECT feat, user_id, handle, day FROM hall")}
+
+
+# --------------------------------------------------------------------------
 # The world's records (S10): one SQLite file for each world, shared by every
 # caller of that node. Writes are short transactions that take the write
 # lock at once; none is open while a caller thinks. A process killed at any
@@ -3968,7 +4014,7 @@ def read_season(db, season: int) -> dict:
 # --------------------------------------------------------------------------
 
 APPLICATION_ID = 0x46574442          # "FWDB": says the file is a Fair Winds world
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 LEASE_STALE_SECONDS = 90.0           # a session not heard from for this long may be replaced without asking
 HEARTBEAT_SECONDS = 20.0
 BUSY_TIMEOUT_SECONDS = 5.0           # how long a write waits for another caller's write
@@ -4041,6 +4087,10 @@ MIGRATIONS = {
         "CREATE TABLE season_hands (season INTEGER NOT NULL, user_id INTEGER NOT NULL,"
         " PRIMARY KEY (season, user_id)) WITHOUT ROWID",
         "CREATE INDEX charted_by_day ON charted (day)",       # a season's charting is counted by its days
+    ),
+    9: (
+        "CREATE TABLE hall (feat TEXT PRIMARY KEY, user_id INTEGER NOT NULL, handle TEXT NOT NULL,"
+        " day INTEGER NOT NULL) WITHOUT ROWID",
     ),
 }
 _NO_PLACE_TO_WRITE = ("readonly", "read-only", "unable to open", "locked", "disk i/o", "full", "busy")
@@ -4504,6 +4554,8 @@ class PlainFlight:
         self.album: set = set()           # the wonders this pilot has seen
         self.album_open = False           # the album is open
         self.season_open = False          # the season's screen is open
+        self.hall: dict = {}              # what was done first on the node: feat -> (user, handle, day)
+        self.eye = False                  # this pilot has been in the eye of the Gyre
         self.season_now: dict = {"season": 0}     # the season as last read
         self.season_past: list = []       # the seasons before it, latest first
         self._claimed: set = set()        # closed seasons this session has asked its dues of
@@ -4590,6 +4642,7 @@ class PlainFlight:
         self._see_almanac()
         self._see_wonders()
         self._see_season()
+        self._see_hall()
         self._sync_call()
         if self._imported and self.saved_ok and self.store is not None and not self.ended:
             # Only once the database has the pilot. And never over an earlier file of that name.
@@ -4614,6 +4667,7 @@ class PlainFlight:
         self.kits = self.crates = 0
         self.route = [[round(start["x"], 1), round(start["y"], 1)]]
         self.medals, self.taught = [0] * len(TRIALS), False
+        self.eye = False
         self._fit()
         home = ("town", self.world.start_town)
         for dest in places_near(self.world, start["x"], start["y"], skip=home, stations=self.stations)[:POST_CHOICES]:
@@ -4759,6 +4813,7 @@ class PlainFlight:
         self.kits, self.crates = kits, crates
         self.route = route
         self.medals, self.taught = medals, bool(career.get("taught", False))
+        self.eye = bool(career.get("eye", False))
         spot = career.get("lift_off")
         self.lift_off = [float(spot[0]), float(spot[1])] if spot else None
         if self.lift_off is not None and not all(math.isfinite(v) for v in self.lift_off):
@@ -4807,7 +4862,7 @@ class PlainFlight:
         return {"manifest": self.manifest, "taken": self.taken, "postmarks": self.postmarks, "next_id": self.next_id,
                 "gear": self.gear, "points": self.points, "design": self.design, "lift_off": self.lift_off,
                 "charted": self.charted, "kits": self.kits, "crates": self.crates, "route": self.route,
-                "medals": self.medals, "taught": self.taught,
+                "medals": self.medals, "taught": self.taught, "eye": self.eye,
                 "deliveries": self.deliveries, "days_flown": self.days_flown, "total_km": self.total_km,
                 "log": self.log[-3:], "dated": self._dated}
 
@@ -4847,7 +4902,8 @@ class PlainFlight:
         # written down as first over it.
         kept = (self.charted, self.postmarks, self.points, self.flight_cells, self.flight_pay, set(self.chart),
                 dict(self.found), list(self.naming), list(self.log), list(self.heard), self.chart_version,
-                dict(self.almanac), dict(self.flown), dict(self.sighted), set(self.album))
+                dict(self.almanac), dict(self.flown), dict(self.sighted), set(self.album), self.eye,
+                dict(self.hall))
         try:
             self.store.commit(self.launch.user_id, self.launch.handle,
                               earned if cells or deed is not None else self._career(),
@@ -4860,7 +4916,7 @@ class PlainFlight:
             if cells or deed is not None:
                 (self.charted, self.postmarks, self.points, self.flight_cells, self.flight_pay, self.chart,
                  self.found, self.naming, self.log, self.heard, self.chart_version, self.almanac, self.flown,
-                 self.sighted, self.album) = kept
+                 self.sighted, self.album, self.eye, self.hall) = kept
             if isinstance(error, LeaseLost):
                 self.ended = "taken"
             else:
@@ -5195,6 +5251,32 @@ class PlainFlight:
         out += s._keys(s.height - 1, [("W/S", "Choose"), ("Enter", "Fly it"), ("?", "The rules"), ("B", "Back")])
         return out
 
+    # -- the Gyre and the hall ---------------------------------------------------
+
+    def _in_the_eye(self, done: dict) -> None:
+        """This pilot's first time in the eye. Called inside the write of the turn that got there."""
+        first = done["first"]
+        self.eye = True
+        self.hall["eye"] = done["by"]
+        self.postmarks += EYE_PAY[first]
+        self.points += EYE_POINTS[first]
+        if first:
+            self._say(f"No pilot here had been in the eye of the Gyre. Your name is in the hall for good: "
+                      f"{EYE_PAY[1]} postmarks.")
+        else:
+            self._say(f"You have been in the eye of the Gyre: {EYE_PAY[0]} postmarks. "
+                      f"{clean_text(str(done['by'][1]), 16)} was here first.")
+
+    def _see_hall(self) -> bool:
+        if self.store is None and self._own is None:
+            return False
+        try:
+            hall = self._read(read_hall)
+        except sqlite3.Error:
+            return False
+        changed, self.hall = hall != self.hall, hall
+        return changed
+
     # -- seasons -----------------------------------------------------------------
 
     def _see_season(self) -> bool:
@@ -5343,6 +5425,12 @@ class PlainFlight:
         if not shown:
             out.append(s._line(row + 1, 1, "None yet. Nothing a pilot owns is taken back when a season ends, nor "
                                            "is the map."[:wide], "dim"))
+        first = self.hall.get("eye")
+        out.append(s._line(s.height - 3, 1, "THE HALL", "accent"))
+        out.append(s._line(s.height - 3, 10, (f"The eye of the Gyre: {clean_text(str(first[1]), 16)} was first in, "
+                                              f"on Day {int(first[2])}." if first else
+                                              "The eye of the Gyre: no pilot has been in it.")[:wide - 9],
+                           "text" if first else "dim"))
         out.append(s._kv(s.height - 2, 1, self._status(s, wide), wide, "dim", "text"))
         out += s._keys(s.height - 1, [("Enter", "Back")])
         return out
@@ -5748,6 +5836,7 @@ class PlainFlight:
         charted = self._see_almanac() or charted      # and what winds have been entered
         charted = self._see_wonders() or charted      # and what wonders have been seen
         charted = self._see_season() or charted       # and how the season stands
+        charted = self._see_hall() or charted         # and who is in the hall
         if not self._look_at_the_calendar():
             return self.others != before or charted
         self._see_season()                # a day has opened: it may be a new season's, or settle an old one
@@ -5873,6 +5962,9 @@ class PlainFlight:
             return "There is no station kit aboard. The towns sell them."
         if state.status not in ("ground", "stranded"):
             return "A station is planted from the ground."
+        if self.engine.gyre_km(state.x, state.y) <= GYRE_INNER_KM:
+            return (f"Nothing stands this near the Gyre: a station is planted more than {GYRE_INNER_KM:.0f} km "
+                    f"from its middle.")
         for place in self.world.towns + self.stations:
             if (place["x"] - state.x) ** 2 + (place["y"] - state.y) ** 2 < STATION_APART_KM ** 2:
                 return (f"Too close to {place['name']}: a station stands at least "
@@ -6339,7 +6431,11 @@ class PlainFlight:
                 continue
             share = 1.0 if staffed(place) else min(1.0, stock_of(place, self.today) / STOCK_SHARP)
             best = max(best, (1.0 - d / reach) * share)
-        return best
+        # The Gyre is its own weather: the nearer its middle, the less any station can say of the air.
+        near = self.engine.gyre_km(x, y)
+        if near <= GYRE_INNER_KM:
+            return 0.0
+        return min(best, GYRE_OUTER_COVER) if near <= GYRE_OUTER_KM else best
 
     # -- the licence and the gear ---------------------------------------------
 
@@ -6732,10 +6828,17 @@ class PlainFlight:
         # A local wind flown while it blew is written with the turn that flew it. It blew when the turn
         # began, and the balloon is in it where the turn ends: the wind of a turn is the wind it sets out on.
         wind = self.wind_here(self.state, before.day, before.minute)
+        launch, day = self.launch, before.day
+        deeds = []                        # what the turn does to the shared world, and what comes of each for the pilot
         if wind is not None and wind["id"] not in self.almanac:
-            launch, day = self.launch, before.day
-            self.save(action, seen, lambda db: fly_wind(db, wind["id"], launch.user_id, launch.handle, day),
-                      lambda done: self._wind_flown(wind, done, day))
+            deeds.append((lambda db: fly_wind(db, wind["id"], launch.user_id, launch.handle, day),
+                          lambda done: self._wind_flown(wind, done, day)))
+        if not self.eye and any(event[0] == "eye" for event in result.events):
+            # Into the eye of the Gyre for the first time: written with the turn that got there.
+            deeds.append((lambda db: enter_hall(db, "eye", launch.user_id, launch.handle, day), self._in_the_eye))
+        if deeds:
+            self.save(action, seen, lambda db: [deed(db) for deed, _ in deeds],
+                      lambda done: [earn(result) for (_, earn), result in zip(deeds, done)])
             if self._almanac_stale:
                 self._almanac_stale = False
                 self._see_almanac()       # the wind is on the map from the next paint, under whoever entered it
@@ -6799,6 +6902,11 @@ class PlainFlight:
             return f"High ground and no fuel to spare: a sack goes over the side for layer {event[1]}."
         if code == "ridge":
             return "High ground ahead rises above your ceiling. The balloon is held in its lee."
+        if code == "wall":
+            return (f"The wall of the Gyre throws the balloon back. Nothing below layer {GYRE_WALL_LAYER} "
+                    f"gets through it.")
+        if code == "eye":
+            return "The air goes still. This is the eye of the Gyre."
         if code == "high_ground":
             return "High ground, and nothing left to climb with."
         if code == "squall":
@@ -7242,18 +7350,18 @@ class PlainFlight:
             c, r = int((x - x0) / vw * cols), int((y - y0) / vh * rows)
             return (c, r) if 0 <= c < cols and 0 <= r < rows and x >= x0 and y >= y0 else None
 
-        def put(c: int, r: int, glyph: str, ink) -> None:
+        def put(c: int, r: int, glyph: str, ink, darken: float = 0.7) -> None:
             taken.add((c, r))
             if pixels:
-                screen.over(1 + c, 1 + r, glyph, ink, 0.7)
+                screen.over(1 + c, 1 + r, glyph, ink, darken)
             else:
                 screen.put(1 + c, 1 + r, glyph, ink)
 
-        def mark(x: float, y: float, glyph: str, ink, force: bool = False):
+        def mark(x: float, y: float, glyph: str, ink, force: bool = False, darken: float = 0.7):
             cell = cell_of(x, y)
             if cell is None or (cell in taken and not force):
                 return None
-            put(cell[0], cell[1], glyph, ink)
+            put(cell[0], cell[1], glyph, ink, darken)
             return cell
 
         def label(cell, text: str, ink) -> bool:
@@ -7321,6 +7429,12 @@ class PlainFlight:
                 if cell is not None and cell not in taken and label((cell[0] - 2, cell[1]), entry[0], "dim"):
                     shown += 1
 
+        # The Gyre's bands, where nothing else is: inside the inner ring nothing is forecast or planted; the
+        # small ring is the wall.
+        for km, glyph, ink in ((GYRE_INNER_KM, dot, "text"), (GYRE_WALL_KM, dot, "warn")):
+            for step in range(72):
+                angle = step * math.pi / 36         # lightly: the ground still shows through a ring
+                mark(gyre["x"] + km * math.cos(angle), gyre["y"] + km * math.sin(angle), glyph, ink, darken=0.25)
         # The route so far, last of all and only where nothing else is: where each flight ended, joined up,
         # and on to where the balloon is now. A dot never takes the place of a mark or a name.
         legs = [tuple(point) for point in self.route] + [(state.x, state.y)]
@@ -7701,6 +7815,8 @@ class PlainFlight:
         stop = look["stop"]
         if stop == "ridge":
             return text + " High ground you cannot climb stops you.", "warn"
+        if stop == "wall":
+            return text + f" The Gyre's wall stops all below layer {GYRE_WALL_LAYER}.", "warn"
         if stop == "high_ground":
             return text + " You cannot pay for the climb ahead!", "warn"
         if stop == "fuel":
