@@ -1090,7 +1090,10 @@ sharpen as the node's chart grows.
 **What "reachable" was tested as.** For every wonder of three worlds there is
 a turn of a flying day within a year at which it shows, and in one world a
 balloon stood there at that turn takes each of the forty through the game's
-own keys. No route from a town to each wonder was searched for.
+own keys. A pilot's day begins wherever they came down the day before, so
+the dawn kinds are reached by landing near one in the evening: the tests
+launch from the ground at a mist site at 06:00 and take it on the first
+turn. No route from a town to each wonder was searched for.
 
 **Not yet built here.** A wonder cannot be looked at again from the album.
 In 256 colours the night pictures are coarse.

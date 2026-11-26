@@ -3658,10 +3658,10 @@ WONDER_KINDS = {
              "how": "between 11:00 and 13:30 under a clear sky, no higher than layer 3"},
     "falls": {"name": "{} Falls", "title": "Falls", "km": 12.0, "layers": (1, 1), "hours": (7.0, 19.0), "count": 5,
               "hint": "water coming off steep ground",
-              "how": "by day, from the lowest layer"},
+              "how": "by day, from the lowest layer the ground leaves open"},
     "cloudsea": {"name": "The {} Cloud Sea", "title": "Cloud seas", "km": 40.0, "layers": (1, 6), "hours": (6.0, 9.0), "count": 5,
                  "hint": "a floor of cloud over hills at dawn",
-                 "how": "between 06:00 and 09:00 when the hills are overcast, from above the cloud deck"},
+                 "how": "06:00 to 09:00 over overcast hills, from above the deck: layer 4 or 5"},
     "lightning": {"name": "{} Storm Light", "title": "Storm light", "km": 40.0, "layers": (1, 6), "hours": (18.0, 24.0), "count": 4,
                   "hint": "an evening squall seen from a safe way off",
                   "how": "after 18:00 with a squall 25 to 65 km off and none overhead"},
@@ -3670,13 +3670,13 @@ WONDER_KINDS = {
                   "how": "between 19:00 and 20:30 under a clear sky"},
     "sealights": {"name": "The {} Fire", "title": "Sea fire", "km": 15.0, "layers": (1, 1), "hours": (20.5, 24.0), "count": 5,
                   "hint": "shallow water that glows after dark",
-                  "how": "after 20:30, from the lowest layer"},
+                  "how": "after 20:30, from the lowest layer the ground leaves open"},
     "mist": {"name": "{} Mist", "title": "Mists", "km": 15.0, "layers": (1, 2), "hours": (6.0, 8.25), "count": 5,
              "hint": "low ground at dawn on a calm morning",
              "how": "between 06:00 and 08:15 when mist lies there, no higher than layer 2"},
     "eye": {"name": "The Eye of the Gyre", "title": "The Gyre", "km": 30.0, "layers": (1, 6), "hours": (0.0, 24.0), "count": 1,
             "hint": "the still middle of the great storm",
-            "how": "at any hour, inside the eye"},
+            "how": "at any hour, within 30 km of the storm's centre"},
 }
 
 
@@ -3779,7 +3779,8 @@ def see_wonder(db, wonder: int, user_id: int, handle: str, day: int) -> dict:
     new = db.execute("INSERT OR IGNORE INTO seen VALUES (?, ?, ?)", (wonder, user_id, day)).rowcount == 1
     first = new and db.execute("INSERT OR IGNORE INTO wonders VALUES (?, ?, ?, ?)",
                                (wonder, user_id, handle, day)).rowcount == 1
-    return {"new": new, "first": first}
+    by = db.execute("SELECT user_id, handle, day FROM wonders WHERE wonder=?", (wonder,)).fetchone()
+    return {"new": new, "first": first, "by": tuple(by) if by else None}       # by: whoever was first, as it stands
 
 
 def read_wonders(db, user_id: int) -> tuple[dict, set]:
@@ -5034,10 +5035,15 @@ class PlainFlight:
 
     def wonder_here(self) -> dict | None:
         """A wonder the pilot could take for the album now: in view, and not in their album yet."""
-        for wonder in self.wonders:
-            if wonder["id"] not in self.album and self.wonder_in_view(wonder):
-                return wonder
-        return None
+        state = self.state
+        key = (state.day, state.turn, state.x, state.y, state.layer, state.status, len(self.album),
+               self.gear["camera"], self.drift is None)
+        if self._wonder_at is None or self._wonder_at[0] != key:       # worked out once for a turn, not for every paint
+            found = next((w for w in self.wonders if w["id"] not in self.album and self.wonder_in_view(w)), None)
+            self._wonder_at = (key, found)
+        return self._wonder_at[1]
+
+    _wonder_at = None
 
     def _point_out(self) -> None:
         """Say so when a wonder comes into view. Once for each time it does."""
@@ -5060,8 +5066,8 @@ class PlainFlight:
                 return
             first = done["first"]
             self.album.add(wonder["id"])
-            if first:
-                self.sighted[wonder["id"]] = (launch.user_id, launch.handle, day)
+            if done["by"] is not None:        # who was first, from the records: this pilot or one who got there since
+                self.sighted[wonder["id"]] = done["by"]
             self.postmarks += WONDER_PAY[first]
             self.points += WONDER_POINTS[first]
             self._say(f"{wonder['name']}. " + (f"Nobody here had seen it: {WONDER_PAY[1]} postmarks, and your name "

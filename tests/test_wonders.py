@@ -154,10 +154,50 @@ class Taking(WonderCase):
         self.assertTrue(any("In your album" in line for line in b.heard))
         self.assertEqual(self.rows("SELECT user_id, handle FROM wonders"), [(1, "Ada")])
         self.assertEqual(self.rows("SELECT count(*) FROM seen"), [(2,)])
-        b._day_may_have_opened()
-        self.assertEqual(b.sighted[wonder["id"]][:2], (1, "Ada"))
-        self.assertIn("First seen by Ada", b._wonder_scene(wonder)["sub"])
+        self.assertEqual(b.sighted[wonder["id"]][:2], (1, "Ada"), "who was first comes back with the write")
+        self.assertIn("First seen by Ada", b.pending_scene["sub"], "so the picture names them at once")
         b.close()
+
+    def test_a_dawn_wonder_is_flown_to_from_where_the_pilot_slept(self):
+        # A day begins where the balloon came down the day before. Down by a mist site in the evening,
+        # up at 06:00 into the lowest layer, and the mist is there to be taken on the first turn.
+        game = self.game()
+        took = 0
+        for wonder in (w for w in game.wonders if w["kind"] in ("mist", "falls")):
+            low, _ = fw.WONDER_KINDS[wonder["kind"]]["hours"]
+            dawn = max(fw.DAWN_MINUTE, int(low * 60))
+            day = next((d for d in range(1, YEAR + 1) if fw.wonder_shows(game.weather, wonder, d, dawn)
+                        and fw.wonder_shows(game.weather, wonder, d, dawn + fw.TURN_MINUTES)), None)
+            if day is None:
+                continue
+            game.today = max(game.today, day)
+            game.state = dataclasses.replace(game.state, x=wonder["x"], y=wonder["y"], day=day, layer=0,
+                                             turn=(dawn - fw.DAWN_MINUTE) // fw.TURN_MINUTES, status="ground", fuel=40)
+            game._choose_default()
+            if "launch" not in game.offered():
+                continue
+            game.key("ENTER")                             # a real turn: launched, and drifted a quarter of an hour
+            self.assertEqual(game.state.status, "aloft")
+            if game.wonder_here() is wonder:
+                self.assertTrue(any("something to see" in line for line in game.heard), "and it is pointed out")
+                game.key("f")
+                self.assertIn(wonder["id"], game.album)
+                took += 1
+                game.pending_scene = None
+        self.assertGreaterEqual(took, 5, "most of the ten low wonders are taken on the first turn of such a morning")
+
+    def test_what_is_in_view_is_worked_out_once_for_a_turn(self):
+        game = self.game()
+        falls = next(w for w in game.wonders if w["kind"] == "falls")
+        self.put(game, falls)
+        calls = []
+        real = game.wonder_in_view
+        game.wonder_in_view = lambda w, state=None: calls.append(w["id"]) or real(w, state)
+        for _ in range(5):
+            self.assertIs(game.wonder_here(), falls)
+        self.assertLessEqual(len(calls), 40)
+        game.state = dataclasses.replace(game.state, x=game.state.x + 300.0)
+        self.assertIsNone(game.wonder_here(), "and again when the balloon has moved")
 
     WORKER = ("import sys; sys.path.insert(0, sys.argv[1]); import fair_winds as fw\n"
               "user = int(sys.argv[3])\n"
@@ -181,6 +221,10 @@ class Taking(WonderCase):
             a, b = out.decode().split()
             first, new = first + int(a), new + int(b)
         self.assertEqual((first, new), (1, 8), "one is first; every one of them has it")
+        db = sqlite3.connect(str(self.folder / fw.db_name(seed)))
+        done = fw.see_wonder(db, 7, 999, "Late", 4)
+        db.close()
+        self.assertEqual((done["first"], done["by"][0] in range(101, 109)), (False, True), "and a later one is told who")
         self.assertEqual(self.rows("SELECT count(*) FROM wonders"), [(1,)])
 
     def test_only_from_where_and_when_it_shows(self):
