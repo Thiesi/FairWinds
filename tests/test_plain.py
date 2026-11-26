@@ -550,7 +550,7 @@ class Screens(PlainCase):
         for heading in ("FLYING", "ON THE GROUND", "THE MAP", "GOOD TO KNOW"):
             self.assertIn(heading, text)
         self.assertNotIn("`", text, "the marks that say what is a key are not shown")
-        self.assertIn("every turn is saved", text)
+        self.assertIn("all is saved", text)
         self.assertIn("A world day is flown once", text)
         self.assertLessEqual(len(fw.PLAIN_HELP), 21, "help fits the screen above the key row")
         self.assertIn("12 km from a place is there", text)

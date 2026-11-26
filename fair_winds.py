@@ -33,7 +33,7 @@ import zoneinfo
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "0.1.0.dev24"
+VERSION = "0.1.0.dev25"
 DOOR_API = 5
 MIN_WIDTH, MIN_HEIGHT = 80, 24
 MAX_DIMENSION = 1000
@@ -3346,6 +3346,137 @@ def read_almanac(db, user_id: int) -> tuple[dict, dict]:
 
 
 # --------------------------------------------------------------------------
+# The Daily Drift (S19). One short course for each world day, the same for
+# every pilot of the node: a town to start from, a mark to come down by, a
+# standard balloon and that day's weather. It costs no day of the calendar
+# and touches neither the pilot's own balloon nor the chart. One attempt a
+# day counts; practice does not.
+# --------------------------------------------------------------------------
+
+DRIFT_START_TURN = 12                # the Drift starts at 09:00
+DRIFT_TURNS = 24                     # and is over six hours later, wherever the balloon is
+DRIFT_BALLOON = {"fuel": 40, "ballast": 3, "pibals": 1}      # and the first envelope, burner and instruments
+DRIFT_SCORE = {"full": 1000, "km": 8, "turn": 4, "fuel": 2}  # less for each km and turn, more for each fuel left
+DRIFT_PAY_PER = 25                   # a postmark for every so many points scored
+DRIFT_TOP = 10                       # places on the table
+DRIFT_MARK_KM = (8.0, 20.0)          # the mark lies this far from where a plain flight would end
+DRIFT_SCOUT = ("launch",) + ("hold",) * 5 + ("climb",) + ("hold",) * 5      # that plain flight
+DRIFT_HELP = (
+    "# THE DAILY DRIFT",
+    "One course a world day, the same for every pilot here: a town to start",
+    "from and a mark, `X`, to come down by. Everyone flies the same standard",
+    "balloon in the same weather: 40 fuel, 3 sacks, 1 pibal, three layers.",
+    "It starts at 09:00 and is over after 24 turns, wherever you are.",
+    "# THE SCORE",
+    "  1000 points,",
+    "  less 8 for each km between where you come down and the mark,",
+    "  less 4 for each turn flown,",
+    "  plus 2 for each unit of fuel left.",
+    "  Coming down on water scores nothing.",
+    "Level scores are placed by who is nearer the mark, then by fewer turns,",
+    "then by who finished first.",
+    "# ONE ATTEMPT COUNTS",
+    "  `Enter` flies today's Drift for the table: once a world day. If you",
+    "  leave part way it waits for you, as you left it, until the day is out.",
+    "  `P` practises: as often as you like, never on the table.",
+    "  `X` leaves a Drift. Flying is as ever: `W` `S`, `A` `D`, `Enter`, `L`.",
+    "The Drift costs no day and changes nothing of your own balloon or the",
+    "chart. A scored Drift pays a postmark for every 25 points.",
+)
+
+
+def drift_score(km: float, turns: int, fuel: int, ditched: bool = False) -> int:
+    """What a Drift scores: the table in DRIFT_SCORE, and nothing for coming down on water."""
+    if ditched:
+        return 0
+    return max(0, int(DRIFT_SCORE["full"] - DRIFT_SCORE["km"] * km - DRIFT_SCORE["turn"] * turns
+                      + DRIFT_SCORE["fuel"] * fuel + 0.5))
+
+
+def drift_state(x: float, y: float, day: int) -> "FlightState":
+    """The standard balloon, on the ground at the start, at the hour the Drift begins."""
+    return FlightState(x=x, y=y, day=day, turn=DRIFT_START_TURN, fuel=DRIFT_BALLOON["fuel"],
+                       ballast=DRIFT_BALLOON["ballast"], pibals=DRIFT_BALLOON["pibals"])
+
+
+def drift_course(world: "World", weather: "Weather", day: int) -> dict:
+    """The course of a world day: where it starts and where the mark is. The same in every process.
+
+    A plain flight is flown from a town drawn for the day, on that day's
+    true wind, and the mark is set down on land a little way from where
+    it ends: so the mark can be reached, and not by doing nothing clever.
+    """
+    kept = world.__dict__.setdefault("_drifts", {})
+    if day not in kept:
+        engine = Flight(world, weather, "drift")
+        course = None
+        for attempt in range(8):
+            town = world.towns[draw(world.seed, "drift-start", day, attempt) % len(world.towns)]
+            state = drift_state(town["x"], town["y"], day)
+            for action in DRIFT_SCOUT:
+                offered = engine.actions(state)
+                action = action if action in offered else "hold" if "hold" in offered else None
+                if action is None:
+                    break
+                state = engine.step(state, action).state
+                if state.status != "aloft":
+                    break
+            for tries in range(16):
+                dx = (2.0 * draw_unit(world.seed, "drift-mark", day, attempt, tries, 0) - 1.0) * DRIFT_MARK_KM[1]
+                dy = (2.0 * draw_unit(world.seed, "drift-mark", day, attempt, tries, 1) - 1.0) * DRIFT_MARK_KM[1]
+                mx, my = state.x + dx, state.y + dy
+                if not DRIFT_MARK_KM[0] ** 2 <= dx * dx + dy * dy <= DRIFT_MARK_KM[1] ** 2:
+                    continue
+                if 0.0 <= mx < WORLD_W and 0.0 <= my < WORLD_H and world.sample(mx, my)[1] >= SHORE:
+                    course = {"day": day, "start": town["name"], "x": town["x"], "y": town["y"], "mx": mx, "my": my}
+                    break
+            if course is not None:
+                break
+        if course is None:                      # a day of nothing but sea downwind: a mark near the town itself
+            town = world.towns[draw(world.seed, "drift-start", day, 0) % len(world.towns)]
+            course = {"day": day, "start": town["name"], "x": town["x"], "y": town["y"],
+                      "mx": town["x"], "my": town["y"]}
+        while len(kept) >= 8:
+            del kept[next(iter(kept))]
+        kept[day] = course
+    return kept[day]
+
+
+def begin_drift(db, day: int, user_id: int, handle: str, state: str, now: float) -> dict:
+    """Begin the day's one scored Drift, or take up the one begun. Says how it stands."""
+    db.execute("INSERT OR IGNORE INTO drifts (day, user_id, handle, state, at) VALUES (?, ?, ?, ?, ?)",
+               (day, user_id, handle, state, now))
+    row = db.execute("SELECT state, done, score, km, turns, fuel FROM drifts WHERE day=? AND user_id=?",
+                     (day, user_id)).fetchone()
+    return {"state": row[0], "done": bool(row[1]), "score": row[2], "km": row[3], "turns": row[4], "fuel": row[5]}
+
+
+def turn_drift(db, day: int, user_id: int, state: str) -> bool:
+    """A turn of the scored Drift, written down: the attempt is taken up from here and nowhere else."""
+    return db.execute("UPDATE drifts SET state=? WHERE day=? AND user_id=? AND done=0",
+                      (state, day, user_id)).rowcount == 1
+
+
+def finish_drift(db, day: int, user_id: int, score: int, km: float, turns: int, fuel: int, now: float) -> bool:
+    """Put the scored Drift on the table. False if it is there already: it is scored once."""
+    return db.execute("UPDATE drifts SET done=1, score=?, km=?, turns=?, fuel=?, at=? WHERE day=? AND user_id=?"
+                      " AND done=0", (score, km, turns, fuel, now, day, user_id)).rowcount == 1
+
+
+def drift_table(db, day: int, limit: int = DRIFT_TOP) -> list[tuple]:
+    """The day's table: (handle, score, km, turns), best first. Level scores: nearer, then quicker, then first."""
+    return db.execute("SELECT handle, score, km, turns FROM drifts WHERE day=? AND done=1"
+                      " ORDER BY score DESC, km ASC, turns ASC, at ASC, user_id ASC LIMIT ?", (day, limit)).fetchall()
+
+
+def my_drift(db, day: int, user_id: int) -> dict | None:
+    row = db.execute("SELECT done, score, km, turns, fuel FROM drifts WHERE day=? AND user_id=?",
+                     (day, user_id)).fetchone()
+    return None if row is None else {"done": bool(row[0]), "score": row[1], "km": row[2], "turns": row[3],
+                                     "fuel": row[4]}
+
+
+# --------------------------------------------------------------------------
 # The world's records (S10): one SQLite file for each world, shared by every
 # caller of that node. Writes are short transactions that take the write
 # lock at once; none is open while a caller thinks. A process killed at any
@@ -3353,7 +3484,7 @@ def read_almanac(db, user_id: int) -> tuple[dict, dict]:
 # --------------------------------------------------------------------------
 
 APPLICATION_ID = 0x46574442          # "FWDB": says the file is a Fair Winds world
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 LEASE_STALE_SECONDS = 90.0           # a session not heard from for this long may be replaced without asking
 HEARTBEAT_SECONDS = 20.0
 BUSY_TIMEOUT_SECONDS = 5.0           # how long a write waits for another caller's write
@@ -3397,6 +3528,12 @@ MIGRATIONS = {
         " PRIMARY KEY (wind, user_id, day)) WITHOUT ROWID",
         "CREATE TABLE almanac (wind INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, handle TEXT NOT NULL,"
         " day INTEGER NOT NULL)",
+    ),
+    6: (
+        # one row for a pilot's scored Drift of a day: the flight as it stands, and once it is over, the score
+        "CREATE TABLE drifts (day INTEGER NOT NULL, user_id INTEGER NOT NULL, handle TEXT NOT NULL,"
+        " state TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0, score INTEGER, km REAL, turns INTEGER,"
+        " fuel INTEGER, at REAL NOT NULL, PRIMARY KEY (day, user_id)) WITHOUT ROWID",
     ),
 }
 _NO_PLACE_TO_WRITE = ("readonly", "read-only", "unable to open", "locked", "disk i/o", "full", "busy")
@@ -3620,6 +3757,20 @@ class Store:
             return seq
         return self._write(work)
 
+    def write(self, work, user_id: int | None = None):
+        """Something written to the shared world alone, as one transaction: a function of the database.
+
+        With a pilot named, only if the pilot is still this session's:
+        otherwise LeaseLost, and nothing is written.
+        """
+        def checked():
+            if user_id is not None:
+                row = self.db.execute("SELECT token FROM sessions WHERE user_id=?", (user_id,)).fetchone()
+                if row is None or row[0] != self.token:
+                    raise LeaseLost()
+            return work(self.db)
+        return self._write(checked)
+
     def read(self, query):
         """What a query of the shared world comes to: a function of the database. It writes nothing."""
         if self.db is None:
@@ -3841,6 +3992,11 @@ class PlainFlight:
         self.almanac: dict = {}           # local winds entered: number -> (user, handle, day)
         self.flown: dict = {}             # days this pilot has flown each local wind while it blew
         self.pages = False                # the almanac is open
+        self.drift: dict | None = None    # a Drift is being flown: its course, and whether it counts
+        self.drift_lobby = False          # the Daily Drift's own screen is open
+        self.drift_note = ""
+        self._drift_seen: dict = {"table": [], "mine": None, "day": 0}
+        self._main = None                 # the pilot's own flight, set aside while a Drift is flown
         self._blowing_at = None
         self._chart_size = None
         self._share = None
@@ -4125,6 +4281,8 @@ class PlainFlight:
         deed is something the turn does to the shared world in the same
         write, and earn takes what came of it.
         """
+        if self.drift is not None:
+            return                        # a Drift is flown on a balloon that is not the pilot's: nothing of it is kept here
         cells = [cell for cell in chart if cell not in self.chart and cell not in self.known]
         watch = self._watch(cells)
         if self.ended:
@@ -4169,6 +4327,198 @@ class PlainFlight:
                 diagnose(f"a turn could not be saved: {error}")
                 self.saved_ok = False       # play on; say so on the screen
             return
+
+    # -- the Daily Drift -------------------------------------------------------
+
+    def help_text(self) -> tuple:
+        """The help for where the caller is: the Drift has its own."""
+        return DRIFT_HELP if self.drift_lobby or self.drift is not None else PLAIN_HELP
+
+    def _shared(self, work, write: bool = False):
+        """Read or write the shared world alone: the records, or with none this visit's own."""
+        if self.store is None:
+            return work(self._own_db())
+        # A write is this pilot's only while the pilot is this session's.
+        return self.store.write(work, self.launch.user_id) if write else self.store.read(work)
+
+    def _drift_open(self) -> None:
+        self.drift_lobby, self.drift_note = True, ""
+        self._drift_look()
+
+    def _drift_look(self) -> None:
+        """The day's table, and how this pilot's own Drift stands."""
+        self._day_may_have_opened()       # the whole of it: a day that opened is the pilot's own flight's too
+        day, me = self.today, self.launch.user_id
+        try:
+            self._drift_seen = {"day": day, "table": self._shared(lambda db: drift_table(db, day)),
+                                "mine": self._shared(lambda db: my_drift(db, day, me))}
+        except sqlite3.Error:
+            self._drift_seen = {"day": day, "table": [], "mine": None}
+
+    def _drift_lobby_key(self, k: str) -> None:
+        if k in ("ESC", "b", "t", " "):
+            self.drift_lobby = False
+        elif k in ("p", "ENTER"):
+            self._day_may_have_opened()
+            if self.today != self._drift_seen["day"]:
+                # A day opened while the screen stood open: the course on it was yesterday's.
+                self._drift_look()
+                self.drift_note = "A new day has opened. This is its course."
+            else:
+                self._drift_begin(scored=k == "ENTER")
+
+    def _drift_begin(self, scored: bool) -> None:
+        """Set the pilot's own flight aside and stand the standard balloon at the start."""
+        if self.store is not None and not self._mine(write=False):
+            return
+        day, launch = self.today, self.launch
+        course = drift_course(self.world, self.weather, day)
+        state = drift_state(course["x"], course["y"], day)
+        if scored:
+            text = json.dumps(state.to_dict())
+            try:
+                row = self._shared(lambda db: begin_drift(db, day, launch.user_id, launch.handle, text, self.now()),
+                                   write=True)
+                state = FlightState.from_dict(json.loads(row["state"]))
+            except LeaseLost:
+                self.ended = "taken"
+                return
+            except (sqlite3.Error, ValueError, KeyError, TypeError) as error:
+                diagnose(f"the Drift could not be begun: {error}")
+                self.drift_note = "The Drift cannot be flown for the table just now. P practises."
+                return
+            if row["done"]:
+                self.drift_note = "You have flown today's Drift. The table stands. P practises."
+                self._drift_look()
+                return
+        self._main = (self.state, self.engine, self.gear, self.choice, self.log, self.heard)
+        self.drift = {"course": course, "scored": scored}
+        self.state, self.engine = state, Flight(self.world, self.weather, "drift")
+        self.gear = {track: 0 for track in TRACKS}
+        self.log, self.heard, self.drift_lobby = [], [], False
+        dx, dy = course["mx"] - course["x"], course["my"] - course["y"]
+        self._say(f"The Daily Drift, {'for the table' if scored else 'in practice'}: from {course['start']} to the "
+                  f"mark, {math.sqrt(dx * dx + dy * dy):.0f} km {bearing(dx, dy)}.")
+        self._say(f"{DRIFT_TURNS} turns from 09:00. Land as near the mark as you can. X leaves.")
+        self._choose_default()
+        if state.status not in ("ground", "aloft") or state.turn - DRIFT_START_TURN >= DRIFT_TURNS \
+                or (state.status == "ground" and state.turn > DRIFT_START_TURN):
+            self._drift_end()             # taken up after its last turn was written: all that is left is the score
+
+    def _drift_commit(self, action: str) -> None:
+        """A turn of the Drift: flown like any other, but nothing of it is charted, delivered or kept as the pilot's."""
+        drift, before = self.drift, self.state
+        result = self.engine.step(before, action)
+        # The km of a Drift are not the pilot's km: they count for nothing in the logbook.
+        self.state = dataclasses.replace(result.state, distance=0.0)
+        self.heard = []
+        stamp = clock_text(before.minute)
+        for event in result.events:
+            line = self._describe(event)
+            if line:
+                self._say(f"{stamp}  {line}")
+        if self.state.status == "aloft" and self.state.turn - DRIFT_START_TURN >= DRIFT_TURNS:
+            events: list = []
+            self.state = self.engine._land(self.state, events)
+            self._say(f"{clock_text(self.state.minute)}  Time is up: the balloon comes down where it is.")
+        if drift["scored"]:
+            text, day, me = json.dumps(self.state.to_dict()), drift["course"]["day"], self.launch.user_id
+            def written(db):
+                if not turn_drift(db, day, me, text):       # no row took it: as good as not written
+                    raise sqlite3.DatabaseError("the Drift's record is not there to be written to")
+            try:
+                self._shared(written, write=True)
+            except LeaseLost:
+                self.ended = "taken"
+                return
+            except sqlite3.Error as error:
+                # A turn that is not on record cannot count: or it could be flown again, knowing how it went.
+                # The Drift is parked where the records have it.
+                diagnose(f"a turn of the Drift could not be saved: {error}")
+                self._drift_end(left=True)
+                self.drift_note = "That turn could not be written. The Drift waits where it was: Enter takes it up."
+                return
+        if action != "pibal":
+            self.typed_ahead = True
+            if self.motion:
+                self.frames_left = BURST_FRAMES
+        if self.state.status != "aloft":
+            self._drift_end()
+        else:
+            self._choose_default()
+
+    def _drift_end(self, left: bool = False) -> None:
+        """The Drift is over, or left: the pilot's own flight is taken up again, and a finished one is scored."""
+        drift, state = self.drift, self.state
+        course = drift["course"]
+        km = math.sqrt((state.x - course["mx"]) ** 2 + (state.y - course["my"]) ** 2)
+        turns, fuel = state.turn - DRIFT_START_TURN, state.fuel
+        score = drift_score(km, turns, fuel, state.status == "ditched")
+        self.state, self.engine, self.gear, self.choice, self.log, self.heard = self._main
+        self.drift, self._main, self.drift_lobby = None, None, True
+        self.frames_left = 0
+        how = f"{km:.1f} km from the mark in {turns} turns with {fuel} fuel left"
+        if left:
+            self.drift_note = ("Left part way. It waits as you left it until the day is out: Enter takes it up."
+                               if drift["scored"] else "Practice left.")
+        elif not drift["scored"]:
+            self.drift_note = f"Practice: {how}. That would score {score}."
+        else:
+            day, me, pay = course["day"], self.launch.user_id, score // DRIFT_PAY_PER
+            paid = []
+
+            def apply(done):
+                if done:
+                    self.postmarks += pay
+                    paid.append(pay)
+            wrote = self._deed("drift", lambda db: finish_drift(db, day, me, score, km, turns, fuel, self.now()), apply)
+            if paid:
+                self.drift_note = f"Scored {score}: {how}. {pay} postmarks."
+            elif wrote:
+                self.drift_note = "Today's Drift is on the table already."
+            else:
+                self.drift_note = "The score could not be written. Enter takes the Drift up again."
+        self._drift_look()
+        self._choose_default()
+
+    def _draw_drift(self, s: "Session") -> list[str]:
+        """The Daily Drift's own screen: today's course, the rules in short, the table, and what to press."""
+        wide, seen = s.width - 2, self._drift_seen
+        day = seen["day"] or self.today
+        course = drift_course(self.world, self.weather, day)
+        dx, dy = course["mx"] - course["x"], course["my"] - course["y"]
+        out = [s._line(0, 1, "FAIR WINDS", "accent"), s._line(0, 13, "The Daily Drift", "text")]
+        out.append(s._kv_right(0, s.width - 1, f"Day `{day}`"))
+        lines = [f"Today's course: from `{course['start']}` to a mark `{math.sqrt(dx * dx + dy * dy):.0f} km "
+                 f"{bearing(dx, dy)}` of it, for every pilot.",
+                 f"The standard balloon: `{DRIFT_BALLOON['fuel']}` fuel, `{DRIFT_BALLOON['ballast']}` sacks, "
+                 f"`{DRIFT_BALLOON['pibals']}` pibal. `{DRIFT_TURNS}` turns from `09:00`.",
+                 f"Score: `{DRIFT_SCORE['full']}`, less `{DRIFT_SCORE['km']}` a km from the mark, less "
+                 f"`{DRIFT_SCORE['turn']}` a turn, plus `{DRIFT_SCORE['fuel']}` a fuel left.",
+                 "Water scores nothing. Level: the nearer landing, then fewer turns, then first."]
+        for i, line in enumerate(lines):
+            out.append(s._kv(2 + i, 1, line, wide))
+        out.append(s._line(7, 1, "TODAY'S TABLE", "accent"))
+        me = clean_text(self.launch.handle, 16).replace("`", " ")
+        for i, (handle, score, km, turns) in enumerate(seen["table"][:max(1, s.height - 14)]):
+            name = clean_text(str(handle), 16).replace("`", " ") or "A pilot"
+            out.append(s._kv(8 + i, 1, f"{i + 1:>2}  {name:<17}`{int(score):>5}`   {float(km):>5.1f} km  "
+                                       f"{int(turns):>2} turns", wide, "accent" if name == me else "text", "value"))
+        if not seen["table"]:
+            out.append(s._line(8, 1, "Nobody has flown it yet today.", "dim"))
+        mine = seen["mine"]
+        if mine is None:
+            stand, keys = "You have not flown it today.", [("Enter", "Fly it for the table")]
+        elif not mine["done"]:
+            stand, keys = "Your Drift waits part way.", [("Enter", "Take it up")]
+        else:
+            stand, keys = f"You scored {mine['score']} today.", []
+        out.append(s._line(s.height - 4, 1, stand[:wide], "text"))
+        if self.drift_note:
+            out.append(s._line(s.height - 3, 1, self.drift_note[:wide], "bright"))
+        out.append(s._kv(s.height - 2, 1, self._status(s, wide), wide, "dim", "text"))
+        out += s._keys(s.height - 1, keys + [("P", "Practise"), ("?", "The rules"), ("B", "Back")])
+        return out
 
     # -- the almanac ---------------------------------------------------------
 
@@ -4403,6 +4753,8 @@ class PlainFlight:
 
     def _day_may_have_opened(self) -> bool:
         """Look at the calendar. If a day has opened, say so where it matters. True if anything changed."""
+        if self.drift is not None:
+            return False                  # not while a Drift is flown: the pilot's own flight is set aside
         before = self.others
         self._see_others()                # the same glance takes in where everyone else has got to
         charted = self._see_chart()       # and what they have charted
@@ -4500,7 +4852,7 @@ class PlainFlight:
         deed(db) changes the world and says what came of it; apply(that)
         changes the pilot. If it cannot be written, neither has happened.
         """
-        if self.ended:
+        if self.ended or self.drift is not None:
             return False
         if self.store is None:
             apply(deed(self._own_db()))
@@ -4689,7 +5041,7 @@ class PlainFlight:
 
     def book_place(self) -> int | None:
         """The station whose book lies open to the pilot: the one they are on the ground at."""
-        if self.book_mode == "off" or self.state.status not in ("ground", "stranded"):
+        if self.book_mode == "off" or self.state.status not in ("ground", "stranded") or self.drift is not None:
             return None
         ref = self.here()
         if ref is not None:
@@ -4831,6 +5183,8 @@ class PlainFlight:
     @property
     def targets(self) -> list[tuple[str, int]]:
         """Where the pilot is bound: the places there is cargo aboard for, or with none aboard the nearest places."""
+        if self.drift is not None:
+            return []                     # a Drift is bound for its mark and nowhere else
         seen = []
         for item in self.manifest:
             if tuple(item["dest"]) not in seen:
@@ -4844,7 +5198,7 @@ class PlainFlight:
 
     def at_office(self) -> bool:
         """On the ground at a town or station: the post office and the stores are open."""
-        return self.state.status == "ground" and self.here() is not None
+        return self.state.status == "ground" and self.here() is not None and self.drift is None
 
     def _names(self) -> str:
         names = [self.place_of(t)["name"] for t in self.targets]
@@ -4972,6 +5326,11 @@ class PlainFlight:
         """Distance, direction and place for each destination, nearest first."""
         x = self.state.x if x is None else x
         y = self.state.y if y is None else y
+        if self.drift is not None:
+            course = self.drift["course"]
+            dx, dy = course["mx"] - x, course["my"] - y
+            return [(math.sqrt(dx * dx + dy * dy), bearing(dx, dy), {"name": "the mark", "x": course["mx"],
+                                                                     "y": course["my"]})]
         out = []
         for ref in self.targets:
             place = self.place_of(ref)
@@ -5170,6 +5529,24 @@ class PlainFlight:
         if self.pages:
             self.pages = False            # any key closes the almanac, and is used up
             return None
+        if self.drift_lobby:
+            self._drift_lobby_key(k)
+            return None
+        if self.drift is not None:
+            if k in ("x", "ESC"):
+                # X sits among the keys that fly. A scored Drift left by a slip waits where it was; a practice
+                # would be gone, so that one asks twice.
+                if self.drift["scored"] or self.drift.get("leaving"):
+                    self._drift_end(left=True)
+                else:
+                    self.drift["leaving"] = True
+                    self.heard = []
+                    self._say("Leave the practice? X again leaves it; any other key flies on.")
+                return None
+            self.drift["leaving"] = False
+        elif k == "t" and not self.hub and not self.loft and self.state.status != "aloft":
+            self._drift_open()
+            return None
         if k == "c" and not self.hub and not self.loft:
             self.atlas = True
             return None
@@ -5193,7 +5570,8 @@ class PlainFlight:
         if k == "o" and self.at_office():
             self.hub, self.hub_note = True, self._raised_by()
             return None
-        if k == "k" and self.kits and self.state.status in ("ground", "stranded") and self.here() is None:
+        if k == "k" and self.kits and self.state.status in ("ground", "stranded") and self.here() is None \
+                and self.drift is None:
             self._plant()
             return None
         phase = self.phase()
@@ -5285,6 +5663,9 @@ class PlainFlight:
     def _commit(self, action: str) -> None:
         if self.store is not None and not self._mine(write=False):
             return                        # taken over: nothing is worked out or shown from here any more
+        if self.drift is not None:
+            self._drift_commit(action)
+            return
         before = self.state
         result = self.engine.step(before, action)
         self.state = result.state
@@ -5465,7 +5846,8 @@ class PlainFlight:
     def droppable(self) -> list[dict]:
         """The mailbags that could be dropped now: flying low, close to where they are bound."""
         state = self.state
-        if state.status != "aloft" or state.layer > self.engine.lowest_open(state.x, state.y) + DROP_ABOVE:
+        if self.drift is not None or state.status != "aloft" \
+                or state.layer > self.engine.lowest_open(state.x, state.y) + DROP_ABOVE:
             return []
         out = []
         for item in self.manifest:
@@ -5502,7 +5884,7 @@ class PlainFlight:
     def _wait(self) -> None:
         """Sit on the ground for an hour and let the wind change. It costs nothing but the hour."""
         state = self.state
-        if state.turn >= DAY_TURNS or state.status != "ground":
+        if state.turn >= DAY_TURNS or state.status != "ground" or self.drift is not None:
             return
         if self.store is not None and not self._mine(write=False):
             return
@@ -5587,6 +5969,8 @@ class PlainFlight:
         return f"Day {self.state.day} opens {opens}."
 
     def _night(self) -> None:
+        if self.drift is not None:
+            return
         self._new_day(1)
         self._say(self._dawn())
         self.save("night")                # once, with the new day and its log together
@@ -6135,6 +6519,8 @@ class PlainFlight:
             self.book = self.writing = None
         if self.pages and not self.naming:
             return self._draw_almanac(s)
+        if self.drift_lobby and not self.naming:
+            return self._draw_drift(s)
         if self.hub and self.at_office():
             return self._draw_hub(s)
         if self.loft and self.at_loft():
@@ -6152,6 +6538,9 @@ class PlainFlight:
                s._kv(0, 13, f"Day `{state.day}`  `{clock_text(state.minute)}`")]
         distance, toward, nearest = self.bearings()[0]
         post = f"{'Nearest post' if self.manifest else 'Nearest office'}: `{nearest['name']}, {distance:.0f} km {toward}`"
+        if self.drift is not None:
+            left = max(0, DRIFT_TURNS - (state.turn - DRIFT_START_TURN))
+            post = f"The Drift: `{left}` turns left. The mark: `{distance:.0f} km {toward}`"
         out.append(s._kv_right(0, s.width - 1, post, 32))
         out += self._draw_map(s)
         out += self._draw_panel(s, phase)
@@ -6214,7 +6603,11 @@ class PlainFlight:
                 keys.append(("J", "Jettison"))
             if "pibal" in offered:
                 keys.append(("P", "Pibal"))
+            if self.drift is not None:
+                keys.append(("X", "Leave"))
             return keys + [("?", "Help"), ("Q", "Quit")]
+        if self.drift is not None:
+            return [("Enter", "Launch"), ("X", "Leave the Drift"), ("?", "The rules"), leave]
         office = [("O", "Post")] if self.at_office() else []      # the loft is a door inside it, and G from here
         if self.kits and not self.cannot_plant():
             office = [("K", "Plant station")]                     # in the wild: there is no office here
@@ -6321,6 +6714,10 @@ class PlainFlight:
         view.draw_wind(screen)
         # The balloon first: nothing may cover it, and names keep clear of it.
         view.mark(screen, state.x, state.y, "@", "bright", force=True)
+        if self.drift is not None:                   # the mark, before anything can take its place
+            spot = view.mark(screen, self.drift["course"]["mx"], self.drift["course"]["my"], "X", "accent")
+            if spot is not None:
+                view.label(screen, spot, "the mark", "accent")
         wanted, others, targets = [], [], self.targets
         utf8_map = self.launch.charset == "utf-8"
         for i, place in enumerate(self.world.towns):
@@ -6628,7 +7025,7 @@ PLAIN_HELP = (
     "  after 20:00). Land in 15 km/h or less. 12 km from a place is there.",
     "  `K` plants a station kit in the wild: a sharper forecast there for everyone.",
     "  Landing at a station restocks it: no fuel there. Crates make it a mast.",
-    "  `V` the almanac   `?` this help   `Ctrl-L` redraw   `Q` leave: every turn is saved.",
+    "  `T` Daily Drift  `V` almanac  `?` help  `Ctrl-L` redraw  `Q` leave: all is saved.",
 )
 
 
@@ -7111,7 +7508,7 @@ class Session:
                 "",
                 "Leaving never loses anything. The game is saved as you play."]
         if self.game is not None:
-            text = PLAIN_HELP
+            text = self.game.help_text()
         out = [self._line(0, 1, "FAIR WINDS", "accent"), self._line(0, 13, "Help", "dim")]
         # On a tall screen a blank row sets each heading apart; at 24 rows every row is needed.
         roomy = self.height >= 2 + len(text) + sum(t.startswith("# ") for t in text) + 2

@@ -59,7 +59,7 @@ class Opening(StoreCase):
         tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertEqual(tables - {"sqlite_sequence"},
                          {"meta", "pilots", "sessions", "flights", "turns", "charted", "features",
-                          "stations", "contributions", "calls", "guestbook", "sightings", "almanac"})
+                          "stations", "contributions", "calls", "guestbook", "sightings", "almanac", "drifts"})
         self.assertEqual(dict(db.execute("SELECT key, value FROM meta"))["seed"], str(SEED))
         db.close()
         self.assertFalse(store.db.in_transaction, "nothing is left open")
