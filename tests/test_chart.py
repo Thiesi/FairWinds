@@ -418,6 +418,8 @@ class Records(ChartCase):
         db = sqlite3.connect(path)
         db.execute("DROP TABLE charted")
         db.execute("DROP TABLE features")
+        db.execute("DROP TABLE stations")
+        db.execute("DROP TABLE contributions")
         db.execute("PRAGMA user_version=1")
         db.commit()
         db.close()
@@ -513,7 +515,7 @@ class Records(ChartCase):
         game.key("ENTER")
         self.assertEqual(game.state.turn, 3)
         db = sqlite3.connect(str(path))
-        self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 2)
+        self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], fw.SCHEMA_VERSION)
         db.close()
 
     def test_who_charted_most(self):

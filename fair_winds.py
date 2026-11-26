@@ -33,7 +33,7 @@ import zoneinfo
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "0.1.0.dev20"
+VERSION = "0.1.0.dev21"
 DOOR_API = 5
 MIN_WIDTH, MIN_HEIGHT = 80, 24
 MAX_DIMENSION = 1000
@@ -1252,8 +1252,12 @@ class Flight:
 
     def __init__(self, world: World, weather: Weather, pilot_key: str):
         self.world, self.weather, self.pilot_key = world, weather, pilot_key
-        self._places = [(t["x"], t["y"], "town", i) for i, t in enumerate(world.towns)]
-        self._places += [(s["x"], s["y"], "station", i) for i, s in enumerate(world.stations)]
+        self.set_stations(world.stations)
+
+    def set_stations(self, stations) -> None:
+        """The places of the Post: every town, and each station somebody keeps (a first one, or a mast)."""
+        self._places = [(t["x"], t["y"], "town", i) for i, t in enumerate(self.world.towns)]
+        self._places += [(s["x"], s["y"], "station", i) for i, s in enumerate(stations) if staffed(s)]
 
     # -- the ground and the air above it ------------------------------------
 
@@ -2785,20 +2789,27 @@ FIRST_ROUND_DAYS = 5                 # a new pilot's first three mailbags are du
 RELIEF = {"below": 10, "fuel": 25, "wear": WEAR_GROUNDED - 30, "sack": 1, "payout": 8, "days": 5}
 
 
-def places_near(world: "World", x: float, y: float, skip=None) -> list[tuple[str, int]]:
-    """Every town and station, nearest first."""
-    refs = [("town", i) for i in range(len(world.towns))] + [("station", i) for i in range(len(world.stations))]
+def places_near(world: "World", x: float, y: float, skip=None, stations=None) -> list[tuple[str, int]]:
+    """Every town and every station with a post office, nearest first.
+
+    stations is the world's first three and whatever has been planted since,
+    in that order; a planted station has a post office once it is a mast.
+    """
+    stations = world.stations if stations is None else stations
+    refs = [("town", i) for i in range(len(world.towns))]
+    refs += [("station", i) for i, station in enumerate(stations) if staffed(station)]
 
     def far(ref):
-        place = (world.towns if ref[0] == "town" else world.stations)[ref[1]]
+        place = (world.towns if ref[0] == "town" else stations)[ref[1]]
         return ((place["x"] - x) ** 2 + (place["y"] - y) ** 2, ref)
     return sorted((r for r in refs if r != skip), key=far)
 
 
-def contracts_at(world: "World", ref: tuple[str, int], day: int) -> list[dict]:
+def contracts_at(world: "World", ref: tuple[str, int], day: int, stations=None) -> list[dict]:
     """What a place's post office offers on a world day. The same for every caller, and the same every time."""
-    here = (world.towns if ref[0] == "town" else world.stations)[ref[1]]
-    near = places_near(world, here["x"], here["y"], skip=ref)[:OFFER_REACH]
+    stations = world.stations if stations is None else stations
+    here = (world.towns if ref[0] == "town" else stations)[ref[1]]
+    near = places_near(world, here["x"], here["y"], skip=ref, stations=stations)[:OFFER_REACH]
     if not near:
         return []
     key = ("contract", ref[0], ref[1], day)
@@ -2821,7 +2832,7 @@ def contracts_at(world: "World", ref: tuple[str, int], day: int) -> list[dict]:
                     break
         kind = CARGO_KINDS[code]
         dest = near[order[i]]
-        there = (world.towns if dest[0] == "town" else world.stations)[dest[1]]
+        there = (world.towns if dest[0] == "town" else stations)[dest[1]]
         km = math.sqrt((there["x"] - here["x"]) ** 2 + (there["y"] - here["y"]) ** 2)
         out.append({"contract": [ref[0], ref[1], day, i], "kind": code, "dest": list(dest), "origin": list(ref),
                     "weight": kind["weight"], "payout": int(kind["base"] + kind["per_km"] * km + 0.5),
@@ -2996,6 +3007,95 @@ def feature_names(world: "World", feature: dict) -> list[str]:
 
 
 # --------------------------------------------------------------------------
+# Stations and masts (S15). A pilot who comes down in the wild with a kit
+# aboard may plant a weather station there: the forecast is sharper around
+# it for everyone, for as long as somebody keeps it stocked. Crates carried
+# out from the towns raise a station into a mooring mast, which the Post
+# then keeps for good: a lit field, fuel, and a post office.
+# --------------------------------------------------------------------------
+
+STATION_APART_KM = 60.0              # a station is planted at least this far from every town and station
+STOCK_FULL = 14                      # days of stock a station holds; it uses one each world day
+STOCK_SHARP = 7                      # with this much or more it reports in full; with less, in proportion
+KIT_PRICE, KIT_WEIGHT = 50, 3        # a station kit, at a town: postmarks, and what it weighs aboard
+PLANT_POINTS = 25                    # on the licence, for planting one
+RESUPPLY_PAY = 2                     # postmarks for each day of stock put back
+RESUPPLY_POINTS = 0.5                # and licence points
+CRATE_PRICE, CRATE_WEIGHT = 10, 3    # a crate of mast freight, at a town
+CRATE_PAY, CRATE_POINTS = 25, 10     # for each crate unloaded at a station
+MAST_CRATES = 4                      # crates that raise a mast
+STATION_WORDS = (" Hut", " Beacon", " Vane", " Lookout")
+
+
+def staffed(station: dict) -> bool:
+    """Is this a place of the Post: one of the world's first stations, or a mast?"""
+    return "id" not in station or station["mast_day"] is not None
+
+
+def stock_of(station: dict, today: int) -> int:
+    """The days of stock a planted station has left."""
+    return max(0, station["stock"] - max(0, today - station["stock_day"]))
+
+
+def station_name(world: "World", x: float, y: float, used: set) -> str:
+    """A name for a station planted here. Composed from word lists by keyed draws: no caller's text is in it."""
+    cell = cell_at(x, y) or 0
+    for attempt in range(200):
+        first = _NAME_FIRST[draw(world.seed, "planted", cell, attempt, 0) % len(_NAME_FIRST)]
+        name = first + STATION_WORDS[draw(world.seed, "planted", cell, attempt, 1) % len(STATION_WORDS)]
+        if name not in used:
+            return name
+    return f"Station {len(used) + 1}"
+
+
+def read_stations(db) -> list[dict]:
+    """Every planted station, in the order they were planted."""
+    given: dict = {}
+    for sid, handle in db.execute("SELECT station, handle FROM contributions ORDER BY crates DESC, user_id"):
+        given.setdefault(sid, []).append(handle)
+    return [{"id": r[0], "name": r[1], "x": r[2], "y": r[3], "handle": r[4], "day": r[5], "stock": r[6],
+             "stock_day": r[7], "freight": r[8], "mast_day": r[9], "given": given.get(r[0], [])}
+            for r in db.execute("SELECT id, name, x, y, handle, day, stock, stock_day, freight, mast_day"
+                                " FROM stations ORDER BY id")]
+
+
+def plant_station(db, world: "World", x: float, y: float, user_id: int, handle: str, day: int) -> dict | None:
+    """Plant a station here, inside the caller's transaction. None if another has been planted too near."""
+    rows = db.execute("SELECT name, x, y FROM stations").fetchall()
+    if any((x - px) ** 2 + (y - py) ** 2 < STATION_APART_KM ** 2 for _, px, py in rows):
+        return None
+    used = {place["name"] for place in world.towns + world.stations} | {row[0] for row in rows}
+    # The next number in line. Stations are never deleted, a silent one included, so the numbers have no gaps:
+    # a station's number is its place in every session's list, and cargo bound for a mast is addressed by it.
+    sid, name = len(world.stations) + len(rows), station_name(world, x, y, used)
+    db.execute("INSERT INTO stations (id, name, x, y, user_id, handle, day, stock, stock_day)"
+               " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (sid, name, x, y, user_id, handle, day, STOCK_FULL, day))
+    return {"id": sid, "name": name}
+
+
+def visit_station(db, sid: int, user_id: int, handle: str, day: int, crates: int) -> dict | None:
+    """A pilot is down at a planted station: restock it, and unload what crates it still wants.
+
+    Inside the caller's transaction, so stock is put back once and a mast
+    is raised once however many pilots arrive together. None if there is
+    no such station, or it is a mast already and wants nothing.
+    """
+    row = db.execute("SELECT stock, stock_day, freight, mast_day FROM stations WHERE id=?", (sid,)).fetchone()
+    if row is None or row[3] is not None:
+        return None
+    have = max(0, row[0] - max(0, day - row[1]))
+    took = max(0, min(crates, MAST_CRATES - row[2]))
+    raised = took > 0 and row[2] + took >= MAST_CRATES
+    db.execute("UPDATE stations SET stock=?, stock_day=?, freight=?, mast_day=? WHERE id=?",
+               (STOCK_FULL, max(day, row[1]), row[2] + took, day if raised else None, sid))
+    if took:
+        db.execute("INSERT INTO contributions VALUES (?, ?, ?, ?) ON CONFLICT (station, user_id) DO UPDATE SET"
+                   " crates=crates+excluded.crates, handle=excluded.handle", (sid, user_id, handle, took))
+    return {"restored": STOCK_FULL - have, "silent": have == 0, "took": took, "raised": raised,
+            "wants": MAST_CRATES - row[2] - took}
+
+
+# --------------------------------------------------------------------------
 # The world's records (S10): one SQLite file for each world, shared by every
 # caller of that node. Writes are short transactions that take the write
 # lock at once; none is open while a caller thinks. A process killed at any
@@ -3003,7 +3103,7 @@ def feature_names(world: "World", feature: dict) -> list[str]:
 # --------------------------------------------------------------------------
 
 APPLICATION_ID = 0x46574442          # "FWDB": says the file is a Fair Winds world
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 LEASE_STALE_SECONDS = 90.0           # a session not heard from for this long may be replaced without asking
 HEARTBEAT_SECONDS = 20.0
 BUSY_TIMEOUT_SECONDS = 5.0           # how long a write waits for another caller's write
@@ -3025,6 +3125,14 @@ MIGRATIONS = {
         "CREATE TABLE charted (cell INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, day INTEGER NOT NULL)",
         "CREATE TABLE features (id INTEGER PRIMARY KEY, name TEXT NOT NULL, user_id INTEGER NOT NULL,"
         " handle TEXT NOT NULL, day INTEGER NOT NULL, chosen INTEGER NOT NULL DEFAULT 0)",
+    ),
+    3: (
+        # stock is what the station held on stock_day; a mast has the day it was raised, a station has none
+        "CREATE TABLE stations (id INTEGER PRIMARY KEY, name TEXT NOT NULL, x REAL NOT NULL, y REAL NOT NULL,"
+        " user_id INTEGER NOT NULL, handle TEXT NOT NULL, day INTEGER NOT NULL, stock INTEGER NOT NULL,"
+        " stock_day INTEGER NOT NULL, freight INTEGER NOT NULL DEFAULT 0, mast_day INTEGER)",
+        "CREATE TABLE contributions (station INTEGER NOT NULL, user_id INTEGER NOT NULL, handle TEXT NOT NULL,"
+        " crates INTEGER NOT NULL, PRIMARY KEY (station, user_id)) WITHOUT ROWID",
     ),
 }
 _NO_PLACE_TO_WRITE = ("readonly", "read-only", "unable to open", "locked", "disk i/o", "full", "busy")
@@ -3183,7 +3291,7 @@ class Store:
         return (row[0], row[1]) if row else None
 
     def commit(self, user_id: int, handle: str, career, state: dict, action: str = "",
-               chart=(), watch=None) -> int:
+               chart=(), watch=None, deed=None) -> int:
         """Write the pilot as they now stand, and with an action a line in the day's journal.
 
         One transaction: the flight, the journal row, the career, the cells
@@ -3198,12 +3306,16 @@ class Store:
         career  the career as a dict, or a function of (cells newly charted,
                 features found) that returns it: what a turn earns depends
                 on what turned out to be new.
+        deed    something done to the shared world in the same transaction:
+                a function of the database. What it returns is given to
+                career as a third argument.
         """
         def work():
             db, now = self.db, self.clock()
             row = db.execute("SELECT token FROM sessions WHERE user_id=?", (user_id,)).fetchone()
             if row is None or row[0] != self.token:
                 raise LeaseLost()
+            done = deed(db) if deed is not None else None
             new = [cell for cell in chart if db.execute(
                 "INSERT OR IGNORE INTO charted VALUES (?, ?, ?)", (cell, user_id, state["day"])).rowcount == 1]
             found = []
@@ -3218,7 +3330,10 @@ class Store:
                                                " VALUES (?, ?, ?, ?, ?)",
                                                (fid, name, user_id, handle, state["day"])).rowcount == 1:
                     found.append(fid)
-            written = career(new, found) if callable(career) else career
+            if callable(career):
+                written = career(new, found, done) if deed is not None else career(new, found)
+            else:
+                written = career
             row = db.execute("SELECT seq FROM flights WHERE user_id=?", (user_id,)).fetchone()
             seq = row[0] if row else 0
             text = json.dumps(state)
@@ -3235,6 +3350,12 @@ class Store:
             db.execute("UPDATE sessions SET heartbeat=? WHERE user_id=?", (now, user_id))
             return seq
         return self._write(work)
+
+    def stations(self) -> list[dict]:
+        """Every planted station, in the order they were planted."""
+        if self.db is None:
+            raise sqlite3.ProgrammingError("the records are closed")
+        return read_stations(self.db)
 
     def chart(self) -> tuple[set, dict]:
         """Every charted cell, and the features found: id -> (name, user_id, handle, day)."""
@@ -3421,6 +3542,9 @@ class PlainFlight:
         self.hub = False                  # the post office screen is open
         self.loft = False                 # the rigging loft screen is open
         self.others: list = []            # other pilots in this world: (x, y, colour), for the map
+        self.stations: list = list(self.world.stations)   # the world's first three, then every one planted since
+        self._own = None                  # with no records to share: the stations this visit plants
+        self.kits = self.crates = 0       # a station kit aboard, and crates of mast freight
         self.known = known_cells(self.world)      # what was on the map before anybody flew
         self.chart: set = set()           # every cell anybody has charted since
         self.found: dict = {}             # features found: id -> (name, user_id, handle, day)
@@ -3469,6 +3593,7 @@ class PlainFlight:
     def _begin(self) -> None:
         """Take up the pilot's game where it stands, or start one."""
         self._look_at_the_calendar()
+        self._see_stations()              # before the pilot is read: cargo may be bound for a mast
         loaded = self._load()
         if loaded is not True:
             self._new_game()
@@ -3509,9 +3634,10 @@ class PlainFlight:
         self.postmarks, self.manifest, self.taken, self.next_id = START_POSTMARKS, [], [], 1
         self.gear, self.points, self.design = {track: 0 for track in TRACKS}, 0, design_of(None)
         self.lift_off, self.charted = None, 0
+        self.kits = self.crates = 0
         self._fit()
         home = ("town", self.world.start_town)
-        for dest in places_near(self.world, start["x"], start["y"], skip=home)[:POST_CHOICES]:
+        for dest in places_near(self.world, start["x"], start["y"], skip=home, stations=self.stations)[:POST_CHOICES]:
             # A first round, already aboard: three mailbags for the three nearest places.
             there = self.place_of(dest)
             km = math.sqrt((there["x"] - start["x"]) ** 2 + (there["y"] - start["y"]) ** 2)
@@ -3632,12 +3758,16 @@ class PlainFlight:
             raise ValueError("no such gear")
         # A pilot from before the licence is credited with the deliveries they made.
         points = int(career["points"]) if "points" in career else deliveries * POINTS["mail"]
+        kits, crates = int(career.get("kits", 0)), int(career.get("crates", 0))
+        if not (0 <= kits <= 1 and 0 <= crates <= 99):
+            raise ValueError("no such freight")
         self._dated = bool(career.get("dated", False))
         self.state, self.manifest, self.taken = flight, manifest, taken
         self.postmarks, self.next_id = postmarks, next_id
         self.deliveries, self.days_flown, self.total_km, self.log = deliveries, days_flown, total_km, log
         self.gear, self.points, self.design = gear, max(0, points), design_of(career.get("design"))
         self.charted = max(0, int(career.get("charted", 0)))
+        self.kits, self.crates = kits, crates
         spot = career.get("lift_off")
         self.lift_off = [float(spot[0]), float(spot[1])] if spot else None
         if self.lift_off is not None and not all(math.isfinite(v) for v in self.lift_off):
@@ -3685,7 +3815,7 @@ class PlainFlight:
     def _career(self) -> dict:
         return {"manifest": self.manifest, "taken": self.taken, "postmarks": self.postmarks, "next_id": self.next_id,
                 "gear": self.gear, "points": self.points, "design": self.design, "lift_off": self.lift_off,
-                "charted": self.charted,
+                "charted": self.charted, "kits": self.kits, "crates": self.crates,
                 "deliveries": self.deliveries, "days_flown": self.days_flown, "total_km": self.total_km,
                 "log": self.log[-3:], "dated": self._dated}
 
@@ -3715,7 +3845,7 @@ class PlainFlight:
                 dict(self.found), list(self.naming), list(self.log), list(self.heard), self.chart_version)
         try:
             self.store.commit(self.launch.user_id, self.launch.handle,
-                              (lambda new, found: self._charted(new, found)) if cells else self._career(),
+                              (lambda new, found, done=None: self._charted(new, found)) if cells else self._career(),
                               self.state.to_dict(), action, cells, watch)
             self.saved_ok = True
             if cells:
@@ -3862,6 +3992,7 @@ class PlainFlight:
         before = self.others
         self._see_others()                # the same glance takes in where everyone else has got to
         charted = self._see_chart()       # and what they have charted
+        charted = self._see_stations() or charted     # and planted, stocked and raised
         if not self._look_at_the_calendar():
             return self.others != before or charted
         if self._catch_up():
@@ -3895,6 +4026,9 @@ class PlainFlight:
 
     def close(self) -> None:
         """The session is over: give the pilot up, so the next call finds nobody flying."""
+        if self._own is not None:
+            self._own.close()
+            self._own = None
         if self.store is not None:
             try:
                 if self.busy is None and not self.ended:
@@ -3904,17 +4038,203 @@ class PlainFlight:
             self.store.close()
             self.store = None
 
+    # -- stations and masts ----------------------------------------------------
+
+    def _own_db(self):
+        """With no records to share, the stations of this visit are its own: kept in memory, in the same tables."""
+        if self._own is None:
+            self._own = sqlite3.connect(":memory:", isolation_level=None)
+            for statement in MIGRATIONS[3]:
+                self._own.execute(statement)
+            for station in self.stations[len(self.world.stations):]:      # what was known when the records went
+                self._own.execute("INSERT INTO stations VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)",
+                                  tuple(station[k] for k in ("id", "name", "x", "y", "handle", "day", "stock",
+                                                             "stock_day", "freight", "mast_day")))
+        return self._own
+
+    def _see_stations(self) -> bool:
+        """Take in what has been planted, stocked and raised. True if anything is new."""
+        try:
+            rows = self.store.stations() if self.store is not None else read_stations(self._own_db())
+        except sqlite3.Error:
+            return False
+        base = len(self.world.stations)
+        rows = [row for i, row in enumerate(rows) if row["id"] == base + i]
+        if rows == self.stations[base:] or len(rows) < len(self.stations) - base:
+            return False                  # nothing new; and a place cargo may be bound for is never forgotten
+        self.stations = list(self.world.stations) + rows
+        self.engine.set_stations(self.stations)
+        return True
+
+    def hut(self) -> dict | None:
+        """The planted station the balloon is at, if it is at one that is not yet a mast."""
+        state = self.state
+        for station in self.stations:
+            if not staffed(station) and (station["x"] - state.x) ** 2 + (station["y"] - state.y) ** 2 \
+                    <= PLACE_RADIUS_KM * PLACE_RADIUS_KM:
+                return station
+        return None
+
+    def _deed(self, action: str, deed, apply) -> bool:
+        """Do something to the shared world and to the pilot as one write.
+
+        deed(db) changes the world and says what came of it; apply(that)
+        changes the pilot. If it cannot be written, neither has happened.
+        """
+        if self.ended:
+            return False
+        if self.store is None:
+            apply(deed(self._own_db()))
+            return True
+        kept = (self.postmarks, self.points, self.kits, self.crates, list(self.log), list(self.heard))
+
+        def career(new, found, done):
+            apply(done)
+            return self._career()
+        try:
+            self.store.commit(self.launch.user_id, self.launch.handle, career, self.state.to_dict(), action, deed=deed)
+            self.saved_ok = True
+            return True
+        except (LeaseLost, sqlite3.Error) as error:
+            self.postmarks, self.points, self.kits, self.crates, self.log, self.heard = kept
+            if isinstance(error, LeaseLost):
+                self.ended = "taken"
+            else:
+                diagnose(f"a deed could not be saved: {error}")
+                self.saved_ok = False
+            return False
+
+    def cannot_plant(self) -> str:
+        """Why a station cannot be planted here and now, or "" if it can."""
+        state = self.state
+        if not self.kits:
+            return "There is no station kit aboard. The towns sell them."
+        if state.status not in ("ground", "stranded"):
+            return "A station is planted from the ground."
+        for place in self.world.towns + self.stations:
+            if (place["x"] - state.x) ** 2 + (place["y"] - state.y) ** 2 < STATION_APART_KM ** 2:
+                return (f"Too close to {place['name']}: a station stands at least "
+                        f"{STATION_APART_KM:.0f} km from any other place.")
+        return ""
+
+    def _plant(self) -> None:
+        """Plant the station kit where the balloon stands."""
+        self.heard = []
+        why = self.cannot_plant()
+        if why:
+            self._say(why)
+            return
+        if self.store is not None and not self._mine(write=False):
+            return
+        state, launch = self.state, self.launch
+
+        def apply(done):
+            if done is None:
+                self._say("Somebody has just planted a station near here. The kit stays aboard.")
+                return
+            self.kits -= 1
+            self.points += PLANT_POINTS
+            self._say(f"You plant {done['name']}. The forecast is sharper around it for everyone, while it is kept "
+                      f"stocked. {PLANT_POINTS} points on the licence.")
+        self._deed("plant", lambda db: plant_station(db, self.world, state.x, state.y, launch.user_id,
+                                                     launch.handle, self.today), apply)
+        self._see_stations()
+        self._promote()
+        self._choose_default()
+
+    def _visit(self) -> None:
+        """Down at a planted station: see to it, and unload what crates it wants."""
+        hut, launch, crates = self.hut(), self.launch, self.crates
+        if hut is None or self.state.status not in ("ground", "stranded"):
+            return
+
+        def apply(done):
+            if done is None:              # raised while this balloon was on its way
+                kept = " Your crates stay aboard for another station." if crates else ""
+                self._say(f"{hut['name']} is a mast now: its post office is open, O.{kept}")
+                return
+            name, restored, took = hut["name"], done["restored"], done["took"]
+            pay = restored * RESUPPLY_PAY + took * CRATE_PAY
+            self.postmarks += pay
+            self.points += int(restored * RESUPPLY_POINTS) + took * CRATE_POINTS
+            self.crates -= took
+            if restored:
+                was = "was silent and reports again" if done["silent"] else "is seen to"
+                self._say(f"{name} {was}: {restored} day{'s' if restored != 1 else ''} of stock put back, "
+                          f"{restored * RESUPPLY_PAY} postmarks.")
+            if took and done["raised"]:
+                self._say(f"Your freight raises the mast at {name}: {took * CRATE_PAY} postmarks. It has a lit "
+                          f"field, fuel and a post office from now on.")
+            elif took:
+                wants = done["wants"]
+                self._say(f"Unloaded for the mast at {name}: {took} crate{'s' if took != 1 else ''}, "
+                          f"{took * CRATE_PAY} postmarks. {wants} more will raise it.")
+            elif not restored:
+                self._say(f"{name} is well stocked. {done['wants']} crates from a town would raise a mast here.")
+        self._deed("station", lambda db: visit_station(db, hut["id"], launch.user_id, launch.handle,
+                                                       self.today, crates), apply)
+        self._see_stations()
+        self._promote()
+
+    def kit(self) -> str:
+        """Buy a station kit at a town, or with one aboard hand it back."""
+        if not self.at_loft():
+            return "Station kits are sold in towns."
+        if self.kits:
+            self.kits, self.postmarks = 0, self.postmarks + KIT_PRICE
+            self.save("stores")
+            return f"The station kit goes back on the shelf: {KIT_PRICE} postmarks returned."
+        if self.postmarks < KIT_PRICE:
+            return f"Not enough postmarks: a station kit is {KIT_PRICE}."
+        if self.weight() + KIT_WEIGHT > self.lift():
+            return f"Too heavy: the kit weighs {KIT_WEIGHT}, the balloon lifts {self.lift()} and carries {self.weight()}."
+        self.kits, self.postmarks = 1, self.postmarks - KIT_PRICE
+        self.save("stores")
+        return (f"Aboard: a station kit. Land in the wild, {STATION_APART_KM:.0f} km from any place, "
+                f"and K plants it.")
+
+    def crate(self, count: int) -> str:
+        """Buy a crate of mast freight at a town, or hand one back."""
+        if not self.at_loft():
+            return "Mast freight is sold in towns."
+        if count < 0:
+            if not self.crates:
+                return "No mast freight aboard."
+            self.crates, self.postmarks = self.crates - 1, self.postmarks + CRATE_PRICE
+            self.save("stores")
+            return f"A crate goes back: {CRATE_PRICE} postmarks returned."
+        if self.postmarks < CRATE_PRICE:
+            return f"Not enough postmarks: a crate of mast freight is {CRATE_PRICE}."
+        if self.weight() + CRATE_WEIGHT > self.lift():
+            return f"Too heavy: a crate weighs {CRATE_WEIGHT}, the balloon lifts {self.lift()} and carries {self.weight()}."
+        self.crates, self.postmarks = self.crates + 1, self.postmarks - CRATE_PRICE
+        self.save("stores")
+        return (f"Aboard: {self.crates} crate{'s' if self.crates != 1 else ''} of mast freight. Any station "
+                f"that is not yet a mast takes it and pays {CRATE_PAY} a crate.")
+
+    def _raised_by(self) -> str:
+        """Who raised the mast here, for its post office to say."""
+        ref = self.here()
+        place = self.place_of(ref) if ref is not None and ref[0] == "station" else {}
+        if place.get("mast_day") is None:
+            return ""
+        names = [clean_text(name, 16).replace("`", " ") for name in place.get("given", [])[:4]]
+        if not names:
+            return f"A mooring mast, planted as a station by {clean_text(place['handle'], 16)}."
+        return (f"A mooring mast since Day {place['mast_day']}, raised with the freight of "
+                f"{', '.join(names[:-1]) + (' and ' if len(names) > 1 else '') + names[-1]}.")
+
     # -- the post ------------------------------------------------------------
 
     def _ref(self, value) -> tuple[str, int]:
         kind, index = value
-        group = self.world.towns if kind == "town" else self.world.stations
+        group = self.world.towns if kind == "town" else self.stations
         if kind not in ("town", "station") or not 0 <= int(index) < len(group):
             raise ValueError("no such place")
         return kind, int(index)
 
     def place_of(self, ref: tuple[str, int]) -> dict:
-        return (self.world.towns if ref[0] == "town" else self.world.stations)[ref[1]]
+        return (self.world.towns if ref[0] == "town" else self.stations)[ref[1]]
 
     @property
     def targets(self) -> list[tuple[str, int]]:
@@ -3923,7 +4243,8 @@ class PlainFlight:
         for item in self.manifest:
             if tuple(item["dest"]) not in seen:
                 seen.append(tuple(item["dest"]))
-        return seen or places_near(self.world, self.state.x, self.state.y, skip=self.here())[:POST_CHOICES]
+        return seen or places_near(self.world, self.state.x, self.state.y, skip=self.here(),
+                                   stations=self.stations)[:POST_CHOICES]
 
     def here(self) -> tuple[str, int] | None:
         """The town or station the balloon is at, if it is at one."""
@@ -3938,7 +4259,7 @@ class PlainFlight:
         return ", ".join(names[:-1]) + (" and " if len(names) > 1 else "") + names[-1]
 
     def weight(self) -> int:
-        return sum(item["weight"] for item in self.manifest)
+        return sum(item["weight"] for item in self.manifest) + self.kits * KIT_WEIGHT + self.crates * CRATE_WEIGHT
 
     def _load_cargo(self, offer: dict) -> dict:
         item = dict(offer, id=self.next_id)
@@ -3960,7 +4281,7 @@ class PlainFlight:
 
     def offers(self) -> list[dict]:
         """What the post office here offers today."""
-        return contracts_at(self.world, self.here(), self.state.day) if self.at_office() else []
+        return contracts_at(self.world, self.here(), self.state.day, self.stations) if self.at_office() else []
 
     def held(self, offer: dict) -> dict | None:
         """The cargo aboard that came from this offer, if the pilot took it."""
@@ -4046,7 +4367,7 @@ class PlainFlight:
                                          ballast=max(state.ballast, RELIEF["sack"]))
         self.taken.append(self._relief_mark())
         said = "The postmaster fuels and patches the balloon on account."
-        near = places_near(self.world, state.x, state.y, skip=ref)
+        near = places_near(self.world, state.x, state.y, skip=ref, stations=self.stations)
         if near and self.weight() + CARGO_KINDS["mail"]["weight"] <= self.lift():
             item = self._load_cargo({"contract": None, "kind": "mail", "dest": list(near[0]), "origin": list(ref),
                                      "weight": CARGO_KINDS["mail"]["weight"], "payout": RELIEF["payout"],
@@ -4067,11 +4388,18 @@ class PlainFlight:
         return sorted(out, key=lambda item: item[0])
 
     def coverage(self, x: float, y: float) -> float:
-        """How well the nearest town or starting station covers this place, 0 to 1."""
-        best = 0.0
-        for place in self.world.towns + self.world.stations:
+        """How well the best town, mast or station in range covers this place, 0 to 1.
+
+        A town, a mast and each of the world's first stations report in
+        full. A planted station reports as well as it is stocked.
+        """
+        best, reach = 0.0, self.fitted("wireless")["reach"]
+        for place in self.world.towns + self.stations:
             d = math.sqrt((x - place["x"]) ** 2 + (y - place["y"]) ** 2)
-            best = max(best, 1.0 - d / self.fitted("wireless")["reach"])
+            if d >= reach:
+                continue
+            share = 1.0 if staffed(place) else min(1.0, stock_of(place, self.today) / STOCK_SHARP)
+            best = max(best, (1.0 - d / reach) * share)
         return best
 
     # -- the licence and the gear ---------------------------------------------
@@ -4250,7 +4578,10 @@ class PlainFlight:
             self.loft, self.hub_note = True, ""
             return None
         if k == "o" and self.at_office():
-            self.hub, self.hub_note = True, ""
+            self.hub, self.hub_note = True, self._raised_by()
+            return None
+        if k == "k" and self.kits and self.state.status in ("ground", "stranded") and self.here() is None:
+            self._plant()
             return None
         phase = self.phase()
         offered = self.offered()
@@ -4317,6 +4648,12 @@ class PlainFlight:
             self.hub_note = self.relief()
         elif k == "w":
             self.hub_note = self.forward()
+        elif k == "k" and self.at_loft():
+            self.hub_note = self.kit()
+        elif k == "t" and self.at_loft():
+            self.hub_note = self.crate(1)
+        elif k == "y" and self.at_loft():
+            self.hub_note = self.crate(-1)
         self._choose_default()
 
     def _say(self, line: str) -> None:
@@ -4345,6 +4682,9 @@ class PlainFlight:
             if line:
                 self._say(f"{stamp}  {line}")
         self._lost_cargo()
+        if self.state.status == "ditched" and (self.kits or self.crates):
+            self.kits = self.crates = 0
+            self._say("The station freight went down with the basket.")
         landed = before.status == "aloft" and self.state.status != "aloft"
         if action == "launch":
             self.lift_off = [before.x, before.y]
@@ -4378,6 +4718,10 @@ class PlainFlight:
         self.save(action, seen)           # before anything is shown
         if self.ended:
             return
+        if landed:
+            self._visit()                 # a station here is seen to, in a write of its own
+            if self.ended:
+                return
         if (action == "launch" or landed) and self.saved_ok:
             # No picture of a turn that is not on disk: the screen says it was not saved instead.
             self.pending_scene = self._scene_for("launch" if action == "launch" else "landing")
@@ -4437,11 +4781,12 @@ class PlainFlight:
         if code == "ditch":
             return "Down on the water. The post is lost."
         if code == "land":
-            place = event[2]
+            place, hut = event[2], self.hut()
             where = "in the wild"
             if place:
-                group = self.world.towns if place[0] == "town" else self.world.stations
-                where = f"at {group[place[1]]['name']}"
+                where = f"at {self.place_of(place)['name']}"
+            elif hut is not None:
+                where = f"at {hut['name']}"
             return f"Down {where}: a {event[1]} landing."
         if code == "stranded":
             return "No fuel, and nobody near. You are stranded."
@@ -4708,6 +5053,8 @@ class PlainFlight:
                     screen.put(1 + c, 1 + r, glyph, ink)
         for town in self.world.towns:
             mark(town["x"], town["y"], "o", "text")
+        for station in self.stations:
+            mark(station["x"], station["y"], *self._station_mark(station))
         for ox, oy, ink in self.others:
             mark(ox, oy, "Q", ink)
         mark(state.x, state.y, "@", "bright")
@@ -4729,6 +5076,12 @@ class PlainFlight:
         out.append(s._kv(s.height - 2, 1, self._status(s, wide), wide, "dim", "text"))
         out += s._keys(s.height - 1, [("Enter", "Back")])
         return out
+
+    def _station_mark(self, station: dict) -> tuple[str, str]:
+        """How a station is drawn: a mast, a station reporting, or one gone silent."""
+        if station.get("mast_day") is not None:
+            return "Y", "cool"
+        return "+", "cool" if staffed(station) or stock_of(station, self.today) > 0 else "dim"
 
     def _draw_loft(self, s: "Session") -> list[str]:
         """The rigging loft: the licence, the gear and what more can be fitted, and the envelope's design."""
@@ -4789,7 +5142,9 @@ class PlainFlight:
         state, ref, wide = self.state, self.here(), s.width - 2
         place, town = self.place_of(ref), ref[0] == "town"
         out = [s._line(0, 1, "FAIR WINDS", "accent"),
-               s._line(0, 13, f"{place['name']}, a {'town' if town else 'weather station'}"[:wide - 44], "text")]
+               s._line(0, 13, f"{place['name']}, a "
+                              f"{'town' if town else 'mooring mast' if place.get('mast_day') is not None else 'weather station'}"
+                       [:wide - 44], "text")]
         right = f"Day `{state.day}`  `{clock_text(state.minute)}`   `{self.postmarks}` postmarks"
         out.append(s._kv_right(0, s.width - 1, right, 13))
         # Where there are rows to spare and pixels to paint with, the place itself looks in over the counter.
@@ -4832,6 +5187,10 @@ class PlainFlight:
             out.append(s._line(row + 1, 9, f"W sends on by road what is bound elsewhere: "
                                            f"{sum(pay for _, pay in going)} postmarks"[:wide - 8], "cool"))
         lines = [self.cargo_text(item) + ("" if state.day <= item["due"] else " (late)") for item in self.manifest]
+        freight = (["A station kit"] if self.kits else []) + \
+            ([f"{self.crates} crate{'s' if self.crates != 1 else ''} of mast freight"] if self.crates else [])
+        if freight:
+            lines.insert(0, " and ".join(freight).replace(" and A ", " and a ") + ", for the wild")
         shown = lines[:3] if len(lines) <= 3 else lines[:2] + [f"and {len(lines) - 2} more"]
         for i, line in enumerate(shown or ["Nothing."]):
             out.append(s._line(row + 2 + i, 1, line[:wide], "text" if lines else "dim"))
@@ -4843,6 +5202,10 @@ class PlainFlight:
         fuel, sack, pibal, mend = (price_of(item, ref) for item in ("fuel", "sack", "pibal", "mend"))
         out += s._keys(row + 2, [("F", f"10 fuel, {10 * fuel}"), ("A", "Fill"), ("S", f"Sack, {sack}"),
                                  ("P", f"Pibal, {pibal}"), ("M", f"Mend, {mend} a point")])
+        if town:
+            out += s._keys(row + 3, [("K", "Station kit back" if self.kits else f"Station kit, {KIT_PRICE}"),
+                                     ("T", f"Mast crate, {CRATE_PRICE}")] + ([("Y", "Crate back")] if self.crates else []))
+            row += 1
         if self.hub_note:
             out.append(s._line(row + 4, 1, self.hub_note[:wide], "bright"))
         if s.notice:
@@ -4941,11 +5304,13 @@ class PlainFlight:
                 keys.append(("P", "Pibal"))
             return keys + [("?", "Help"), ("Q", "Quit")]
         office = [("O", "Post")] if self.at_office() else []      # the loft is a door inside it, and G from here
+        if self.kits and not self.cannot_plant():
+            office = [("K", "Plant station")]                     # in the wild: there is no office here
         if phase == "ground":
             wait = [("H", "Wait")] if self.state.turn < DAY_TURNS else []
             return [("Enter", "Launch")] + office + wait + [("N", "Night"), ("?", "Help"), leave]
         if phase == "stranded":
-            return [("W", "Walk out"), ("?", "Help"), leave]
+            return [("W", "Walk out")] + office + [("?", "Help"), leave]
         if phase == "ditched":
             return [("N", "Wait for the boat"), ("?", "Help"), leave]
         if phase == "wait":
@@ -5042,17 +5407,20 @@ class PlainFlight:
         view.draw_wind(screen)
         # The balloon first: nothing may cover it, and names keep clear of it.
         view.mark(screen, state.x, state.y, "@", "bright", force=True)
-        wanted, others = [], []
-        for kind, group, glyph, ink in (("town", self.world.towns, "o", "text"),
-                                        ("station", self.world.stations, "+", "cool")):
-            for i, place in enumerate(group):
-                (wanted if (kind, i) in self.targets else others).append((place, glyph, ink))
+        wanted, others, targets = [], [], self.targets
+        for i, place in enumerate(self.world.towns):
+            (wanted if ("town", i) in targets else others).append((place, "o", "text"))
+        for i, place in enumerate(self.stations):
+            (wanted if ("station", i) in targets else others).append((place,) + self._station_mark(place))
         cells = []
         for place, _, _ in wanted:
             cell = view.mark(screen, place["x"], place["y"], "#", "accent")
             cells.append((cell, place))
+        planted = []
         for place, glyph, ink in others:
-            view.mark(screen, place["x"], place["y"], glyph, ink)
+            cell = view.mark(screen, place["x"], place["y"], glyph, ink)
+            if "id" in place:
+                planted.append((cell, place, ink))
         for ox, oy, colour in self.others:
             view.mark(screen, ox, oy, "Q", colour)      # another pilot's balloon, in the first colour of its envelope
         if state.status in ("aloft", "ground") and self.offered(state):
@@ -5070,6 +5438,9 @@ class PlainFlight:
         for cell, place in cells:                    # names last, where there is room left for them
             if cell is not None:
                 view.label(screen, cell, place["name"], "accent")
+        for cell, place, ink in planted:             # what pilots planted is named: nobody was born knowing it
+            if cell is not None:
+                view.label(screen, cell, place["name"], ink)
         shown = 0
         for fid, entry in sorted(self.found.items()):
             if shown >= FEATURE_LABELS:
@@ -5323,15 +5694,15 @@ PLAIN_HELP = (
     "  `O`  post office and stores; from there `G`, the rigging loft, in towns",
     "  `H`  wait an hour for the wind               `N`  stay the night",
     "# THE MAP",
-    "  `@` you  `#` post bound there  `o` town  `+` station  `Q` a pilot  `C` the whole chart",
+    "  `@` you  `#` post bound there  `o` town  `+` station  `Y` mast  `Q` a pilot  `C` chart",
     "  A dotted trail with an arrow: where a choice would carry you. `%` a squall.",
     "  Without colour: `~` sea  `.` shore  `,` grass  `\"` forest  `:` plain  `n` hills  `^` peak",
     "# GOOD TO KNOW",
-    "  A wind marked `~` is a forecast. Your own layer is always read true.",
+    "  `~` marks a forecast; your own layer is read true. A world day is flown once.",
     "  Climbing costs fuel, sinking is free, holding costs 1 (0 from 11:00 to",
-    "  15:00, 2 after 20:00). Land in 15 km/h or less for a clean landing.",
-    "  Within 12 km of a place counts as being there.",
-    "  A world day opens at the same hour for everyone and is flown once.",
+    "  15:00, 2 after 20:00). Land in 15 km/h or less. 12 km from a place is there.",
+    "  `K` plants a station kit in the wild: a sharper forecast there for everyone.",
+    "  Landing at a station restocks it: no fuel there. Crates make it a mast.",
     "  `?` this help   `Ctrl-L` redraw   `Q` leave: every turn is saved.",
 )
 

@@ -549,9 +549,9 @@ class Screens(PlainCase):
             self.assertIn(heading, text)
         self.assertNotIn("`", text, "the marks that say what is a key are not shown")
         self.assertIn("every turn is saved", text)
-        self.assertIn("A world day opens at the same hour for everyone", text)
+        self.assertIn("A world day is flown once", text)
         self.assertLessEqual(len(fw.PLAIN_HELP), 21, "help fits the screen above the key row")
-        self.assertIn("Within 12 km of a place counts", text)
+        self.assertIn("12 km from a place is there", text)
         self.assertTrue(all(len(line.replace("`", "")) <= 78 for line in fw.PLAIN_HELP))
         self.assertTrue(all(line.count("`") % 2 == 0 for line in fw.PLAIN_HELP), "every mark is closed")
 

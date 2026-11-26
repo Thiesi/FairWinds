@@ -57,7 +57,8 @@ class Opening(StoreCase):
         self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], fw.SCHEMA_VERSION)
         self.assertEqual(db.execute("PRAGMA journal_mode").fetchone()[0], "wal")
         tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        self.assertEqual(tables, {"meta", "pilots", "sessions", "flights", "turns", "charted", "features"})
+        self.assertEqual(tables, {"meta", "pilots", "sessions", "flights", "turns", "charted", "features",
+                                  "stations", "contributions"})
         self.assertEqual(dict(db.execute("SELECT key, value FROM meta"))["seed"], str(SEED))
         db.close()
         self.assertFalse(store.db.in_transaction, "nothing is left open")

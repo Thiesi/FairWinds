@@ -82,8 +82,35 @@ def page(screen: "fw.Screen", title: str) -> str:
             f'</style><pre>' + "\n".join(rows) + "</pre>")
 
 
+def frontier(game) -> None:
+    """A mast, a station gone silent and a kit to plant: the pilot down in the wild among them."""
+    import dataclasses
+    spots = []
+    for cell in sorted(game.world._land):
+        x, y = (cell % fw.CHART_W + 0.5) * fw.CHART_KM, (cell // fw.CHART_W + 0.5) * fw.CHART_KM
+        if all((p["x"] - x) ** 2 + (p["y"] - y) ** 2 >= 62 ** 2 for p in game.world.towns + game.stations) \
+                and all((sx - x) ** 2 + (sy - y) ** 2 >= 62 ** 2 for sx, sy in spots) \
+                and all((sx - x) ** 2 + (sy - y) ** 2 <= 110 ** 2 for sx, sy in spots):
+            spots.append((x, y))
+        if len(spots) == 3:
+            break
+    for i, (x, y) in enumerate(spots):
+        game.kits = 1
+        game.state = dataclasses.replace(game.state, x=x, y=y, layer=0, status="ground")
+        if i < 2:
+            game.key("k")
+    game.crates = fw.MAST_CRATES
+    game.state = dataclasses.replace(game.state, x=spots[0][0], y=spots[0][1])
+    game._visit()
+    game._own_db() if game.store is None else game.store.db.execute(
+        "UPDATE stations SET stock_day=stock_day-20 WHERE id=4")
+    game._see_stations()
+    game.state = dataclasses.replace(game.state, x=spots[2][0], y=spots[2][1])
+    game._choose_default()
+
+
 def fly(width: int, height: int, depth: str, charset: str = "utf-8", turns=("ENTER", "w", "ENTER", "ENTER", "w"),
-        view: str = "front"):
+        view: str = "front", setup=None):
     """A game a few turns into its first flight, and the frame it shows."""
     info = {"door_api": 5, "handle": "Mara", "user_id": 12, "node_id": "capture-node", "node_name": "Test Node",
             "terminal_width": width, "terminal_height": height, "color_depth": depth, "charset": charset,
@@ -91,6 +118,8 @@ def fly(width: int, height: int, depth: str, charset: str = "utf-8", turns=("ENT
     launch = fw.parse_door_info(json.dumps(info), {})
     with tempfile.TemporaryDirectory(prefix="fair-winds-capture-") as folder:
         game = fw.PlainFlight(launch, Path(folder))
+        if setup is not None:
+            setup(game)
         for key in turns:
             game.key(key)
 
@@ -143,6 +172,8 @@ def main(argv) -> int:
             (OUT / name).write_text(page(fly(width, height, depth, turns=("ENTER", "w", "ENTER", "ENTER", "ENTER",
                                                                          "ENTER", "ENTER", "ENTER", "c")), name),
                                     encoding="utf-8")
+            name = f"frontier-{width}x{height}-{depth}.html"
+            (OUT / name).write_text(page(fly(width, height, depth, turns=(), setup=frontier), name), encoding="utf-8")
             name = f"help-{width}x{height}-{depth}.html"
             (OUT / name).write_text(page(fly(width, height, depth, view="help"), name), encoding="utf-8")
             name = f"loft-{width}x{height}-{depth}.html"
