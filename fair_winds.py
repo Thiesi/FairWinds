@@ -5525,7 +5525,7 @@ class PlainFlight:
             if view["zoom"] == 0:
                 view["x"], view["y"] = self.state.x, self.state.y      # the first step in is on the pilot
             view["zoom"] = (view["zoom"] + 1) % len(ATLAS_ZOOMS)
-        elif k in ("-", "x"):
+        elif k == "-":
             view["zoom"] = max(0, view["zoom"] - 1)              # a step back out
         elif k == "i":
             view["isobars"] = not view["isobars"]
@@ -5604,7 +5604,8 @@ class PlainFlight:
         mark(state.x, state.y, "@", "bright", force=True)
         found = view.get("found")
         if found is not None:                   # what was looked for, before anything can crowd it out
-            label(mark(found[1], found[2], "*", "bright"), found[0], "bright")
+            # (Without UTF-8 the route's dots are stars: there the found place is an X.)
+            label(mark(found[1], found[2], "*" if utf8 else "X", "bright"), found[0], "bright")
         waiting = [(mark(call["x"], call["y"], "!", "warn"), call) for call in self.calls]
         targets = self.targets
         towns = [(mark(t["x"], t["y"], "#" if ("town", i) in targets else "o",
