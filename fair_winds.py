@@ -4149,8 +4149,10 @@ class PlainFlight:
             return
 
         def apply(done):
-            if done is None:
-                return                    # raised while this balloon was on its way: the office says the rest
+            if done is None:              # raised while this balloon was on its way
+                kept = " Your crates stay aboard for another station." if crates else ""
+                self._say(f"{hut['name']} is a mast now: its post office is open, O.{kept}")
+                return
             name, restored, took = hut["name"], done["restored"], done["took"]
             pay = restored * RESUPPLY_PAY + took * CRATE_PAY
             self.postmarks += pay

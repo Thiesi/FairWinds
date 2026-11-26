@@ -377,6 +377,8 @@ class Masts(StationCase):
         self.assertEqual(b.stations[3]["mast_day"], b.today)
         c._visit()                                        # c had not heard: the mast wants nothing more
         self.assertEqual((c.crates, c.postmarks), (2, was[2]), "the third keeps the crates and is paid nothing")
+        self.assertTrue(any("is a mast now" in line and "crates stay aboard" in line for line in c.heard), c.heard)
+        self.assertTrue(c.at_office())
         self.assertEqual(self.rows("SELECT freight, mast_day IS NOT NULL FROM stations"), [(fw.MAST_CRATES, 1)])
         self.assertEqual(self.rows("SELECT user_id, handle, crates FROM contributions ORDER BY user_id"),
                          [(1, "Ada", 2), (2, "Bo", 2)])
