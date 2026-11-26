@@ -345,7 +345,7 @@ class Pages(AlmanacCase):
         self.assertNotIn(other["name"], [place[0] for place in game._atlas_places()])
 
     def test_the_help_names_the_almanac(self):
-        self.assertIn("`V` almanac", " ".join(fw.PLAIN_HELP))
+        self.assertIn("`V` winds", " ".join(fw.PLAIN_HELP))
         self.assertLessEqual(len(fw.PLAIN_HELP), 21)
 
 

@@ -41,8 +41,9 @@ days) is built as well, which completes P4. Of P5, S19 (the Daily Drift: one
 course a world day on a standard balloon, one scored attempt, a table) is
 built, and so is S20 (the Trials: a first flight that teaches, and twelve
 set flights with medals) and S21 (forty wonders in every world, taken for an
-album when the balloon is there as they show, each with a picture). The next
-slice is S22, the seasons.
+album when the balloon is there as they show, each with a picture) and S22
+(the 28-day season: a goal for the node, a race in its last week, medals,
+and nothing reset). The next slice is S23, the Gyre.
 
 To look at a screen, run `python scripts/capture.py`: it writes each size and
 colour depth as an HTML page under `.test-tmp/captures`, which headless Edge

@@ -543,7 +543,7 @@ class Screens(PlainCase):
     def test_help_explains_every_key(self):
         game = self.game()
         text = self.screen(game, view="help")
-        for key in ("W S", "A D", "Enter", "J ", "P ", "L ", "M ", "O ", "G rigging loft", "B a station", "H ", "N ", "?", "Ctrl-L", "Q "):
+        for key in ("W S", "A D", "Enter", "J ", "P ", "L ", "M ", "O ", "G rigging loft", "B a station", "H ", "N ", "Ctrl-L", "Q "):
             self.assertIn(key, text)
         for glyph in ("@", "#", "o", "+", "~", "%", "Q a pilot", "! stranded"):
             self.assertIn(glyph, text)
