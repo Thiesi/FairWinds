@@ -830,8 +830,9 @@ the ground. The tables are `ATLAS_ZOOMS`, `ISOBAR_HPA`, `ISOBAR_DEEP`,
   marks, a space apart and never run together; where not all fit, the places
   the pilot has post for come first. The Gyre is always named.
 - **Find.** `/`, a name or part of one, Enter. Towns, stations, found
-  features, stranded pilots and the Gyre can be found; a name that begins
-  with what was typed comes before one that only holds it. The place is
+  features, stranded pilots, winds in the almanac and the Gyre can be found;
+  a name that begins with what was typed (a leading "The" aside) comes
+  before one that only holds it, and of several the shortest. The place is
   brought to the middle, one step closer if the chart showed the whole
   continent, and marked `*` until the chart is closed. While a name is typed
   every printable key is part of it. Esc leaves the name, not the chart.
@@ -861,6 +862,50 @@ The winds are not drawn on the chart.
 while it was blowing on three different world days. It gets a name from the
 generator and that pilot's credit. An entered wind is drawn on every pilot's
 forecast when its conditions hold.
+
+**As built (S18).** The tables are `WIND_COUNT`, `WIND_APART_KM`,
+`WIND_REACH_KM`, `WIND_LAYERS`, `WIND_DAYS`, `PASS_KMH`, `SEA_BREEZE_AT`,
+`DOWNSLOPE_AT`, `ALMANAC_PAY`, `ALMANAC_POINTS` and `WIND_KINDS`.
+
+- **Where they are.** Each world has 12 to 20 local winds, drawn from its
+  seed. They are picked by turns from the strongest of three kinds of place,
+  each on ground low enough for the lowest layer and at least 110 km from
+  every other: gaps between high ground (a pass wind), coasts (a sea
+  breeze), steep ground (a downslope wind). They are not stored; the land
+  and the seed say where they are.
+
+| Kind | Blows | Named |
+| --- | --- | --- |
+| Pass wind | whenever the lowest layer runs at 18 km/h or more through the gap | Funnel, Rush, Gate |
+| Sea breeze | 13:00 to 17:00, every day | Breeze, Doctor, Onshore |
+| Downslope wind | from before dawn until about 07:45, every day | Fall, Drain, Bora |
+
+- **These are the weather's own winds.** The sea breeze, the downslope wind
+  and the faster air in a gap are in the wind a balloon flies on (section
+  4). The almanac adds nothing to the weather: it names where they come
+  back.
+- **Flying one.** A turn that ends aloft in layer 2 or below, within 30 km
+  of a local wind's middle, counts for that pilot and that flying day if the
+  wind was blowing when the turn began: a turn flies on the wind it sets
+  out on (section 5), so that is the wind it was in. A day counts once. The first time on a day the log says what
+  kind of wind it is and how many of three days it has been flown.
+- **Entering one.** The third such day enters it, in the write of that turn:
+  once, under the pilot whose third day it was, however many arrive
+  together. It pays 30 postmarks and 15 licence points. It has no name
+  before: the name is the generator's, kept for that moment.
+- **For everyone.** From then on the wind is marked and named on every
+  pilot's map and chart at the hours it blows, and can be found on the
+  chart by name.
+- **The almanac** is `V`, from the air or the ground. It lists each wind
+  entered with its kind, where it is, when it blows, who entered it and on
+  what day, and whether it blows now; then the winds this pilot is part way
+  to entering, unnamed; then how many are still to be found and how. Any
+  key closes it.
+- The records gain `sightings` and `almanac`, and the schema is version 5.
+
+**Not yet tuned.** A downslope wind blows for under two hours of the flying
+day and a pilot has to be there for it on three days. Measured over three
+worlds, every wind blows on at least four days in twenty-eight.
 
 **The Gazette.** A record of the week: stations planted, features named,
 almanac entries, records, the season's progress. It is a screen in the door and,

@@ -33,7 +33,7 @@ import zoneinfo
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "0.1.0.dev23"
+VERSION = "0.1.0.dev24"
 DOOR_API = 5
 MIN_WIDTH, MIN_HEIGHT = 80, 24
 MAX_DIMENSION = 1000
@@ -3233,6 +3233,119 @@ def guestbook_remove(folder: Path, name: str) -> str:
 
 
 # --------------------------------------------------------------------------
+# The almanac (S18). The land makes winds of its own that come back: a sea
+# breeze on a coast every afternoon, air draining off steep ground at dawn,
+# a rush through a gap whenever the flow is strong. Each world has twelve
+# to twenty such places. A pilot who flies one while it blows, on three
+# different days, enters it in the almanac under their name, and from then
+# on every pilot's map shows it whenever it blows.
+# --------------------------------------------------------------------------
+
+WIND_COUNT = (12, 20)                # local winds in a world: at least, at most
+WIND_APART_KM = 110.0                # no two of them nearer than this
+WIND_REACH_KM = 30.0                 # a local wind is flown within this of its middle
+WIND_LAYERS = 2                      # and no higher than this layer: they are winds of the ground
+WIND_DAYS = 3                        # days a pilot has to have flown one to enter it
+PASS_KMH = 18.0                      # a pass wind blows when the lowest layer runs this fast through the gap
+SEA_BREEZE_AT, DOWNSLOPE_AT = 0.5, 0.25      # of their full strength: when they count as blowing
+ALMANAC_PAY, ALMANAC_POINTS = 30, 15
+WIND_KINDS = {
+    "pass": {"what": "pass wind", "when": "when the air runs fast through the gap",
+             "words": (" Funnel", " Rush", " Gate")},
+    "sea": {"what": "sea breeze", "when": "onshore, 13:00 to 17:00",
+            "words": (" Breeze", " Doctor", " Onshore")},
+    "fall": {"what": "downslope wind", "when": "off the slopes, until 07:45",
+             "words": (" Fall", " Drain", " Bora")},
+}
+
+
+def local_winds(world: "World", weather: "Weather") -> list[dict]:
+    """The world's local winds: where each is, what kind, and the name it will bear. The same every time.
+
+    Picked by turns from the strongest gaps, coasts and slopes that lie
+    low enough to be flown in the lowest layer, each well apart from the
+    others. Not stored: the land and the seed say where they are. The
+    records know a wind by its number here, so a change to how they are
+    picked moves the winds of every world already begun: a test holds one
+    world's winds to what they were.
+    """
+    if getattr(world, "_winds", None) is None:
+        low, picked, used = LAYER_BLOCK_M[0], [], set()
+        pools: dict = {"pass": [], "sea": [], "fall": []}
+        for k in range(CHART_W * CHART_H):
+            gx, gy = k % CHART_W, k // CHART_W
+            if not (3 <= gx < CHART_W - 3 and 3 <= gy < CHART_H - 3) or world.chart_elevation[k] >= low:
+                continue
+            jitter = draw_unit(world.seed, "wind", k) * 0.2
+            if weather.gap[k]:
+                pools["pass"].append((1.0 + jitter, k))
+            coast = math.sqrt(weather.coast[k][0] ** 2 + weather.coast[k][1] ** 2)
+            if coast > 0.8:
+                pools["sea"].append((coast + jitter, k))
+            slope = math.sqrt(weather.slope[k][0] ** 2 + weather.slope[k][1] ** 2)
+            if slope > 0.25:
+                pools["fall"].append((slope + jitter, k))
+        for pool in pools.values():
+            pool.sort(reverse=True)
+        want = WIND_COUNT[0] + draw(world.seed, "wind-count") % (WIND_COUNT[1] - WIND_COUNT[0] + 1)
+        turn = 0
+        while len(picked) < want and any(pools.values()):
+            kind = ("pass", "sea", "fall")[turn % 3]
+            turn += 1
+            while pools[kind]:
+                _, k = pools[kind].pop(0)
+                x, y = (k % CHART_W + 0.5) * CHART_KM, (k // CHART_W + 0.5) * CHART_KM
+                if any((x - w["x"]) ** 2 + (y - w["y"]) ** 2 < WIND_APART_KM ** 2 for w in picked):
+                    continue
+                words, name = WIND_KINDS[kind]["words"], ""
+                for attempt in range(200):
+                    name = "The " + _NAME_FIRST[draw(world.seed, "wind-name", k, attempt, 0) % len(_NAME_FIRST)] \
+                        + words[draw(world.seed, "wind-name", k, attempt, 1) % len(words)]
+                    if name not in used:
+                        break
+                used.add(name)
+                picked.append({"id": len(picked), "kind": kind, "x": x, "y": y, "cell": k, "name": name,
+                               "cells": frozenset(cells_within(x, y, WIND_REACH_KM))})
+                break
+        world._winds = picked
+    return world._winds
+
+
+def wind_blows(weather: "Weather", wind: dict, day: int, minute: int) -> bool:
+    """Is this local wind blowing at this hour of this day?"""
+    frame = weather.frame(day, minute)
+    if wind["kind"] == "sea":
+        return frame.sea_breeze >= SEA_BREEZE_AT
+    if wind["kind"] == "fall":
+        return frame.katabatic >= DOWNSLOPE_AT
+    vx, vy = frame.wind(wind["x"], wind["y"], 1)
+    return vx * vx + vy * vy >= PASS_KMH * PASS_KMH
+
+
+def fly_wind(db, wind: int, user_id: int, handle: str, day: int) -> dict:
+    """A pilot has flown a local wind while it blew. Inside the caller's transaction.
+
+    Says how many days this pilot has now flown it, whether today is a
+    new one, and whether this is the flight that enters it: once, under
+    the pilot whose third day it was.
+    """
+    if db.execute("SELECT 1 FROM almanac WHERE wind=?", (wind,)).fetchone() is not None:
+        return {"days": 0, "new": False, "entered": False, "late": True}
+    new = db.execute("INSERT OR IGNORE INTO sightings VALUES (?, ?, ?)", (wind, user_id, day)).rowcount == 1
+    days = db.execute("SELECT count(*) FROM sightings WHERE wind=? AND user_id=?", (wind, user_id)).fetchone()[0]
+    entered = days >= WIND_DAYS and db.execute(
+        "INSERT OR IGNORE INTO almanac VALUES (?, ?, ?, ?)", (wind, user_id, handle, day)).rowcount == 1
+    return {"days": days, "new": new, "entered": entered, "late": False}
+
+
+def read_almanac(db, user_id: int) -> tuple[dict, dict]:
+    """The winds entered: number -> (user, handle, day). And the days this pilot has flown each."""
+    entered = {row[0]: tuple(row[1:]) for row in db.execute("SELECT wind, user_id, handle, day FROM almanac")}
+    flown = dict(db.execute("SELECT wind, count(*) FROM sightings WHERE user_id=? GROUP BY wind", (user_id,)))
+    return entered, flown
+
+
+# --------------------------------------------------------------------------
 # The world's records (S10): one SQLite file for each world, shared by every
 # caller of that node. Writes are short transactions that take the write
 # lock at once; none is open while a caller thinks. A process killed at any
@@ -3240,7 +3353,7 @@ def guestbook_remove(folder: Path, name: str) -> str:
 # --------------------------------------------------------------------------
 
 APPLICATION_ID = 0x46574442          # "FWDB": says the file is a Fair Winds world
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 LEASE_STALE_SECONDS = 90.0           # a session not heard from for this long may be replaced without asking
 HEARTBEAT_SECONDS = 20.0
 BUSY_TIMEOUT_SECONDS = 5.0           # how long a write waits for another caller's write
@@ -3278,6 +3391,12 @@ MIGRATIONS = {
         "CREATE TABLE guestbook (id INTEGER PRIMARY KEY AUTOINCREMENT, station INTEGER NOT NULL,"
         " user_id INTEGER NOT NULL, handle TEXT NOT NULL, day INTEGER NOT NULL, text TEXT NOT NULL,"
         " UNIQUE (station, user_id, day))",
+    ),
+    5: (
+        "CREATE TABLE sightings (wind INTEGER NOT NULL, user_id INTEGER NOT NULL, day INTEGER NOT NULL,"
+        " PRIMARY KEY (wind, user_id, day)) WITHOUT ROWID",
+        "CREATE TABLE almanac (wind INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, handle TEXT NOT NULL,"
+        " day INTEGER NOT NULL)",
     ),
 }
 _NO_PLACE_TO_WRITE = ("readonly", "read-only", "unable to open", "locked", "disk i/o", "full", "busy")
@@ -3718,6 +3837,11 @@ class PlainFlight:
                            "find": None, "note": "", "found": None}
         self._atlas_made: dict | None = None
         self.route: list = []             # where each flight ended, oldest first
+        self.winds = local_winds(self.world, self.weather)
+        self.almanac: dict = {}           # local winds entered: number -> (user, handle, day)
+        self.flown: dict = {}             # days this pilot has flown each local wind while it blew
+        self.pages = False                # the almanac is open
+        self._blowing_at = None
         self._chart_size = None
         self._share = None
         self._grade_seen = 0
@@ -3780,6 +3904,7 @@ class PlainFlight:
         self._see_others()
         self._see_chart()
         self._see_calls()
+        self._see_almanac()
         self._sync_call()
         if self._imported and self.saved_ok and self.store is not None and not self.ended:
             # Only once the database has the pilot. And never over an earlier file of that name.
@@ -3991,12 +4116,14 @@ class PlainFlight:
                 "deliveries": self.deliveries, "days_flown": self.days_flown, "total_km": self.total_km,
                 "log": self.log[-3:], "dated": self._dated}
 
-    def save(self, action: str = "", chart=()) -> None:
+    def save(self, action: str = "", chart=(), deed=None, earn=None) -> None:
         """Write the game as it stands; with an action, as a committed turn in the day's journal.
 
         chart is the cells the turn saw. Which of them are new, and whether a
         feature is found, is settled where it is written, so two pilots over
         the same ground at once are each credited with what was theirs.
+        deed is something the turn does to the shared world in the same
+        write, and earn takes what came of it.
         """
         cells = [cell for cell in chart if cell not in self.chart and cell not in self.known]
         watch = self._watch(cells)
@@ -4009,30 +4136,145 @@ class PlainFlight:
             for fid in found:
                 self.found[fid] = (watch[fid][2], self.launch.user_id, self.launch.handle, self.state.day)
             self._charted(cells, found)
+            if deed is not None:
+                earn(deed(self._own_db()))
             return
+
+        def earned(new, found, done=None):
+            self._charted(new, found)     # what the charting paid
+            if deed is not None:
+                earn(done)                # and what the deed came to
+            return self._career()         # the career as it stands after both
         # What the turn earns is worked out inside its transaction. If the transaction does not go through,
         # the earnings must not stand either: or the ground would be paid for now and again by whoever is
         # written down as first over it.
         kept = (self.charted, self.postmarks, self.points, self.flight_cells, self.flight_pay, set(self.chart),
-                dict(self.found), list(self.naming), list(self.log), list(self.heard), self.chart_version)
+                dict(self.found), list(self.naming), list(self.log), list(self.heard), self.chart_version,
+                dict(self.almanac), dict(self.flown))
         try:
             self.store.commit(self.launch.user_id, self.launch.handle,
-                              (lambda new, found, done=None: self._charted(new, found)) if cells else self._career(),
-                              self.state.to_dict(), action, cells, watch)
+                              earned if cells or deed is not None else self._career(),
+                              self.state.to_dict(), action, cells, watch, deed)
             self.saved_ok = True
             if cells:
                 self.chart.update(cells)          # seen, and on the chart: first over them or not
                 self.chart_version += 1
         except (LeaseLost, sqlite3.Error) as error:
-            if cells:
+            if cells or deed is not None:
                 (self.charted, self.postmarks, self.points, self.flight_cells, self.flight_pay, self.chart,
-                 self.found, self.naming, self.log, self.heard, self.chart_version) = kept
+                 self.found, self.naming, self.log, self.heard, self.chart_version, self.almanac, self.flown) = kept
             if isinstance(error, LeaseLost):
                 self.ended = "taken"
             else:
                 diagnose(f"a turn could not be saved: {error}")
                 self.saved_ok = False       # play on; say so on the screen
             return
+
+    # -- the almanac ---------------------------------------------------------
+
+    def _see_almanac(self) -> bool:
+        """Take in the winds entered, and how often this pilot has flown each. True if anything is new."""
+        if self.store is None and self._own is None:
+            return False
+        try:
+            entered, flown = self._read(lambda db: read_almanac(db, self.launch.user_id))
+        except sqlite3.Error:
+            return False
+        changed = entered != self.almanac
+        self.almanac, self.flown = entered, flown
+        if changed:
+            self._blowing_at = None
+        return changed
+
+    def wind_here(self, state: FlightState, day: int, minute: int) -> dict | None:
+        """The local wind the balloon is flying in, if one is blowing here and it is low enough to feel it."""
+        if state.status != "aloft" or state.layer > WIND_LAYERS:
+            return None
+        cell = cell_at(state.x, state.y)
+        for wind in self.winds:
+            if cell in wind["cells"] and wind_blows(self.weather, wind, day, minute):
+                return wind
+        return None
+
+    _almanac_stale = False
+
+    def _wind_flown(self, wind: dict, done: dict | None, day: int) -> None:
+        """What flying a local wind came to. Called inside the write of the turn that flew it."""
+        if done is None:
+            return
+        kind = WIND_KINDS[wind["kind"]]
+        if done["late"]:
+            # Somebody entered it since this session last looked. Said once: the entry is taken in after the turn.
+            self._almanac_stale = True
+            self._say(f"The {kind['what']} here is in the almanac already: another pilot entered it. V.")
+            return
+        if not (done["new"] or done["entered"]):
+            return
+        self.flown[wind["id"]] = done["days"]
+        if done["entered"]:
+            self.almanac[wind["id"]] = (self.launch.user_id, self.launch.handle, day)
+            self.postmarks += ALMANAC_PAY
+            self.points += ALMANAC_POINTS
+            self._blowing_at = None
+            self._say(f"{wind['name']} enters the almanac in your name: {ALMANAC_PAY} postmarks. "
+                      f"Every pilot's map shows it now when it blows.")
+        else:
+            self._say(f"A {kind['what']} blows here that no almanac has. Flown on {done['days']} of {WIND_DAYS} "
+                      f"days: V.")
+
+    def blowing(self) -> list[dict]:
+        """The entered winds that blow at the pilot's hour: what every map shows."""
+        key = (self.state.day, self.state.minute)
+        if self._blowing_at is None or self._blowing_at[0] != key:
+            self._blowing_at = (key, [wind for wind in self.winds if wind["id"] in self.almanac
+                                      and wind_blows(self.weather, wind, *key)])
+        return self._blowing_at[1]
+
+    def _near(self, x: float, y: float) -> str:
+        """Where a spot is, in words: by the nearest town."""
+        town = min(self.world.towns, key=lambda t: (t["x"] - x) ** 2 + (t["y"] - y) ** 2)
+        dx, dy = x - town["x"], y - town["y"]
+        km = math.sqrt(dx * dx + dy * dy)
+        return f"at {town['name']}" if km < 15 else f"{km:.0f} km {bearing(dx, dy)} of {town['name']}"
+
+    def _draw_almanac(self, s: "Session") -> list[str]:
+        """The almanac: the local winds entered, by whom, and the ones this pilot is part way to entering."""
+        wide, state = s.width - 2, self.state
+        out = [s._line(0, 1, "FAIR WINDS", "accent"), s._line(0, 13, "The almanac", "text")]
+        out.append(s._kv_right(0, s.width - 1, f"`{len(self.almanac)}` of `{len(self.winds)}` local winds entered"))
+        lines = []
+        for wind in self.winds:
+            kind = WIND_KINDS[wind["kind"]]
+            if wind["id"] in self.almanac:
+                _, handle, day = self.almanac[wind["id"]]
+                now = "  blowing now" if wind_blows(self.weather, wind, state.day, state.minute) else ""
+                lines.append((f"{wind['name']}, a {kind['what']} {self._near(wind['x'], wind['y'])}", "text"))
+                lines.append((f"    {kind['when']}. Entered by {clean_text(str(handle), 16) or 'a pilot'} "
+                              f"on Day {int(day)}.{now}", "cool" if now else "dim"))
+        for wind in self.winds:
+            if wind["id"] not in self.almanac and self.flown.get(wind["id"]):
+                kind = WIND_KINDS[wind["kind"]]
+                lines.append((f"An unnamed {kind['what']} {self._near(wind['x'], wind['y'])}: flown "
+                              f"{self.flown[wind['id']]} of {WIND_DAYS} days", "accent"))
+                lines.append((f"    {kind['when']}.", "dim"))
+        room = s.height - 8
+        if not lines:
+            lines = [("Nothing is entered yet.", "dim")]
+        shown = lines if len(lines) <= room else lines[:room - 1 - (room - 1) % 2] + [
+            (f"and {(len(lines) - (room - 1 - (room - 1) % 2)) // 2} more", "dim")]
+        for i, (line, ink) in enumerate(shown):
+            out.append(s._line(2 + i, 1, line[:wide], ink))
+        left = len(self.winds) - len(self.almanac)
+        if left:
+            out.append(s._line(s.height - 5, 1, f"{left} more blow where nobody has flown them on {WIND_DAYS} days: "
+                                                f"sea breezes on coasts"[:wide], "dim"))
+            out.append(s._line(s.height - 4, 1, "in the afternoon, air off steep ground at dawn, a rush through gaps "
+                                                "in hills."[:wide], "dim"))
+            out.append(s._line(s.height - 3, 1, f"Fly one in layer {WIND_LAYERS} or below while it blows, on "
+                                                f"{WIND_DAYS} days: it is yours to enter."[:wide], "dim"))
+        out.append(s._kv(s.height - 2, 1, self._status(s, wide), wide, "dim", "text"))
+        out += s._keys(s.height - 1, [("Enter", "Back")])
+        return out
 
     # -- the chart -----------------------------------------------------------
 
@@ -4166,6 +4408,7 @@ class PlainFlight:
         charted = self._see_chart()       # and what they have charted
         charted = self._see_stations() or charted     # and planted, stocked and raised
         charted = self._see_calls() or charted        # and who is stranded; or that help has come
+        charted = self._see_almanac() or charted      # and what winds have been entered
         if not self._look_at_the_calendar():
             return self.others != before or charted
         if self._catch_up():
@@ -4924,8 +5167,15 @@ class PlainFlight:
         if self.book is not None:
             self._book_key(k)
             return None
+        if self.pages:
+            self.pages = False            # any key closes the almanac, and is used up
+            return None
         if k == "c" and not self.hub and not self.loft:
             self.atlas = True
+            return None
+        if k == "v" and not self.hub and not self.loft:
+            self._see_almanac()
+            self.pages = True
             return None
         if k == "b" and not self.hub and not self.loft and self.book_place() is not None:
             station = self.book_place()
@@ -5079,7 +5329,18 @@ class PlainFlight:
                     if cell not in got:
                         got.add(cell)
                         seen.append(cell)
-        self.save(action, seen)           # before anything is shown
+        # A local wind flown while it blew is written with the turn that flew it. It blew when the turn
+        # began, and the balloon is in it where the turn ends: the wind of a turn is the wind it sets out on.
+        wind = self.wind_here(self.state, before.day, before.minute)
+        if wind is not None and wind["id"] not in self.almanac:
+            launch, day = self.launch, before.day
+            self.save(action, seen, lambda db: fly_wind(db, wind["id"], launch.user_id, launch.handle, day),
+                      lambda done: self._wind_flown(wind, done, day))
+            if self._almanac_stale:
+                self._almanac_stale = False
+                self._see_almanac()       # the wind is on the map from the next paint, under whoever entered it
+        else:
+            self.save(action, seen)       # before anything is shown
         if self.ended:
             return
         if landed:
@@ -5481,6 +5742,7 @@ class PlainFlight:
             middle = group[len(group) // 2]
             out.append((entry[0], (middle % CHART_W + 0.5) * CHART_KM, (middle // CHART_W + 0.5) * CHART_KM))
         out += [(clean_text(call["handle"], 16), call["x"], call["y"]) for call in self.calls]
+        out += [(wind["name"], wind["x"], wind["y"]) for wind in self.winds if wind["id"] in self.almanac]
         out.append(("The Gyre", self.world.gyre["x"], self.world.gyre["y"]))
         return out
 
@@ -5490,7 +5752,12 @@ class PlainFlight:
         if not want:
             return
         places = self._atlas_places()
-        hit = next((p for p in places if p[0].lower().startswith(want)), None) or \
+
+        def begins(name: str) -> bool:
+            name = name.lower()
+            return name.startswith(want) or (name.startswith("the ") and name[4:].startswith(want))
+        # A name that begins so, and of those the shortest; then one that only holds it.
+        hit = min((p for p in places if begins(p[0])), key=lambda p: len(p[0]), default=None) or \
             next((p for p in places if want in p[0].lower()), None)
         if hit is None:
             view["note"] = f"Nothing on the chart is called \"{clean_text(text, FIND_LIMIT)}\"."
@@ -5630,6 +5897,10 @@ class PlainFlight:
                     continue                        # the Gyre has its own name
                 label(mark(sx, sy, "L" if turn > 0 else "H", "warm" if turn > 0 else "cool"),
                       f"{frame.pressure(sx, sy):.0f}", "text")
+        for wind in self.blowing():
+            cell = mark(wind["x"], wind["y"], "\u2248" if utf8 else "=", "cool")
+            if view["names"]:
+                label(cell, wind["name"], "cool")
         if view["names"]:
             bound = [self.place_of(ref) for ref in targets]
             # Where the pilot is bound first: if only some names fit, those are the ones.
@@ -5862,6 +6133,8 @@ class PlainFlight:
             if self.book_place() == self.book["station"]:
                 return self._draw_book(s)
             self.book = self.writing = None
+        if self.pages and not self.naming:
+            return self._draw_almanac(s)
         if self.hub and self.at_office():
             return self._draw_hub(s)
         if self.loft and self.at_loft():
@@ -6049,6 +6322,7 @@ class PlainFlight:
         # The balloon first: nothing may cover it, and names keep clear of it.
         view.mark(screen, state.x, state.y, "@", "bright", force=True)
         wanted, others, targets = [], [], self.targets
+        utf8_map = self.launch.charset == "utf-8"
         for i, place in enumerate(self.world.towns):
             (wanted if ("town", i) in targets else others).append((place, "o", "text"))
         for i, place in enumerate(self.stations):
@@ -6084,6 +6358,10 @@ class PlainFlight:
         for cell, place, ink in planted:             # what pilots planted is named: nobody was born knowing it
             if cell is not None:
                 view.label(screen, cell, place["name"], ink)
+        for wind in self.blowing():                  # a wind in the almanac, where and when it blows
+            cell = view.mark(screen, wind["x"], wind["y"], "\u2248" if utf8_map else "=", "cool")
+            if cell is not None:
+                view.label(screen, cell, wind["name"], "cool")
         for cell, call in waiting:                   # a stranded pilot, and what they are waiting for
             if cell is not None:
                 view.label(screen, cell, f"{clean_text(call['handle'], 12)}: {need_text(call['fuel'], call['repair'])}",
@@ -6350,7 +6628,7 @@ PLAIN_HELP = (
     "  after 20:00). Land in 15 km/h or less. 12 km from a place is there.",
     "  `K` plants a station kit in the wild: a sharper forecast there for everyone.",
     "  Landing at a station restocks it: no fuel there. Crates make it a mast.",
-    "  `?` this help   `Ctrl-L` redraw   `Q` leave: every turn is saved.",
+    "  `V` the almanac   `?` this help   `Ctrl-L` redraw   `Q` leave: every turn is saved.",
 )
 
 

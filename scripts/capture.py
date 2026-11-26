@@ -114,6 +114,14 @@ def frontier(game) -> None:
     game._choose_default()
 
 
+def almanac(game) -> None:
+    """The almanac with a few winds entered and one part way."""
+    for i, (wind, who) in enumerate(zip(game.winds[:5], ("Juno", "Bram", "Mara", "Juno", "Quill"))):
+        game.almanac[wind["id"]] = (70 + i, who, 3 + i * 2)
+    game.flown = {game.winds[6]["id"]: 2}
+    game.pages = True
+
+
 def book(game) -> None:
     """The visitors' book at a mast, with a line half written."""
     import dataclasses
@@ -196,6 +204,8 @@ def main(argv) -> int:
             name = f"chart-near-{width}x{height}-{depth}.html"
             (OUT / name).write_text(page(fly(width, height, depth, turns=("c", "z", "z"), setup=frontier), name),
                                     encoding="utf-8")
+            name = f"almanac-{width}x{height}-{depth}.html"
+            (OUT / name).write_text(page(fly(width, height, depth, turns=(), setup=almanac), name), encoding="utf-8")
             name = f"book-{width}x{height}-{depth}.html"
             (OUT / name).write_text(page(fly(width, height, depth, turns=(), setup=book), name), encoding="utf-8")
             name = f"help-{width}x{height}-{depth}.html"
