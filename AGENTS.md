@@ -30,8 +30,10 @@ play-testing it: what they have said so far, and what was changed for it, is
 on the P3 tracker (issue #4). From that play-test came the last-stretch moves
 (trail rope, mail drop, cargo sent on by road, a wait) and a pass over how the
 screen reads. Of P4, S14 (the chart: what is seen from the basket is charted
-for everyone, features are found and named) is built at the owner's asking,
-ahead of the play-test's verdict. The next slice is S15, stations and masts.
+for everyone, features are found and named) and S15 (stations planted in the
+wild, kept stocked, and raised into mooring masts with freight from the
+towns) are built at the owner's asking, ahead of the play-test's verdict. The
+next slice is S16: stranding, rescue and guestbooks.
 
 To look at a screen, run `python scripts/capture.py`: it writes each size and
 colour depth as an HTML page under `.test-tmp/captures`, which headless Edge

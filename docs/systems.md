@@ -244,8 +244,9 @@ an hour ahead, 6 km/h at three hours, 11 km/h at a day.
 
 Coverage is the best nearby station: 1 at the station, falling to 0 at 150 km,
 scaled by the station's stock. Towns and masts count as full stations. Inside
-the Gyre's bands coverage is capped. Stations arrive in S15; until then the
-caller of the weather passes the coverage in.
+the Gyre's bands coverage is capped (with the Gyre's own slice). The weather
+is given the coverage by its caller; the game works it out from the towns and
+the stations as they stand (section 7).
 
 **What the pilot knows.** The true wind in the current layer at the current
 place. Forecast wind everywhere else, out to the instrument's horizon: 6, 10 or
@@ -394,8 +395,7 @@ on fewer than half. S12's contracts keep this shape: several destinations a
 day, and the wind picks.
 
 **Placeholders, each replaced by the slice named.** Walking out and the packet
-boat happen at a key press (S16). Forecast coverage counts towns and the three starting stations
-(S15). The pilot's record holds the plain flight's own fields (the post
+boat happen at a key press (S16). The pilot's record holds the plain flight's own fields (the post
 aboard, the last places delivered to, deliveries, days flown, distance, the
 log) as one JSON text; S11 to S13 give them columns and tables of their own.
 
@@ -658,6 +658,75 @@ restored. Forecast coverage is section 4.
 required freight from towns. Contributions are recorded per pilot. A mast gives
 full coverage, a lit landing at night and in fog, fuel, and a post office with
 contracts. Masts do not lapse.
+
+**As built (S15).** The tables are `STATION_APART_KM`, `STOCK_FULL`,
+`STOCK_SHARP`, `KIT_PRICE`, `KIT_WEIGHT`, `PLANT_POINTS`, `RESUPPLY_PAY`,
+`RESUPPLY_POINTS`, `CRATE_PRICE`, `CRATE_WEIGHT`, `CRATE_PAY`, `CRATE_POINTS`
+and `MAST_CRATES`.
+
+This is the second answer to the owner's question of what there is to do
+where the wind has put a pilot down: plant something there.
+
+| | Postmarks | Weight | Points |
+| --- | --- | --- | --- |
+| A station kit, at a town | costs 50 | 3 | 25 for planting it |
+| A day of stock put back | pays 2 | | 1 for every two |
+| A crate of mast freight, at a town | costs 10 | 3 | |
+| A crate unloaded at a station | pays 25 | | 10 |
+
+- **Three kinds of station.** The world's first three are the Post's own:
+  staffed, always in full report, with a post office and stores, as before.
+  A planted station is a hut of instruments with nobody in it. A mast is a
+  planted station the Post has taken over.
+- **A kit** is bought at a town's post office (`K`; `K` again hands it back
+  for what it cost). A pilot carries one at most. It counts against the lift.
+- **Planting.** `K` on the ground in the wild, at least 60 km from every town
+  and every station. The station is named from the generator's word lists by
+  a keyed draw on the spot: no caller's text. Two pilots planting within 60
+  km of each other at the same moment plant one; the second keeps the kit.
+- **Stock.** 14 days when planted or restocked, one less each world day (the
+  world's calendar, not the pilot's logbook). Nothing is written as the days
+  pass: the records hold the stock on the day it was last put right. With 7
+  days or more the station reports in full; below that in proportion; at
+  none it is silent. It stays on the map, drawn dim, and can be restored.
+- **Restocking.** Landing at a planted station (within 12.5 km) sees to it:
+  the stock is full again and each day put back pays. It is settled where it
+  is written, so two pilots landing together are not both paid for the same
+  days.
+- **Coverage.** The best of every town, mast and station within reach: 1 at
+  the place, falling to 0 at 150 km (300 with the wireless), times the
+  station's report. Every pilot's forecast is sharper around a station
+  another pilot planted; a session takes in new stations every 20 seconds.
+- **Mast freight.** Crates are bought at a town (`T`; `Y` hands one back).
+  They are bound for no station in particular: whichever planted station
+  the pilot lands at takes as many as it still wants and pays for each. The
+  wind picks the station, as it picks the town.
+- **Raising.** Four crates raise a mast, from however many pilots; who gave
+  how many is recorded (`contributions`). The landing that brings the fourth
+  raises it, once, inside its own write. A station never takes more crates
+  than it wants; the rest stay aboard.
+- **A mast** is a place of the Post from then on: full report for good, a lit
+  field (night and fog do not worsen a landing there), fuel, sacks, pibals
+  and mending at the station's price, a post office with two mailbags a day,
+  and a destination for the post of the towns around it. Its post office
+  names the pilots whose freight raised it. Being out of fuel there is not a
+  stranding. A planted station gives none of that: a pilot down there with
+  no fuel is stranded, as anywhere in the wild.
+- **Lost at sea.** A ditching loses the kit and the crates with the post.
+- The map draws a station as `+` (dim when silent) and a mast as `Y`; the
+  chart of the continent shows them too.
+- The records gain two tables, `stations` and `contributions`, and the schema
+  is version 3. A world from before is brought forward when it is next
+  opened. A build from before this one refuses a world at version 3.
+- A visitor, or a caller whose records cannot be kept, plants and raises for
+  that visit only.
+
+**Not yet built here.** Nothing may be planted in the Gyre's inner band and
+coverage is capped in its bands: both come with the Gyre. Guestbooks are S16.
+
+**Not yet tuned.** Whether fourteen days is the right life for a station on
+a node with one caller, and four crates the right price of a mast, is for
+play.
 
 **Rescue.** A stranded pilot is shown on every chart with what they need. Any
 pilot may fly it in. Both are rewarded, once. The stranded pilot resumes from
