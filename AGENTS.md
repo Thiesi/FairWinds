@@ -36,7 +36,9 @@ towns) and S16 (a stranded pilot's call for help on every map, rescue by
 landing beside them, and the stations' visitors' books) are built at the
 owner's asking, ahead of the play-test's verdict. S17 (the chart of the whole
 continent: isobars, pan, zoom, find, names, the route so far) is built too.
-The next slice is S18, the almanac.
+S18 (the almanac: each world's local winds, entered by flying them on three
+days) is built as well, which completes P4. The next slice is S19, the Daily
+Drift, the first of P5.
 
 To look at a screen, run `python scripts/capture.py`: it writes each size and
 colour depth as an HTML page under `.test-tmp/captures`, which headless Edge
