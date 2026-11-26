@@ -545,12 +545,12 @@ class Screens(PlainCase):
         text = self.screen(game, view="help")
         for key in ("W S", "A D", "Enter", "J ", "P ", "L ", "M ", "O ", "G rigging loft", "B a station", "H ", "N ", "?", "Ctrl-L", "Q "):
             self.assertIn(key, text)
-        for glyph in ("@", "#", "o", "+", "~", "%", "Q a pilot", "! stranded pilot"):
+        for glyph in ("@", "#", "o", "+", "~", "%", "Q a pilot", "! stranded"):
             self.assertIn(glyph, text)
         for heading in ("FLYING", "ON THE GROUND", "THE MAP", "GOOD TO KNOW"):
             self.assertIn(heading, text)
         self.assertNotIn("`", text, "the marks that say what is a key are not shown")
-        self.assertIn("all is saved", text)
+        self.assertIn("Q leave (saved)", text)
         self.assertIn("A world day is flown once", text)
         self.assertLessEqual(len(fw.PLAIN_HELP), 21, "help fits the screen above the key row")
         self.assertIn("12 km from a place is there", text)

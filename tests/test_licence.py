@@ -172,7 +172,7 @@ class Grades(LicenceCase):
 
 class Gear(LicenceCase):
     def test_every_track_and_tier_is_in_the_table(self):
-        self.assertEqual(set(fw.TRACKS), {"envelope", "burner", "tanks", "instruments", "wireless", "night", "oxygen"})
+        self.assertEqual(set(fw.TRACKS), {"envelope", "burner", "tanks", "instruments", "wireless", "night", "oxygen", "camera"})
         for track in fw.TRACKS:
             tiers = fw.UPGRADES[track]["tiers"]
             self.assertNotIn("price", tiers[0], "the first tier is what a balloon starts with")
@@ -359,7 +359,7 @@ class Loft(LicenceCase):
             self.assertIn("next      III    450 pm  not enough postmarks", text)
             self.assertIn("next      fit    300 pm  sold to Wind-readers", text)
             self.assertIn("ENVELOPE  stripes in teal, cream, coral, cream", text)
-            self.assertIn("[1-7] Fit the next", text)
+            self.assertIn("[1-8] Fit the next", text)
         for changes in ({"color_depth": "16"}, {"charset": "cp437", "color_depth": "16"}, {"charset": "ascii"}):
             other = self.game(user_id=400 + len(changes), **changes)
             other.key("g")
