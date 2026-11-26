@@ -3486,7 +3486,10 @@ def my_drift(db, day: int, user_id: int) -> dict | None:
 # --------------------------------------------------------------------------
 
 TRIAL_MEDALS = ("no medal", "bronze", "silver", "gold")
-TRIAL_KM = (30.0, 15.0, 6.0)         # down this near the mark: bronze, silver, gold
+TRIAL_KM = (30.0, 15.0, 6.0)         # down this near the mark: bronze, silver, gold; and on a short trial...
+TRIAL_SHARE = (0.75, 0.4, 0.15)      # ...no further than this share of the way from the start to the mark
+TRIAL_GOLD_KM = 3.0                  # but gold is never asked for nearer than this
+TUTORIAL_SPARE_TURNS = 20            # the first flight leaves room to look about
 TRIAL_PAY = (0, 5, 12, 25)           # postmarks a medal is worth; a better one pays the difference
 TRIAL_SPARE_TURNS = 8                # turns allowed beyond the flight the trial was laid by
 TRIAL_DAY = 500                      # the weather of the trials is the weather of days from here on, for good
@@ -3542,10 +3545,10 @@ TRIAL_HELP = (
     "  Six lessons, each done once: looking at the layers, launching, a pibal,",
     "  a sack of ballast, sinking, landing. The log says what to press.",
     "# MEDALS",
-    "  Each trial has a mark, `X`. Come down on land",
-    "  within 6 km of it for gold, within 15 km for silver, within 30 km for",
-    "  bronze. Water wins nothing. Every mark can be reached: it is where a",
-    "  flight that can be flown comes down.",
+    "  Each trial has a mark, `X`. Come down on land within 6 km of it for",
+    "  gold, within 15 km for silver, within 30 km for bronze: nearer than",
+    "  that on a short trial, as the log says when it begins. Water wins",
+    "  nothing. Every mark can be reached: a flight that can be flown ends there.",
     "  A trial allows eight turns more than that flight took; then the",
     "  balloon comes down where it is.",
     "  Your best medal for each trial is kept. A medal pays 5, 12 or 25",
@@ -3605,11 +3608,23 @@ def trial_course(world: "World", weather: "Weather", index: int) -> dict:
     return kept[index]
 
 
-def trial_medal(km: float, down: str) -> int:
+def trial_limits(trip: float) -> tuple[float, float, float]:
+    """How near the mark wins bronze, silver and gold in a trial whose mark is so far from its start.
+
+    The distances of TRIAL_KM, or on a short trial a share of the way: so
+    that coming down where the flight began never wins anything.
+    """
+    gold = min(TRIAL_KM[2], max(TRIAL_GOLD_KM, TRIAL_SHARE[2] * trip))
+    silver = min(TRIAL_KM[1], max(gold, TRIAL_SHARE[1] * trip))
+    bronze = min(TRIAL_KM[0], max(silver, TRIAL_SHARE[0] * trip))
+    return bronze, silver, gold
+
+
+def trial_medal(km: float, down: str, trip: float = 1000.0) -> int:
     """The medal a landing wins: 0 none, 1 bronze, 2 silver, 3 gold. Only a balloon down on land wins one."""
     if down not in ("ground", "stranded"):
         return 0
-    return sum(1 for limit in TRIAL_KM if km <= limit)
+    return sum(1 for limit in trial_limits(trip) if km <= limit)
 
 
 # --------------------------------------------------------------------------
@@ -4238,7 +4253,7 @@ class PlainFlight:
                               "due": self.today + FIRST_ROUND_DAYS})
         self.log = []
         self._say(f"You are at {start['name']}. There is post aboard for {self._names()}.")
-        self._say("Read the winds and fly to whichever the day favours.")
+        self._say("Read the winds and fly to whichever the day favours. New to it? R teaches.")
 
     _imported = False
     _dated = False                        # the pilot's days are the world's days
@@ -4698,8 +4713,9 @@ class PlainFlight:
         spec = TUTORIAL if index < 0 else TRIALS[index]
         course = trial_course(self.world, self.weather, index)
         self._main = (self.state, self.engine, self.gear, self.choice, self.log, self.heard)
+        spare = TUTORIAL_SPARE_TURNS if index < 0 else TRIAL_SPARE_TURNS
         self.drift = {"course": course, "scored": False, "kind": "trial", "trial": index, "from": spec["start"],
-                      "turns": len(spec["script"]) + TRIAL_SPARE_TURNS, "title": spec["name"], "step": 0}
+                      "turns": len(spec["script"]) + spare, "title": spec["name"], "step": 0, "done": set()}
         self.state = trial_state(spec, course["x"], course["y"], course["day"])
         self.engine = Flight(self.world, self.weather, "trial")
         self.gear = {track: 0 for track in TRACKS}
@@ -4708,31 +4724,50 @@ class PlainFlight:
         if index < 0:
             self._say(TUTOR_STEPS[0][1])
         else:
-            self._say(f"{spec['name']}. {spec['about']}")
-            self._say(f"From {course['start']} to the mark, {math.sqrt(dx * dx + dy * dy):.0f} km {bearing(dx, dy)}. "
-                      f"X twice leaves.")
+            trip = math.sqrt(dx * dx + dy * dy)
+            bronze, silver, gold = trial_limits(trip)
+            self._say(f"{spec['name']}. {spec['about']} The mark is {trip:.0f} km {bearing(dx, dy)}.")
+            self._say(f"Gold within {gold:.0f} km of it, silver {silver:.0f}, bronze {bronze:.0f}. X twice leaves.")
         self._choose_default()
 
     def _tutor(self, did: str) -> None:
-        """The first flight: a lesson is passed by doing what it asks for, and the next is said."""
+        """The first flight: a lesson is passed by doing what it asks for, in whatever order.
+
+        The log asks for the first lesson not yet done. A caller who
+        launches before looking has passed the launch, and is asked to look.
+        """
         drift = self.drift
-        if drift is None or drift.get("trial", 0) >= 0 or drift["step"] >= len(TUTOR_STEPS):
+        names = [step[0] for step in TUTOR_STEPS]
+        if drift is None or drift.get("trial", 0) >= 0 or did not in names or did in drift["done"]:
             return
-        if did != TUTOR_STEPS[drift["step"]][0]:
-            return
-        drift["step"] += 1
-        if drift["step"] < len(TUTOR_STEPS):
-            self._say(TUTOR_STEPS[drift["step"]][1])
+        drift["done"].add(did)
+        drift["step"] = len(drift["done"])
+        todo = next((text for name, text in TUTOR_STEPS if name not in drift["done"]), None)
+        if todo is not None:
+            self._say(todo)
 
     def _trial_end(self, left: bool) -> None:
         """A trial is over, or left: the pilot's own flight is taken up again, and a better medal is kept."""
         drift, state = self.drift, self.state
         course, index = drift["course"], drift["trial"]
         km = math.sqrt((state.x - course["mx"]) ** 2 + (state.y - course["my"]) ** 2)
-        medal = trial_medal(km, state.status)
+        trip = math.sqrt((course["x"] - course["mx"]) ** 2 + (course["y"] - course["my"]) ** 2)
+        # A trial that could not be laid out in this world has no flight to vouch for its mark: it wins nothing.
+        medal = trial_medal(km, state.status, trip) if course["gold"] else 0
         self.state, self.engine, self.gear, self.choice, self.log, self.heard = self._main
         self.drift, self._main, self.trials = None, None, True
         self.frames_left = 0
+        kept = (list(self.medals), self.postmarks, self.taught)
+
+        def keep() -> bool:
+            """Write the pilot's record, with no line in the journal: a trial is not a turn of theirs. If it
+            cannot be written the medal is not held either, or it would be shown and paid and then gone."""
+            self.save()
+            if self.store is not None and (self.ended or not self.saved_ok):
+                self.medals, self.postmarks, self.taught = kept
+                self.trial_note = "That could not be written down, so it does not stand. Fly it again."
+                return False
+            return True
         if left:
             self.trial_note = "Left. It is there to be flown again."
         elif index < 0:
@@ -4740,7 +4775,7 @@ class PlainFlight:
                 first, self.taught = not self.taught, True
                 self.trial_note = "Down, and every lesson done. That is all there is to flying: the rest is the wind."
                 if first:
-                    self.save("trial")
+                    keep()
             else:
                 self.trial_note = (f"Down with {len(TUTOR_STEPS) - drift['step']} of the lessons still to do. "
                                    f"Fly it again any time.")
@@ -4751,12 +4786,14 @@ class PlainFlight:
                 pay = TRIAL_PAY[medal] - TRIAL_PAY[self.medals[index]]
                 self.medals = self.medals[:index] + [medal] + self.medals[index + 1:]
                 self.postmarks += pay
-                self.save("trial")
                 self.trial_note = f"{name}: down {how}. {TRIAL_MEDALS[medal].capitalize()}, and {pay} postmarks."
+                keep()
             elif medal:
                 self.trial_note = f"{name}: down {how}. {TRIAL_MEDALS[medal].capitalize()}: no better than your best."
+            elif not course["gold"]:
+                self.trial_note = f"{name} cannot be laid out in this world: there is no medal to be had in it."
             else:
-                self.trial_note = f"{name}: down {how}. No medal: bronze is within {TRIAL_KM[0]:.0f} km."
+                self.trial_note = f"{name}: down {how}. No medal: bronze is within {trial_limits(trip)[0]:.0f} km."
         self._choose_default()
 
     def _draw_trials(self, s: "Session") -> list[str]:
@@ -6892,7 +6929,9 @@ class PlainFlight:
             office = office + [("B", "Book")]
         if phase == "ground":
             wait = [("H", "Wait")] if self.state.turn < DAY_TURNS else []
-            return [("Enter", "Launch")] + office + wait + [("N", "Night"), ("?", "Help"), leave]
+            # A pilot who has not flown the first flight is shown the way to it; after that it is in the help.
+            learn = [("R", "Learn")] if not self.taught else []
+            return [("Enter", "Launch")] + learn + office + wait + [("N", "Night"), ("?", "Help"), leave]
         if phase == "stranded":
             return [("W", "Walk out")] + office + [("?", "Help"), leave]
         if phase == "ditched":

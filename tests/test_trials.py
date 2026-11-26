@@ -63,8 +63,13 @@ class Courses(unittest.TestCase):
                     self.assertIn(action, engine.actions(state), (node, spec["name"], action))
                     state = engine.step(state, action).state
                 km = math.hypot(state.x - course["mx"], state.y - course["my"])
-                self.assertEqual((fw.trial_medal(km, state.status), state.status), (3, "ground"), (node, spec["name"]))
+                trip = math.hypot(course["mx"] - course["x"], course["my"] - course["y"])
+                self.assertEqual((fw.trial_medal(km, state.status, trip), state.status), (3, "ground"),
+                                 (node, spec["name"]))
                 self.assertLessEqual(state.turn - spec["start"], len(spec["script"]) + fw.TRIAL_SPARE_TURNS)
+                if index >= 0:
+                    self.assertEqual(fw.trial_medal(trip, "ground", trip), 0,
+                                     (node, spec["name"], "coming down where it began wins nothing"))
                 self.assertGreaterEqual(world.sample(course["mx"], course["my"])[1], fw.SHORE)
                 if index >= 0:
                     self.assertGreaterEqual(math.hypot(course["mx"] - course["x"], course["my"] - course["y"]),
@@ -94,6 +99,12 @@ class Courses(unittest.TestCase):
     def test_medals_by_distance_and_only_on_land(self):
         self.assertEqual([fw.trial_medal(km, "ground") for km in (0.0, 6.0, 6.1, 15.0, 15.1, 30.0, 30.1)],
                          [3, 3, 2, 2, 1, 1, 0])
+        self.assertEqual(fw.trial_limits(200.0), (30.0, 15.0, 6.0), "a long trial: the distances of the table")
+        self.assertEqual(fw.trial_limits(20.0), (15.0, 8.0, 3.0), "a short one: a share of the way")
+        self.assertEqual(fw.trial_limits(10.0), (7.5, 4.0, 3.0))
+        for trip in (10.0, 12.0, 25.0, 39.0, 60.0, 300.0):
+            bronze, silver, gold = fw.trial_limits(trip)
+            self.assertTrue(gold <= silver <= bronze < trip, trip)
         self.assertEqual(fw.trial_medal(1.0, "ditched"), 0)
         self.assertEqual(fw.trial_medal(1.0, "aloft"), 0)
         self.assertEqual(fw.trial_medal(1.0, "stranded"), 3, "down on land out of fuel is still down on land")
@@ -101,7 +112,7 @@ class Courses(unittest.TestCase):
 
     def test_the_help_says_how_medals_are_won(self):
         text = " ".join(fw.TRIAL_HELP)
-        for word in ("within 6 km of it for gold", "within 15 km for silver", "within 30 km for", "Water wins nothing",
+        for word in ("within 6 km of it for", "within 15 km for silver", "within 30 km for bronze", "short trial",
                      "eight turns more", "cost no day", "5, 12 or 25"):
             self.assertIn(word, text)
         self.assertLessEqual(len(fw.TRIAL_HELP), 21)
@@ -139,21 +150,38 @@ class FirstFlight(TrialCase):
         self.assertEqual([step[0] for step in fw.TUTOR_STEPS], ["look", "launch", "pibal", "jettison", "sink", "land"])
         self.assertTrue(all(len(step[1]) < 230 for step in fw.TUTOR_STEPS))
 
-    def test_a_lesson_is_not_passed_by_doing_something_else(self):
+    def test_lessons_are_passed_in_whatever_order_and_only_by_doing_them(self):
         game = self.game()
         self.open(game, -1)
         game.key("ENTER")                                 # launched without looking first
-        self.assertEqual(game.drift["step"], 0)
+        self.assertEqual(game.drift["done"], {"launch"})
+        self.assertTrue(any("Press W or S" in line for line in game.heard), "the lesson still open is asked for")
         game.key("w")
-        self.assertEqual(game.drift["step"], 1, "looking is looking, whenever it is done")
+        self.assertEqual(game.drift["done"], {"launch", "look"})
+        self.assertTrue(any("P sends up a pibal" in line for line in game.heard))
         game.choice = "hold"
         game.key("ENTER")
-        self.assertEqual(game.drift["step"], 1, "a hold is not a launch")
-        game.key("l")
+        self.assertEqual(game.drift["step"], 2, "a hold is no lesson")
+        game.key("w")
+        self.assertEqual(game.drift["step"], 2, "and a lesson is passed once")
+        game.choice = "land"
         game.key("ENTER")
         self.assertIsNone(game.drift)
         self.assertFalse(game.taught)
-        self.assertIn("lessons still to do", game.trial_note)
+        self.assertIn("3 of the lessons still to do", game.trial_note)
+
+    def test_the_first_flight_leaves_room_to_look_about(self):
+        game = self.game()
+        self.open(game, -1)
+        self.assertEqual(game.drift["turns"], len(fw.TUTORIAL["script"]) + fw.TUTORIAL_SPARE_TURNS)
+        self.assertGreaterEqual(game.drift["turns"], 24)
+
+    def test_a_new_pilot_is_shown_the_way_to_it(self):
+        game = self.game()
+        self.assertIn("R teaches", " ".join(game.log))
+        self.assertIn("[R] Learn", self.screen(game))
+        game.taught = True
+        self.assertNotIn("[R] Learn", self.screen(game))
 
 
 class Medals(TrialCase):
@@ -192,6 +220,54 @@ class Medals(TrialCase):
         self.fly(game, ("launch", "land"))                # down on the doorstep: far from the mark
         self.assertEqual(game.medals[0], 3)
         self.assertEqual(game.postmarks, was + fw.TRIAL_PAY[3] - fw.TRIAL_PAY[1])
+
+    def test_a_medal_that_cannot_be_written_does_not_stand(self):
+        import sqlite3
+        game = self.game()
+        was, real = game.postmarks, game.store.commit
+
+        def broken(*args, **kwargs):
+            raise sqlite3.OperationalError("disk I/O error")
+        self.open(game, 0)
+        game.store.commit = broken
+        self.fly(game, fw.trial_course(game.world, game.weather, 0)["gold"])
+        game.store.commit = real
+        self.assertEqual((game.medals[0], game.postmarks), (0, was))
+        self.assertIn("could not be written down", game.trial_note)
+        game.saved_ok = True
+        self.gold(game, 0)
+        self.assertEqual((game.medals[0], game.postmarks), (3, was + fw.TRIAL_PAY[3]))
+
+    def test_coming_down_where_it_began_wins_nothing(self):
+        game = self.game()
+        for index in range(len(fw.TRIALS)):
+            self.open(game, index)
+            self.assertTrue(any("Gold within" in line for line in game.log), "the log says what wins what")
+            if "land" not in game.offered():
+                game.key("ENTER")
+            for _ in range(40):
+                if game.drift is None:
+                    break
+                if "land" in game.offered():
+                    game.choice = "land"
+                elif "sink" in game.offered():
+                    game.choice = "sink"
+                else:
+                    game.choice = "hold"
+                game.key("ENTER")
+            self.assertEqual(game.medals[index], 0, fw.TRIALS[index]["name"])
+
+    def test_a_trial_that_could_not_be_laid_out_has_no_medal(self):
+        game = self.game()
+        town = game.world.towns[0]
+        game.world.__dict__.setdefault("_trials", {})[5] = {
+            "day": 600, "start": town["name"], "x": town["x"], "y": town["y"], "mx": town["x"], "my": town["y"],
+            "gold": []}
+        self.open(game, 5)
+        self.fly(game, ("launch", "land"))
+        self.assertEqual(game.medals[5], 0)
+        self.assertIn("cannot be laid out in this world", game.trial_note)
+        del game.world.__dict__["_trials"][5]
 
     def test_time_runs_out_and_leaving_takes_two_presses(self):
         game = self.game()
@@ -247,7 +323,10 @@ class LeftAlone(TrialCase):
         self.assertEqual(self.rows("SELECT count(*) FROM drifts"), [(0,)])
         self.assertEqual(support.stored(self.folder)["seq"], seq, "no medal: nothing at all is written")
         self.assertIsNone(game.pending_scene)
+        journal = game.store.journal(12)
         self.gold(game, 2)
+        self.assertEqual(game.store.journal(12), journal, "a medal is no line in the day's journal")
+        self.assertEqual(support.stored(self.folder)["seq"], seq, "nor a turn of the pilot's")
         saved = support.stored(self.folder)
         self.assertEqual((saved["state"]["day"], saved["state"]["turn"], saved["state"]["x"]),
                          (before[0].day, before[0].turn, before[0].x), "a medal is written to the pilot and nothing else")

@@ -982,7 +982,12 @@ and `TRIAL_FAR_KM`; the rules a caller reads are `TRIAL_HELP`.
   land at least 10 km from its start. So every trial has a flight to gold,
   in every world, and the tests fly each of them in five worlds.
 - **Medals.** Down on land within 6 km of the mark is gold, within 15 km
-  silver, within 30 km bronze. Water wins nothing. A trial allows eight
+  silver, within 30 km bronze; on a short trial, no further than 15, 40 and
+  75 percent of the way from the start to the mark (gold never nearer than
+  3 km), so that coming down where the flight began wins nothing. The log
+  says the three distances when a trial begins. Water wins nothing. A trial
+  that could not be laid out in some world (no day in 120 lets its flight be
+  flown) has no medal there. A trial allows eight
   turns more than its own flight took; then the balloon comes down where it
   is. The best medal for each trial is kept in the pilot's record. A medal
   is worth 5, 12 or 25 postmarks, paid the first time, and a better one pays
@@ -1007,18 +1012,23 @@ and `TRIAL_FAR_KM`; the rules a caller reads are `TRIAL_HELP`.
 - **The first flight** is the tutorial: the same machinery, with six lessons
   said in the log one at a time and passed by doing what each asks: look at
   another layer (the preview), launch (the commit), send up a pibal, drop a
-  sack, sink, land. A lesson is not passed by doing something else. Landing
-  with every lesson done marks the pilot as taught. Scripted, it is eleven
-  keys.
+  sack, sink, land. A lesson is passed by doing what it asks, in whatever
+  order: the log asks for the first one not yet done. It allows twenty turns
+  more than its own flight. Landing with every lesson done marks the pilot
+  as taught. Scripted, it is eleven keys. Until then the ground's key line
+  offers `R`, and a new pilot's first log line names it.
 - **What they leave alone.** As the Drift: the pilot's own flight is set
   aside, and nothing of a trial is written but a better medal, in the
-  pilot's own record. No day, no chart, no table.
+  pilot's own record, with no line in the day's journal: a trial is not a
+  turn of theirs. A medal that cannot be written does not stand. No day, no
+  chart, no table.
 - No schema change: medals and the first flight are in the pilot's record.
 
 **Not yet tuned.** The medal distances and the trials themselves are a first
 table: they were laid out by what the engine allows, not by how they feel.
-The plan's "squall line" and "threading a pass" are not among them, because
-a flight through a squall is not the same flight twice.
+The plan's "squall line" and "threading a pass" are put off, not dropped: a
+flight through a squall is not the same flight twice, and a pass needs a
+mark set between two features, which this table of flights cannot say.
 
 ## 9. Wonders, seasons and the Gyre
 
