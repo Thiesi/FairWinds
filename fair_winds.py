@@ -3534,7 +3534,8 @@ TUTOR_STEPS = (
     ("pibal", "A wind marked ~ is a forecast. P sends up a pibal: for four turns every layer is read true. Press P."),
     ("jettison", "Climbing burns fuel. A sack over the side climbs for nothing: press J, then Enter."),
     ("sink", "Sinking is free. Press S for the layer below, then Enter."),
-    ("land", "You land from the lowest layer: press L, then Enter. A gentle ground wind makes a clean landing."),
+    ("land", "Last, because it ends the flight: you land from the lowest layer. Press L, then Enter. A gentle "
+             "ground wind makes a clean landing."),
 )
 TRIAL_HELP = (
     "# THE TRIALS",
@@ -3614,9 +3615,10 @@ def trial_limits(trip: float) -> tuple[float, float, float]:
     The distances of TRIAL_KM, or on a short trial a share of the way: so
     that coming down where the flight began never wins anything.
     """
-    gold = min(TRIAL_KM[2], max(TRIAL_GOLD_KM, TRIAL_SHARE[2] * trip))
-    silver = min(TRIAL_KM[1], max(gold, TRIAL_SHARE[1] * trip))
-    bronze = min(TRIAL_KM[0], max(silver, TRIAL_SHARE[0] * trip))
+    # In whole km, rounded down: what the log says is exactly what is asked.
+    gold = float(int(min(TRIAL_KM[2], max(TRIAL_GOLD_KM, TRIAL_SHARE[2] * trip))))
+    silver = float(int(min(TRIAL_KM[1], max(gold, TRIAL_SHARE[1] * trip))))
+    bronze = float(int(min(TRIAL_KM[0], max(silver, TRIAL_SHARE[0] * trip))))
     return bronze, silver, gold
 
 

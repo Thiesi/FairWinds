@@ -101,7 +101,8 @@ class Courses(unittest.TestCase):
                          [3, 3, 2, 2, 1, 1, 0])
         self.assertEqual(fw.trial_limits(200.0), (30.0, 15.0, 6.0), "a long trial: the distances of the table")
         self.assertEqual(fw.trial_limits(20.0), (15.0, 8.0, 3.0), "a short one: a share of the way")
-        self.assertEqual(fw.trial_limits(10.0), (7.5, 4.0, 3.0))
+        self.assertEqual(fw.trial_limits(10.0), (7.0, 4.0, 3.0), "whole km, rounded down: the log says what is asked")
+        self.assertTrue(all(limit == int(limit) for trip in range(10, 300, 7) for limit in fw.trial_limits(float(trip))))
         for trip in (10.0, 12.0, 25.0, 39.0, 60.0, 300.0):
             bronze, silver, gold = fw.trial_limits(trip)
             self.assertTrue(gold <= silver <= bronze < trip, trip)
@@ -125,10 +126,11 @@ class FirstFlight(TrialCase):
         began = time.monotonic()
         self.open(game, -1)
         self.assertIn("W and S look at the layer above", " ".join(game.log))
+        self.assertIn("Last, because it ends the flight", fw.TUTOR_STEPS[-1][1])
         said = []
         for keys, lesson in ((("w", "s"), "Enter flies what you are looking at"), (("ENTER",), "P sends up a pibal"),
                              (("p",), "A sack over the side"), (("j", "ENTER"), "Sinking is free"),
-                             (("s", "ENTER"), "You land from the lowest layer")):
+                             (("s", "ENTER"), "you land from the lowest layer")):
             for key in keys:
                 game.key(key)
             said.append(any(lesson in line for line in game.heard))
@@ -180,6 +182,12 @@ class FirstFlight(TrialCase):
         game = self.game()
         self.assertIn("R teaches", " ".join(game.log))
         self.assertIn("[R] Learn", self.screen(game))
+        game.kits = 1                                     # every key the ground can offer at once, at 80 columns
+        station = game.stations[0]
+        game.state = dataclasses.replace(game.state, x=station["x"], y=station["y"])
+        text = self.screen(game)
+        for key in ("[Enter] Launch", "[R] Learn", "[N] Night", "[Q]"):
+            self.assertIn(key, text)
         game.taught = True
         self.assertNotIn("[R] Learn", self.screen(game))
 
