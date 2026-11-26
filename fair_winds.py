@@ -1452,8 +1452,9 @@ class Flight:
         if over_there < GYRE_WALL_LAYER and self.wall_stops(state.x, state.y, x, y):
             # The wall of the Gyre lets nothing through below its layer: the balloon is thrown back where it
             # was, before any ground ahead is met or paid for.
+            # Thrown back from outside it costs wear. Held inside it does not: the eye's air is still.
+            wear += GYRE_WEAR if self.gyre_km(state.x, state.y) > GYRE_WALL_KM else 0
             x, y = state.x, state.y
-            wear += GYRE_WEAR
             events.append(("wall",))
         elif need > layer:
             # High ground ahead fills this layer.
@@ -1478,7 +1479,7 @@ class Flight:
         if moved:
             events.append(("drift", round(moved, 1), compass(vx, vy)))
         if self.gyre_km(x, y) <= GYRE_EYE_KM < self.gyre_km(state.x, state.y):
-            events.append(("eye",))
+            events.append(("eye",))                     # for what is said of it; what it earns goes by being there
         after = dataclasses.replace(state, x=x, y=y, layer=layer, status="aloft", fuel=fuel, ballast=ballast,
                                     wear=wear, turn=state.turn + 1, distance=state.distance + moved)
         if stranded:
@@ -6859,7 +6860,7 @@ class PlainFlight:
         if wind is not None and wind["id"] not in self.almanac:
             deeds.append((lambda db: fly_wind(db, wind["id"], launch.user_id, launch.handle, day),
                           lambda done: self._wind_flown(wind, done, day)))
-        if not self.eye and self.state.status == "aloft" and \
+        if not self.eye and self.state.status != "ditched" and \
                 self.engine.gyre_km(self.state.x, self.state.y) <= GYRE_EYE_KM:
             # In the eye of the Gyre and not yet written down as having been: written with this turn. By where
             # the balloon is, not by the turn it came in on, so that a turn that could not be written is made

@@ -1197,7 +1197,7 @@ on the node to arrive. What a later version puts there is out of scope.
   wall, or across it, is thrown back where it was and takes 4 wear: the
   whole of the move is tried, not where it ends. It is thrown back before
   any ground ahead is met, so it pays for no climb it did not make. From the
-  eye, nothing below layer 5 gets out. A balloon that is already in the wall
+  eye, nothing below layer 5 gets out; being held inside costs no wear. A balloon that is already in the wall
   below layer 5 (it came down there at midnight, or sank there) is not held:
   the wind carries it about and out, though not into the eye. A track that
   would run into the wall ends there and says why, by the same rule as the
@@ -1210,8 +1210,8 @@ on the node to arrive. What a later version puts there is out of scope.
   outside the inner band: there is a way in on most days in four of the
   five worlds tried and on about one day in forty in the fifth, whose Gyre
   lies by the coast.
-- **The eye.** A pilot aloft inside 30 km who is not yet written down as
-  having been there is written down with that turn (so a turn that could
+- **The eye.** A pilot inside 30 km, aloft or down there, who is not yet
+  written down as having been there is written down with that turn (so a turn that could
   not be written is made good by the next): 50 postmarks and 30 points,
   once for each pilot. A Drift or a trial flown into the eye is on another
   balloon and counts for nothing. The

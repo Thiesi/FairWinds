@@ -172,6 +172,7 @@ class Wall(unittest.TestCase):
             held = out.step(aloft(x, y, layer=low, ceiling=6, oxygen=True, fuel=40), "hold")
             self.assertIn(("wall",), held.events)
             self.assertEqual((held.state.x, held.state.layer), (x, low))
+            self.assertEqual(held.state.wear, 0, "held in the still air: no wear")
             self.assertFalse(any(event[0] in ("forced_climb", "ridge") for event in held.events),
                              "thrown back before any ground ahead is met")
         high = out.step(aloft(x, y, layer=fw.GYRE_WALL_LAYER, ceiling=6, oxygen=True), "hold")
@@ -333,9 +334,12 @@ class Eye(RescueCase):
         self.assertEqual(self.rows("SELECT count(*) FROM hall"), [(0,)])
         while game.naming:
             game.key("1")
-        game.choice = "hold"
+        low = game.engine.lowest_open(game.state.x, game.state.y)
+        game.state = dataclasses.replace(game.state, layer=low)
+        game.choice = "land"
         game.key("ENTER")
-        self.assertTrue(game.eye, "still in the eye: the next turn writes it")
+        self.assertNotEqual(game.state.status, "aloft")
+        self.assertTrue(game.eye, "still in the eye, and down in it: the next turn writes it all the same")
         self.assertGreaterEqual(game.postmarks, was + fw.EYE_PAY[1])
         self.assertEqual(self.rows("SELECT handle FROM hall"), [("Ada",)])
 
