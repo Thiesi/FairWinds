@@ -1194,8 +1194,14 @@ on the node to arrive. What a later version puts there is out of scope.
   band and to nothing inside the inner one, after every station has been
   counted. A track drawn there is a guess from its first turn.
 - **The wall.** A balloon below layer 5 whose turn would carry it into the
-  wall is thrown back where it was and takes 4 wear. A track that would run
-  into it ends there and says why. A first balloon tops out at layer 3 and
+  wall, or across it, is thrown back where it was and takes 4 wear: the
+  whole of the move is tried, not where it ends. It is thrown back before
+  any ground ahead is met, so it pays for no climb it did not make. From the
+  eye, nothing below layer 5 gets out. A balloon that is already in the wall
+  below layer 5 (it came down there at midnight, or sank there) is not held:
+  the wind carries it about and out, though not into the eye. A track that
+  would run into the wall ends there and says why, by the same rule as the
+  turn. A first balloon tops out at layer 3 and
   an Envelope II at layer 4: neither ever gets in. Envelope III does.
 - **The way in.** The Gyre turns anticlockwise and draws air inward, so a
   balloon held in layer 5 inside the inner band spirals toward the middle,
@@ -1204,13 +1210,20 @@ on the node to arrive. What a later version puts there is out of scope.
   outside the inner band: there is a way in on most days in four of the
   five worlds tried and on about one day in forty in the fifth, whose Gyre
   lies by the coast.
-- **The eye.** The turn that first carries a pilot inside 30 km is written
-  with their arrival: 50 postmarks and 30 points, once for each pilot. The
+- **The eye.** A pilot aloft inside 30 km who is not yet written down as
+  having been there is written down with that turn (so a turn that could
+  not be written is made good by the next): 50 postmarks and 30 points,
+  once for each pilot. A Drift or a trial flown into the eye is on another
+  balloon and counts for nothing. The
   first on the node is written in the hall, once however many arrive
   together, and has 200 and 100.
 - **The hall** (`hall`) is what was done first on the node and is kept for
   good. It has one line so far. It is shown on the season's screen.
 - **The chart** draws the inner band and the wall as rings of dots.
+- **What stood there before.** No town and none of the world's first
+  stations is within the inner band in any world tried (a test holds five
+  to that). A station a pilot planted inside it before this build stays on
+  the map and says nothing of the weather.
 - The records gain `hall`, and the schema is version 9.
 
 **Not yet built here.** The engine, the plan's other way through the wall,

@@ -125,6 +125,66 @@ class Wall(unittest.TestCase):
         self.assertNotIn(("wall",), through.events)
         self.assertTrue(engine.in_wall(through.state.x, through.state.y))
 
+    def test_a_fast_wind_does_not_carry_a_balloon_over_the_wall_in_one_bound(self):
+        engine = flight(wind=(-560.0, 0.0))               # 140 km in a turn: from outside the wall to past it
+        x, y = GYRE["x"] + fw.GYRE_WALL_KM + 5.0, GYRE["y"]
+        for layer in range(1, fw.GYRE_WALL_LAYER):
+            if layer < max(engine.lowest_open(x, y), engine.lowest_open(x - 140.0, y)):
+                continue
+            state = aloft(x, y, layer=layer, ceiling=4)
+            self.assertFalse(engine.in_wall(x - 140.0, y), "it would end clear of the wall on the far side")
+            result = engine.step(state, "hold")
+            self.assertEqual((result.state.x, result.state.y), (x, y), layer)
+            self.assertIn(("wall",), result.events)
+            self.assertEqual(engine.preview(state, "hold", 4)["stop"], "wall")
+        into = flight(wind=(-140.0, 0.0))                 # thirty-five km: from outside straight into the eye
+        result = into.step(aloft(x, y, layer=min(4, max(1, into.lowest_open(x, y))), ceiling=4), "hold")
+        self.assertNotIn(("eye",), result.events)
+        self.assertGreater(into.gyre_km(result.state.x, result.state.y), fw.GYRE_WALL_KM)
+        self.assertTrue(engine.wall_stops(x, y, x - 140.0, y))
+        self.assertFalse(engine.wall_stops(x, y, x, y + 300.0), "a move that stays clear of it is not stopped")
+        self.assertTrue(engine.wall_stops(GYRE["x"] - 200.0, GYRE["y"] + 40.0, GYRE["x"] + 200.0, GYRE["y"] + 40.0),
+                        "nor is the wall crossed by a move that only grazes it and ends far beyond")
+
+    def test_a_balloon_down_in_the_wall_is_not_trapped_there(self):
+        out = flight(wind=(60.0, 0.0))                    # blowing outward
+        x, y = GYRE["x"] + 45.0, GYRE["y"]
+        low = out.lowest_open(x, y)
+        if low >= fw.GYRE_WALL_LAYER:
+            self.skipTest("the ground there fills every layer below the wall's")
+        ground = dataclasses.replace(aloft(x, y, layer=0, ceiling=3), status="ground")
+        up = out.step(ground, "launch")
+        self.assertNotIn(("wall",), up.events, "a launch from inside the wall is not thrown back")
+        self.assertEqual(up.state.wear, ground.wear)
+        self.assertGreater(out.gyre_km(up.state.x, up.state.y), 45.0, "and the wind carries it out")
+        inward = flight(wind=(-80.0, 0.0))
+        held = inward.step(aloft(x, y, layer=low, ceiling=3), "hold")
+        self.assertIn(("wall",), held.events, "but not into the eye")
+        self.assertEqual(held.state.x, x)
+        still = flight(wind=(0.0, 20.0))
+        self.assertNotIn(("wall",), still.step(aloft(x, y, layer=low, ceiling=3), "hold").events, "about in it: yes")
+
+    def test_nothing_below_the_walls_layer_leaves_the_eye_and_what_is_paid_for_is_only_what_was_done(self):
+        out = flight(wind=(80.0, 0.0))
+        x, y = GYRE["x"] + 20.0, GYRE["y"]
+        low = out.lowest_open(x, y)
+        if low < fw.GYRE_WALL_LAYER:
+            held = out.step(aloft(x, y, layer=low, ceiling=6, oxygen=True, fuel=40), "hold")
+            self.assertIn(("wall",), held.events)
+            self.assertEqual((held.state.x, held.state.layer), (x, low))
+            self.assertFalse(any(event[0] in ("forced_climb", "ridge") for event in held.events),
+                             "thrown back before any ground ahead is met")
+        high = out.step(aloft(x, y, layer=fw.GYRE_WALL_LAYER, ceiling=6, oxygen=True), "hold")
+        self.assertNotIn(("wall",), high.events)
+
+    def test_no_town_and_no_first_station_stands_inside_the_inner_band(self):
+        for node in ("test-node", "relink-test", "a", "b", "zeta"):
+            world = fw.World(fw.world_seed(node))
+            gyre = world.gyre
+            for place in world.towns + world.stations:
+                self.assertGreater(math.hypot(place["x"] - gyre["x"], place["y"] - gyre["y"]), fw.GYRE_INNER_KM,
+                                   (node, place["name"]))
+
     def test_a_first_balloon_never_gets_in(self):
         engine = flight(wind=(-60.0, 0.0))
         x, y = GYRE["x"] + fw.GYRE_WALL_KM + 10.0, GYRE["y"]
@@ -253,6 +313,31 @@ class Eye(RescueCase):
         self.assertEqual(self.rows("SELECT user_id FROM hall"), [(1,)])
         self.assertTrue(support.stored(self.folder, 2)["eye"], "and it is in the pilot's record: once is once")
         b.close()
+
+    def test_an_arrival_that_could_not_be_written_is_made_good_by_the_next_turn(self):
+        game = self.game(handle="Ada")
+        gyre = game.world.gyre
+        self.late_balloon(game)
+        game.state = dataclasses.replace(game.state, x=gyre["x"] + 5.0, y=gyre["y"], status="aloft", layer=5, fuel=60,
+                                         turn=20)
+        game._choose_default()
+        was, real = game.postmarks, game.store.commit
+
+        def broken(*args, **kwargs):
+            raise sqlite3.OperationalError("disk I/O error")
+        game.store.commit = broken
+        game.choice = "hold"
+        game.key("ENTER")
+        game.store.commit = real
+        self.assertEqual((game.eye, game.postmarks), (False, was))
+        self.assertEqual(self.rows("SELECT count(*) FROM hall"), [(0,)])
+        while game.naming:
+            game.key("1")
+        game.choice = "hold"
+        game.key("ENTER")
+        self.assertTrue(game.eye, "still in the eye: the next turn writes it")
+        self.assertGreaterEqual(game.postmarks, was + fw.EYE_PAY[1])
+        self.assertEqual(self.rows("SELECT handle FROM hall"), [("Ada",)])
 
     WORKER = ("import sys; sys.path.insert(0, sys.argv[1]); import fair_winds as fw\n"
               "user = int(sys.argv[3])\n"

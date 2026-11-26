@@ -1314,6 +1314,29 @@ class Flight:
         """Is this place in the wall of the Gyre: between the eye and the wall's outer edge?"""
         return GYRE_EYE_KM < self.gyre_km(x, y) <= GYRE_WALL_KM
 
+    def wall_stops(self, x0: float, y0: float, x1: float, y1: float) -> bool:
+        """Does the wall of the Gyre stop a balloon below its layer from making this move?
+
+        The whole of the move is tried, not where it ends: a fast wind
+        does not carry a balloon over the wall in one bound.
+
+        From outside, nothing gets into the wall. From the eye, nothing
+        gets out of it. A balloon already in the wall (it came down there,
+        or sank there) is not held: it may be carried about in it and out
+        of it, but not into the eye.
+        """
+        gyre = self.world.gyre
+        dx, dy = x1 - x0, y1 - y0
+        length2 = dx * dx + dy * dy
+        t = 0.0 if length2 <= 0.0 else max(0.0, min(1.0, ((gyre["x"] - x0) * dx + (gyre["y"] - y0) * dy) / length2))
+        nearest = self.gyre_km(x0 + dx * t, y0 + dy * t)       # the closest the move comes to the middle
+        start, end = self.gyre_km(x0, y0), self.gyre_km(x1, y1)
+        if start > GYRE_WALL_KM:
+            return nearest <= GYRE_WALL_KM
+        if start <= GYRE_EYE_KM:
+            return end > GYRE_EYE_KM
+        return nearest <= GYRE_EYE_KM
+
     def is_night(self, state: FlightState) -> bool:
         return state.minute >= DUSK_MINUTE
 
@@ -1424,7 +1447,15 @@ class Flight:
         x, y = state.x + vx * TURN_HOURS, state.y + vy * TURN_HOURS
         stranded = False
         need = self.lowest_open(x, y)
-        if need > layer:
+        # The layer the balloon would be in over there: its own, or the one high ground would force it up to.
+        over_there = need if layer < need <= self.top_layer(state) else layer
+        if over_there < GYRE_WALL_LAYER and self.wall_stops(state.x, state.y, x, y):
+            # The wall of the Gyre lets nothing through below its layer: the balloon is thrown back where it
+            # was, before any ground ahead is met or paid for.
+            x, y = state.x, state.y
+            wear += GYRE_WEAR
+            events.append(("wall",))
+        elif need > layer:
             # High ground ahead fills this layer.
             if need > self.top_layer(state):
                 x, y = state.x, state.y                 # it cannot be crossed: held in its lee
@@ -1443,11 +1474,6 @@ class Flight:
                         stranded = True
                         break
                     layer += 1
-        if layer < GYRE_WALL_LAYER and self.in_wall(x, y):
-            # The wall of the Gyre lets nothing through below its layer: the balloon is thrown back where it was.
-            x, y = state.x, state.y
-            wear += GYRE_WEAR
-            events.append(("wall",))
         moved = math.sqrt((x - state.x) * (x - state.x) + (y - state.y) * (y - state.y))
         if moved:
             events.append(("drift", round(moved, 1), compass(vx, vy)))
@@ -1568,10 +1594,10 @@ class Flight:
             if action in ("left", "right") and layer == first:
                 vx, vy = roped(vx, vy, action)          # the track of staying on the rope, while it still reaches
             nx, ny = x + vx * TURN_HOURS, y + vy * TURN_HOURS
-            if layer < GYRE_WALL_LAYER and self.in_wall(nx, ny):
-                stop = "wall"                           # the track ends at the wall of the Gyre
-                break
             need = self.lowest_open(nx, ny)
+            if (need if layer < need <= top else layer) < GYRE_WALL_LAYER and self.wall_stops(x, y, nx, ny):
+                stop = "wall"                           # the track ends at the wall of the Gyre, as the turn would
+                break
             if need > layer:
                 blocked = True
                 if need > top:
@@ -6833,12 +6859,15 @@ class PlainFlight:
         if wind is not None and wind["id"] not in self.almanac:
             deeds.append((lambda db: fly_wind(db, wind["id"], launch.user_id, launch.handle, day),
                           lambda done: self._wind_flown(wind, done, day)))
-        if not self.eye and any(event[0] == "eye" for event in result.events):
-            # Into the eye of the Gyre for the first time: written with the turn that got there.
+        if not self.eye and self.state.status == "aloft" and \
+                self.engine.gyre_km(self.state.x, self.state.y) <= GYRE_EYE_KM:
+            # In the eye of the Gyre and not yet written down as having been: written with this turn. By where
+            # the balloon is, not by the turn it came in on, so that a turn that could not be written is made
+            # good by the next.
             deeds.append((lambda db: enter_hall(db, "eye", launch.user_id, launch.handle, day), self._in_the_eye))
         if deeds:
             self.save(action, seen, lambda db: [deed(db) for deed, _ in deeds],
-                      lambda done: [earn(result) for (_, earn), result in zip(deeds, done)])
+                      lambda done: [earn(got) for (_, earn), got in zip(deeds, done)])
             if self._almanac_stale:
                 self._almanac_stale = False
                 self._see_almanac()       # the wind is on the map from the next paint, under whoever entered it
