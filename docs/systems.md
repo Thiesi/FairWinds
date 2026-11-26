@@ -767,8 +767,9 @@ tool lists and removes lines.
 - **Once.** A call is answered inside the rescuer's own write, by the first
   to arrive; a second is told somebody was there before them and keeps their
   fuel. What was brought is taken inside the stranded pilot's own write,
-  which removes the call. A pilot who presses `W` after help has come is
-  not walked away from it.
+  which removes the call. Walking out takes the call down in the same write
+  as the walk: if help came first, even in that instant, the fuel is taken
+  and nobody walks.
 - **The visitors' books.** `B` on the ground at a station: one of the first
   three, a planted one, or a mast. Towns keep none. The book shows its
   latest 12 lines, newest first, with the day and the pilot. `W` writes a
@@ -777,7 +778,9 @@ tool lists and removes lines.
   day.
 - **What may be in a line.** Printable characters only, runs of space made
   one, 60 characters at most: so no control characters and no escape
-  sequences. It is cleaned when it is written and again when it is shown,
+  sequences. Accented letters stay; marks that stack on a letter and
+  characters two cells wide are dropped, so a line cannot push the screen's
+  edge about. It is cleaned when it is written and again when it is shown,
   and it is shown as plain text, never as markup.
 - **`DOOR_FW_GUESTBOOK`.** `on` (the default, and what any other value
   means): as above. `canned`: nothing is typed; the pilot signs with one of
@@ -786,7 +789,8 @@ tool lists and removes lines.
 - **The SysOp.** `python fair_winds.py --guestbook` lists every line of every
   world in the data directory, each beginning with its name
   (`world:number`); `--guestbook-remove world:number` removes one. Both are
-  safe while callers play.
+  safe while callers play. The pilot whose line was removed may sign that
+  book again the same day.
 - The records gain `calls` and `guestbook`, and the schema is version 4.
 - A visitor's call and lines are that visit's only.
 

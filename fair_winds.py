@@ -3112,6 +3112,18 @@ CANNED = ("Fair winds to whoever reads this.", "Came in on the last of the fuel.
           "Mind the high ground to windward.", "Passing through. Clear skies.")
 
 
+def book_text(value: str) -> str:
+    """A line fit for a visitors' book: printable, and one cell of the screen to a character.
+
+    Accents written as one letter stay (a caller may sign in their own
+    language). Marks that stack on a letter, and characters two cells
+    wide, go: a line of them would push the screen's edge about.
+    """
+    kept = "".join(ch for ch in value if not unicodedata.category(ch).startswith("M")
+                   and unicodedata.east_asian_width(ch) not in ("W", "F"))
+    return clean_text(kept, GUESTBOOK_LIMIT)
+
+
 def need_text(fuel: int, repair) -> str:
     """What a stranded pilot is waiting for, in a few words."""
     parts = ([f"{fuel} fuel"] if fuel else []) + (["patches"] if repair else [])
@@ -3138,9 +3150,15 @@ def end_call(db, user_id: int) -> dict | None:
     return None if row is None else {"fuel": row[0], "repair": row[1], "by_user": row[2], "by_handle": row[3]}
 
 
-def answer_call(db, who: int, by_user: int, by_handle: str) -> dict | None:
-    """Reach a stranded pilot. None if somebody already has, or they have gone: a call is answered once."""
-    row = db.execute("SELECT fuel, repair FROM calls WHERE user_id=? AND by_user IS NULL", (who,)).fetchone()
+def answer_call(db, who: int, by_user: int, by_handle: str, spare: int = 10 ** 6) -> dict | None:
+    """Reach a stranded pilot. None if somebody already has, or they have gone: a call is answered once.
+
+    spare is the fuel the rescuer can give. The call as it stands in the
+    records is the one answered, not the one the rescuer last read; if it
+    now wants more than can be spared it is left for somebody else.
+    """
+    row = db.execute("SELECT fuel, repair FROM calls WHERE user_id=? AND by_user IS NULL AND fuel<=?",
+                     (who, spare)).fetchone()
     if row is None:
         return None
     db.execute("UPDATE calls SET by_user=?, by_handle=? WHERE user_id=?", (by_user, by_handle, who))
@@ -3156,13 +3174,16 @@ def read_book(db, station: int, limit: int = GUESTBOOK_SHOWN) -> list[tuple]:
 def sign_book(db, station: int, user_id: int, handle: str, day: int, text: str) -> bool:
     """One line for each pilot, station and world day. False if today's is written."""
     return db.execute("INSERT OR IGNORE INTO guestbook (station, user_id, handle, day, text) VALUES (?, ?, ?, ?, ?)",
-                      (station, user_id, handle, day, clean_text(text, GUESTBOOK_LIMIT))).rowcount == 1
+                      (station, user_id, handle, day, book_text(text))).rowcount == 1
 
 
 def guestbook_lines(folder: Path) -> list[str]:
     """Every line in every book of a data folder, for the SysOp: each with the name to remove it by."""
     lines = []
     for path in sorted(Path(folder).glob("fair_winds-*.db")):
+        world = path.stem[len("fair_winds-"):]
+        if len(world) != 16 or any(c not in "0123456789abcdef" for c in world):
+            continue                            # not named as a world is: --guestbook-remove could not name it
         db = sqlite3.connect(str(path), timeout=BUSY_TIMEOUT_SECONDS)
         try:
             rows = db.execute("SELECT id, station, day, handle, text FROM guestbook ORDER BY id").fetchall()
@@ -4171,8 +4192,9 @@ class PlainFlight:
         """With no records to share, the stations of this visit are its own: kept in memory, in the same tables."""
         if self._own is None:
             self._own = sqlite3.connect(":memory:", isolation_level=None)
-            for statement in MIGRATIONS[3] + MIGRATIONS[4]:
-                self._own.execute(statement)
+            for step in range(3, SCHEMA_VERSION + 1):     # every table of the shared world; none of the pilots'
+                for statement in MIGRATIONS[step]:
+                    self._own.execute(statement)
             for station in self.stations[len(self.world.stations):]:      # what was known when the records went
                 self._own.execute("INSERT INTO stations VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)",
                                   tuple(station[k] for k in ("id", "name", "x", "y", "handle", "day", "stock",
@@ -4181,6 +4203,8 @@ class PlainFlight:
 
     def _see_stations(self) -> bool:
         """Take in what has been planted, stocked and raised. True if anything is new."""
+        if self.store is None and self._own is None and len(self.stations) == len(self.world.stations):
+            return False                  # no records, and nothing planted on this visit: there is nothing to read
         try:
             rows = self.store.stations() if self.store is not None else read_stations(self._own_db())
         except sqlite3.Error:
@@ -4213,7 +4237,8 @@ class PlainFlight:
         if self.store is None:
             apply(deed(self._own_db()))
             return True
-        kept = (self.postmarks, self.points, self.kits, self.crates, list(self.log), list(self.heard), self.state)
+        kept = (self.postmarks, self.points, self.kits, self.crates, list(self.log), list(self.heard), self.state,
+                list(self.manifest), list(self.taken), self.deliveries, self.days_flown, self.total_km)
 
         def career(new, found, done):
             apply(done)
@@ -4223,7 +4248,8 @@ class PlainFlight:
             self.saved_ok = True
             return True
         except (LeaseLost, sqlite3.Error) as error:
-            self.postmarks, self.points, self.kits, self.crates, self.log, self.heard, self.state = kept
+            (self.postmarks, self.points, self.kits, self.crates, self.log, self.heard, self.state,
+             self.manifest, self.taken, self.deliveries, self.days_flown, self.total_km) = kept
             if isinstance(error, LeaseLost):
                 self.ended = "taken"
             else:
@@ -4310,6 +4336,8 @@ class PlainFlight:
 
     def _see_calls(self) -> bool:
         """Who is stranded and waiting; and whether somebody has reached this pilot. True if anything is new."""
+        if self.store is None and self._own is None:
+            return False                  # no records, and nothing of this visit's own yet
         try:
             rows = self._read(read_calls)
         except sqlite3.Error:
@@ -4339,19 +4367,22 @@ class PlainFlight:
         elif self._deed("call", lambda db: end_call(db, launch.user_id), lambda done: None):
             self._called = False
 
+    def _take_help(self, done: dict | None) -> bool:
+        """Take what a rescuer brought, if one came. Called inside the write that takes the call down."""
+        if done is None or done["by_user"] is None:
+            return False
+        state = self.state
+        self.state = dataclasses.replace(
+            state, fuel=min(self.tank(), state.fuel + done["fuel"]),
+            wear=min(state.wear, RELIEF["wear"]) if done["repair"] else state.wear,
+            status="ground" if state.status == "stranded" else state.status)
+        who = clean_text(done["by_handle"] or "", 16) or "A pilot"
+        self._say(f"{who} reached you with {need_text(done['fuel'], done['repair'])}. You can fly on.")
+        return True
+
     def _rescued(self) -> None:
         """Somebody reached this pilot while they waited: take what was brought, once."""
-        def apply(done):
-            if done is None or done["by_user"] is None:
-                return
-            state = self.state
-            self.state = dataclasses.replace(
-                state, fuel=min(self.tank(), state.fuel + done["fuel"]),
-                wear=min(state.wear, RELIEF["wear"]) if done["repair"] else state.wear,
-                status="ground" if state.status == "stranded" else state.status)
-            who = clean_text(done["by_handle"] or "", 16) or "A pilot"
-            self._say(f"{who} reached you with {need_text(done['fuel'], done['repair'])}. You can fly on.")
-        if self._deed("rescued", lambda db: end_call(db, self.launch.user_id), apply):
+        if self._deed("rescued", lambda db: end_call(db, self.launch.user_id), self._take_help):
             self._called = False
             self._choose_default()
 
@@ -4365,7 +4396,8 @@ class PlainFlight:
             if (call["x"] - self.state.x) ** 2 + (call["y"] - self.state.y) ** 2 > PLACE_RADIUS_KM ** 2:
                 continue
             who = clean_text(call["handle"], 16) or "A pilot"
-            if self.state.fuel - call["fuel"] < COST_LAUNCH:
+            spare = self.state.fuel - COST_LAUNCH
+            if call["fuel"] > spare:
                 self._say(f"{who} is stranded here and wants {call['fuel']} fuel: more than you can spare.")
                 continue
 
@@ -4373,13 +4405,13 @@ class PlainFlight:
                 if done is None:
                     self._say(f"Somebody reached {who} before you.")
                     return
-                self.state = dataclasses.replace(self.state, fuel=self.state.fuel - done["fuel"])
+                self.state = dataclasses.replace(self.state, fuel=max(0, self.state.fuel - done["fuel"]))
                 self.postmarks += RESCUE_PAY
                 self.points += RESCUE_POINTS
                 self._say(f"You reach {who} with {need_text(done['fuel'], done['repair'])}: {RESCUE_PAY} postmarks "
                           f"from the Post, and their thanks.")
-            self._deed("rescue", lambda db, call=call: answer_call(db, call["user_id"], launch.user_id,
-                                                                   launch.handle), apply)
+            self._deed("rescue", lambda db, call=call, spare=spare: answer_call(
+                db, call["user_id"], launch.user_id, launch.handle, spare), apply)
         self._see_calls()
         self._promote()
 
@@ -4415,18 +4447,20 @@ class PlainFlight:
         if key == "ESC" or self.book is None:
             self.writing = None
         elif key == "ENTER":
-            text, self.writing = clean_text(self.writing, GUESTBOOK_LIMIT), None
+            text, self.writing = book_text(self.writing), None
             if text:
                 self._sign(text)
+            else:
+                self.book["note"] = "Nothing written."
         elif key in ("BACKSPACE", "DELETE"):
             self.writing = self.writing[:-1]
-        elif len(key) == 1 and key.isprintable() and len(self.writing) < GUESTBOOK_LIMIT:
-            self.writing += key
+        elif len(key) == 1 and book_text(f"a{key}a") == f"a{key}a" and len(self.writing) < GUESTBOOK_LIMIT:
+            self.writing += key           # (a lone space would be trimmed away: it is tried between letters)
 
     def _sign(self, text: str) -> None:
         station, launch, book = self.book["station"], self.launch, self.book
-        if self.store is not None and not self._mine(write=False):
-            return
+        if self.book_place() != station or (self.store is not None and not self._mine(write=False)):
+            return                        # the pilot is no longer at this station: nothing is signed from afar
 
         def apply(done):
             book["note"] = "Signed." if done else "You have signed this book today: one line a day."
@@ -4447,7 +4481,7 @@ class PlainFlight:
             out.append(s._line(2, 1, "Nobody has signed it yet.", "dim"))
         for i, (day, handle, text) in enumerate(book["lines"][:max(1, room)]):
             # Shown as plain text, and cleaned again here: what is in the records is not trusted to be clean.
-            line = f"Day {int(day)}  {clean_text(str(handle), 16)}: {clean_text(str(text), GUESTBOOK_LIMIT)}"
+            line = f"Day {int(day)}  {book_text(str(handle))[:16]}: {book_text(str(text))}"
             out.append(s._line(2 + i, 1, line[:wide], "text"))
         if canned:
             top = s.height - 4 - len(CANNED)
@@ -5241,9 +5275,14 @@ class PlainFlight:
                                          x=state.x if x is None else x, y=state.y if y is None else y)
         self._choose_default()
 
-    def _dawn(self) -> str:
-        """What to say of the day the logbook has come to: it is here, or when it will be."""
-        self._look_at_the_calendar()
+    def _dawn(self, look: bool = True) -> str:
+        """What to say of the day the logbook has come to: it is here, or when it will be.
+
+        look=False inside a write: looking at the calendar may open a day,
+        which is a write of its own.
+        """
+        if look:
+            self._look_at_the_calendar()
         self._catch_up()                  # days that lapsed while this one was in progress
         if not self.waiting():
             return f"Day {self.state.day}. Dawn."
@@ -5260,14 +5299,22 @@ class PlainFlight:
         return min(towns, key=lambda t: ((t["x"] - self.state.x) ** 2 + (t["y"] - self.state.y) ** 2, t["cell"]))
 
     def _walk_out(self) -> None:
-        if self._see_calls() and self.phase() != "stranded":
-            return                        # help came while the pilot was making up their mind
-        town = self._nearest(self.world.towns)
-        self._new_day(2, town["x"], town["y"])
-        self._say(f"Two days on foot to {town['name']}. {self._dawn()}")
-        self._landed(arrived=True)        # the post came along, and some of it may be for here
-        self.save("walk")
-        self._sync_call()                 # nobody need come looking now
+        if self.store is not None and not self._mine(write=False):
+            return
+        self._look_at_the_calendar()      # now, not inside the write below
+
+        def apply(done):
+            # The call comes down in the same write as the walk. If somebody reached the pilot first, even in
+            # this instant, their fuel is taken and nobody walks: a rescuer is never paid for nothing.
+            if self._take_help(done):
+                return
+            town = self._nearest(self.world.towns)
+            self._new_day(2, town["x"], town["y"])
+            self._say(f"Two days on foot to {town['name']}. {self._dawn(look=False)}")
+            self._landed(arrived=True)    # the post came along, and some of it may be for here
+        if self._deed("walk", lambda db: end_call(db, self.launch.user_id), apply):
+            self._called = False
+        self._choose_default()
 
     def _picked_up(self) -> None:
         ports = [t for t in self.world.towns if t["port"]] or self.world.towns

@@ -209,6 +209,62 @@ class Rescue(RescueCase):
         self.assertEqual((a.state.day, a.state.x, a.state.fuel), (day, x, fw.RESCUE_FUEL))
         b.close()
 
+    def test_a_rescuer_in_the_instant_of_walking_out_is_not_paid_for_nothing(self):
+        a = self.game(user_id=1)
+        b = self.other(2, handle="Bo")
+        x, y = self.strand(a)
+        b._day_may_have_opened()
+        self.down(b, x, y)
+        real = fw.end_call
+        day = a.state.day
+
+        def late(db, user_id):
+            # Bo's write lands after Ada pressed W and before her walk is written.
+            fw.answer_call(db, 1, 2, "Bo")
+            return real(db, user_id)
+        fw.end_call = late
+        try:
+            a.key("w")
+        finally:
+            fw.end_call = real
+        self.assertEqual((a.state.day, a.state.x, a.state.fuel, a.state.status), (day, x, fw.RESCUE_FUEL, "ground"))
+        self.assertTrue(any("Bo reached you" in line for line in a.heard))
+        self.assertEqual(support.stored(self.folder, 1)["state"]["fuel"], fw.RESCUE_FUEL)
+        self.assertEqual(self.rows("SELECT count(*) FROM calls"), [(0,)])
+        b.close()
+
+    def test_a_call_that_now_wants_more_than_can_be_spared_is_left(self):
+        a = self.game(user_id=1)
+        b = self.other(2)
+        x, y = self.strand(a, fuel=10)                    # wants 5
+        b._day_may_have_opened()
+        self.down(b, x, y, fuel=8)                        # can spare 6
+        db = sqlite3.connect(str(next(self.folder.glob("fair_winds-*.db"))))
+        db.execute("UPDATE calls SET fuel=15")            # stranded again since, and dry this time
+        db.commit()
+        db.close()
+        real = b._see_calls
+        b._see_calls = lambda: False
+        b._rescue()
+        b._see_calls = real
+        self.assertEqual(b.state.fuel, 8)
+        self.assertEqual(self.rows("SELECT by_user FROM calls"), [(None,)])
+        b.close()
+
+    def test_a_walk_that_cannot_be_written_did_not_happen(self):
+        a = self.game(user_id=1)
+        x, y = self.strand(a)
+        was = (a.state, list(a.manifest), a.days_flown)
+        real = a.store.commit
+
+        def broken(*args, **kwargs):
+            raise sqlite3.OperationalError("disk I/O error")
+        a.store.commit = broken
+        a.key("w")
+        a.store.commit = real
+        self.assertEqual((a.state, a.manifest, a.days_flown), was)
+        self.assertEqual(self.rows("SELECT count(*) FROM calls"), [(1,)])
+
     def test_rescued_while_away(self):
         a = self.game(user_id=1, handle="Ada")
         x, y = self.strand(a)
@@ -329,6 +385,28 @@ class Book(RescueCase):
         game = self.game()
         self.at_station(game)
         self.write(game, "   ")
+        self.assertEqual(self.rows("SELECT count(*) FROM guestbook"), [(0,)])
+        self.assertEqual(game.book["note"], "Nothing written.")
+
+    def test_a_line_keeps_to_one_cell_a_character(self):
+        self.assertEqual(fw.book_text("Gr\u00fc\u00dfe aus K\u00f6ln"), "Gr\u00fc\u00dfe aus K\u00f6ln", "letters of a language stay")
+        self.assertEqual(fw.book_text("z\u0301\u0302\u0303a\u0336lgo"), "zalgo", "marks stacked on a letter go")
+        self.assertEqual(fw.book_text("wide \u6f22\u5b57 \uff37 here"), "wide here", "and what is two cells wide")
+        self.assertEqual(fw.book_text("x" * 200), "x" * fw.GUESTBOOK_LIMIT)
+        game = self.game()
+        self.at_station(game)
+        game.key("b")
+        game.key("w")
+        for key in ("a", "\u0301", "\u6f22", " ", "\u00fc"):
+            game.key(key)
+        self.assertEqual(game.writing, "a \u00fc")
+
+    def test_nothing_is_signed_from_afar(self):
+        game = self.game()
+        self.at_station(game)
+        game.key("b")
+        game.state = dataclasses.replace(game.state, x=game.state.x + 100.0)
+        game._sign("left behind")
         self.assertEqual(self.rows("SELECT count(*) FROM guestbook"), [(0,)])
 
     def test_what_is_in_the_records_is_cleaned_again_when_shown(self):
