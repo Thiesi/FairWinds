@@ -191,6 +191,11 @@ def main(argv) -> int:
                                     encoding="utf-8")
             name = f"frontier-{width}x{height}-{depth}.html"
             (OUT / name).write_text(page(fly(width, height, depth, turns=(), setup=frontier), name), encoding="utf-8")
+            name = f"chart-{width}x{height}-{depth}.html"
+            (OUT / name).write_text(page(fly(width, height, depth, turns=("c",), setup=frontier), name), encoding="utf-8")
+            name = f"chart-near-{width}x{height}-{depth}.html"
+            (OUT / name).write_text(page(fly(width, height, depth, turns=("c", "z", "z"), setup=frontier), name),
+                                    encoding="utf-8")
             name = f"book-{width}x{height}-{depth}.html"
             (OUT / name).write_text(page(fly(width, height, depth, turns=(), setup=book), name), encoding="utf-8")
             name = f"help-{width}x{height}-{depth}.html"

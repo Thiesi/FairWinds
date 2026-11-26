@@ -552,7 +552,8 @@ class Atlas(ChartCase):
         game.key("c")
         for size in ((80, 24), (100, 30), (132, 40), (168, 46), (250, 70), (80, 60)):
             text = self.screen(game, *size)
-            self.assertIn("Most cells charted: Mara", text)
+            self.assertIn("Most cells charted: Mara" if size[0] < fw.ATLAS_PANEL_FROM else "most land charted", text)
+            self.assertIn("Mara", text)
             self.assertIn("@", text)
         for changes in ({"color_depth": "16"}, {"charset": "cp437", "color_depth": "16"}, {"charset": "ascii"},
                         {"color_depth": "256"}):

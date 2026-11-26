@@ -33,7 +33,7 @@ import zoneinfo
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "0.1.0.dev22"
+VERSION = "0.1.0.dev23"
 DOOR_API = 5
 MIN_WIDTH, MIN_HEIGHT = 80, 24
 MAX_DIMENSION = 1000
@@ -2954,6 +2954,21 @@ FEATURE_WORDS = {
     "hills": (" Downs", " Fells", " Hills"), "range": (" Range", " Teeth", " Heights"),
 }
 FEATURE_LABELS = 8                   # names of features drawn on a map at most
+ATLAS_ZOOMS = (1, 2, 4)              # the chart shows the whole continent, a half of it across, or a quarter
+ISOBAR_HPA = 4.0                     # an isobar at every multiple of this
+ATLAS_PANEL, ATLAS_PANEL_FROM = 38, 120      # the chart's side panel: its width, and the screen width it needs
+ROUTE_KEPT = 40                      # where the last so many flights ended: the route drawn on the chart
+FIND_LIMIT = 24                      # characters in a name looked for
+ISOBAR_DEEP = (992.0, 20.0)          # below this pressure, an isobar at every so many hPa: the Gyre's core is steep
+_ISOBAR_RGB = (236, 242, 252)
+
+
+def isobar_level(pressure: float) -> int:
+    """Which band between two isobars a pressure lies in. An isobar runs wherever two neighbours differ."""
+    deep, step = ISOBAR_DEEP
+    if pressure >= deep:
+        return int(pressure // ISOBAR_HPA)
+    return int(deep // ISOBAR_HPA) - 1 - int((deep - pressure) // step)
 
 
 def cell_at(x: float, y: float) -> int | None:
@@ -3698,6 +3713,11 @@ class PlainFlight:
         self.naming: list = []            # features this pilot has just found and may name
         self.flight_cells = self.flight_pay = 0       # what this flight has charted so far, said when it is down
         self.atlas = False                # the chart of the whole continent is open
+        # Isobars from the start where there are pixels to draw them fine; in characters they are asked for (I).
+        self.atlas_view = {"zoom": 0, "x": WORLD_W / 2, "y": WORLD_H / 2, "isobars": self.map.pixels, "names": True,
+                           "find": None, "note": "", "found": None}
+        self._atlas_made: dict | None = None
+        self.route: list = []             # where each flight ended, oldest first
         self._chart_size = None
         self._share = None
         self._grade_seen = 0
@@ -3782,6 +3802,7 @@ class PlainFlight:
         self.gear, self.points, self.design = {track: 0 for track in TRACKS}, 0, design_of(None)
         self.lift_off, self.charted = None, 0
         self.kits = self.crates = 0
+        self.route = [[round(start["x"], 1), round(start["y"], 1)]]
         self._fit()
         home = ("town", self.world.start_town)
         for dest in places_near(self.world, start["x"], start["y"], skip=home, stations=self.stations)[:POST_CHOICES]:
@@ -3908,6 +3929,9 @@ class PlainFlight:
         kits, crates = int(career.get("kits", 0)), int(career.get("crates", 0))
         if not (0 <= kits <= 1 and 0 <= crates <= 99):
             raise ValueError("no such freight")
+        route = [[float(point[0]), float(point[1])] for point in career.get("route", [])][-ROUTE_KEPT:]
+        if not all(math.isfinite(v) for point in route for v in point):
+            raise ValueError("a route through nowhere")
         self._dated = bool(career.get("dated", False))
         self.state, self.manifest, self.taken = flight, manifest, taken
         self.postmarks, self.next_id = postmarks, next_id
@@ -3915,6 +3939,7 @@ class PlainFlight:
         self.gear, self.points, self.design = gear, max(0, points), design_of(career.get("design"))
         self.charted = max(0, int(career.get("charted", 0)))
         self.kits, self.crates = kits, crates
+        self.route = route
         spot = career.get("lift_off")
         self.lift_off = [float(spot[0]), float(spot[1])] if spot else None
         if self.lift_off is not None and not all(math.isfinite(v) for v in self.lift_off):
@@ -3962,7 +3987,7 @@ class PlainFlight:
     def _career(self) -> dict:
         return {"manifest": self.manifest, "taken": self.taken, "postmarks": self.postmarks, "next_id": self.next_id,
                 "gear": self.gear, "points": self.points, "design": self.design, "lift_off": self.lift_off,
-                "charted": self.charted, "kits": self.kits, "crates": self.crates,
+                "charted": self.charted, "kits": self.kits, "crates": self.crates, "route": self.route,
                 "deliveries": self.deliveries, "days_flown": self.days_flown, "total_km": self.total_km,
                 "log": self.log[-3:], "dated": self._dated}
 
@@ -4238,7 +4263,8 @@ class PlainFlight:
             apply(deed(self._own_db()))
             return True
         kept = (self.postmarks, self.points, self.kits, self.crates, list(self.log), list(self.heard), self.state,
-                list(self.manifest), list(self.taken), self.deliveries, self.days_flown, self.total_km)
+                list(self.manifest), list(self.taken), self.deliveries, self.days_flown, self.total_km,
+                list(self.route))
 
         def career(new, found, done):
             apply(done)
@@ -4249,7 +4275,7 @@ class PlainFlight:
             return True
         except (LeaseLost, sqlite3.Error) as error:
             (self.postmarks, self.points, self.kits, self.crates, self.log, self.heard, self.state,
-             self.manifest, self.taken, self.deliveries, self.days_flown, self.total_km) = kept
+             self.manifest, self.taken, self.deliveries, self.days_flown, self.total_km, self.route) = kept
             if isinstance(error, LeaseLost):
                 self.ended = "taken"
             else:
@@ -4875,6 +4901,10 @@ class PlainFlight:
         if self.writing is not None and self.busy is None and k != "CTRL-C":
             self._write_key(key)          # a line is being written: q and ? are letters like any other
             return None
+        if self.atlas and self.atlas_view["find"] is not None and self.busy is None and k != "CTRL-C" \
+                and not self.naming:
+            self._atlas_key(k, key)       # and so they are in a name being looked for
+            return None
         if k in ("q", "CTRL-C"):
             return "quit"
         if self.busy is not None:
@@ -4889,7 +4919,7 @@ class PlainFlight:
             self._name_it(int(k) - 1 if len(k) == 1 and k.isdigit() else 0)
             return None                   # the key was the name's, whatever it was
         if self.atlas:
-            self.atlas = False
+            self._atlas_key(k, key)
             return None
         if self.book is not None:
             self._book_key(k)
@@ -5029,6 +5059,7 @@ class PlainFlight:
         if landed:
             self._landed()
             self._say_charted()
+            self._route_to(self.state.x, self.state.y)
         self._promote()
         seen = []
         if action != "pibal":
@@ -5222,6 +5253,10 @@ class PlainFlight:
             self.frames_left = BURST_FRAMES
         self._choose_default()
 
+    def _route_to(self, x: float, y: float) -> None:
+        """Another point on the route the chart draws: where a flight, a walk or a boat ended."""
+        self.route = (self.route + [[round(x, 1), round(y, 1)]])[-ROUTE_KEPT:]
+
     def _lost_cargo(self) -> None:
         """Cargo the turn threw overboard or sank: struck from the manifest, and what the table says is forfeit."""
         aboard = {item[0] for item in self.state.cargo}
@@ -5311,6 +5346,7 @@ class PlainFlight:
                 return
             town = self._nearest(self.world.towns)
             self._new_day(2, town["x"], town["y"])
+            self._route_to(town["x"], town["y"])
             self._say(f"Two days on foot to {town['name']}. {self._dawn(look=False)}")
             self._landed(arrived=True)    # the post came along, and some of it may be for here
         if self._deed("walk", lambda db: end_call(db, self.launch.user_id), apply):
@@ -5321,6 +5357,7 @@ class PlainFlight:
         ports = [t for t in self.world.towns if t["port"]] or self.world.towns
         town = self._nearest(ports)
         self._new_day(1, town["x"], town["y"])
+        self._route_to(town["x"], town["y"])
         self._say(f"The packet boat lands you at {town['name']}. {self._dawn()}")
         self._landed(arrived=True)
         self.save("boat")
@@ -5369,68 +5406,310 @@ class PlainFlight:
             length += 3 + plain
         return status                     # marked: figures between backticks, for the line that draws it
 
+    # -- the chart of the whole continent (S17) ----------------------------------
+
+    def _atlas_window(self) -> tuple[float, float, float, float]:
+        """The part of the world the chart shows: its corner, and how wide and tall, in km."""
+        view = self.atlas_view
+        zoom = ATLAS_ZOOMS[view["zoom"]]
+        wide, tall = WORLD_W / zoom, WORLD_H / zoom
+        x0 = min(max(view["x"] - wide / 2, 0.0), WORLD_W - wide)
+        y0 = min(max(view["y"] - tall / 2, 0.0), WORLD_H - tall)
+        return x0, y0, wide, tall
+
+    def _atlas_compose(self, cols: int, rows: int) -> dict:
+        """The chart's ground and isobars for a window of so many cells. Kept until something it shows changes."""
+        view, state, pixels = self.atlas_view, self.state, self.map.pixels
+        x0, y0, wide, tall = self._atlas_window()
+        key = (cols, rows, x0, y0, wide, self.chart_version, len(self.chart), state.day, state.minute,
+               view["isobars"], pixels)
+        if self._atlas_made is not None and self._atlas_made["key"] == key:
+            return self._atlas_made
+        world, chart, known = self.world, self.chart, self.known
+        elevation, biomes = world.chart_elevation, world.chart_biome
+        close = view["zoom"] > 0                # zoomed in: the relief of the map itself, a sample to a pixel
+        tiles: dict = {}
+        n = TILE_N
+        pressure = self.weather.frame(state.day, state.minute).pressure if view["isobars"] else None
+        down = rows * 2 if pixels else rows
+        grid, above = [], None
+        for py in range(down):
+            wy = y0 + (py + 0.5) / down * tall
+            gy = min(CHART_H - 1, int(wy / CHART_KM)) * CHART_W
+            sy = int(wy // SAMPLE_KM)
+            row, levels, left = [], [], None
+            for px in range(cols):
+                wx = x0 + (px + 0.5) / cols * wide
+                cell = gy + min(CHART_W - 1, int(wx / CHART_KM))
+                seen = cell in chart or cell in known
+                line = False
+                if pressure is not None:
+                    # An isobar runs where the pressure passes a multiple of four hPa between two neighbours.
+                    level = isobar_level(pressure(wx, wy))
+                    line = (left is not None and level != left) or (above is not None and level != above[px])
+                    levels.append(level)
+                    left = level
+                if not pixels:
+                    biome = biomes[cell]
+                    row.append(("-", "cool_dim") if line else (_MAP_GLYPHS[biome], _MAP_ROLES[biome] if seen else "dim"))
+                    continue
+                if close:
+                    sx = int(wx // SAMPLE_KM)
+                    tile = tiles.get((sx // n, sy // n))
+                    if tile is None:
+                        tile = tiles[(sx // n, sy // n)] = self.map._tile(sx // n, sy // n)
+                    c = tile[(sy % n) * n + sx % n]
+                else:
+                    c = terrain_rgb(elevation[cell], biomes[cell])
+                if not seen:
+                    c = sketch_rgb(c)
+                if line:
+                    c = _mix(c, _ISOBAR_RGB, 0.5 if seen else 0.3)
+                    c = (int(c[0]), int(c[1]), int(c[2]))
+                row.append(c)
+            grid.append(row)
+            above = levels if pressure is not None else None
+        self._atlas_made = {"key": key, "grid": grid, "window": (x0, y0, wide, tall)}
+        return self._atlas_made
+
+    def _atlas_places(self) -> list[tuple[str, float, float]]:
+        """Everything on the chart with a name, for finding: towns, stations, features found, the stranded, the Gyre."""
+        out = [(town["name"], town["x"], town["y"]) for town in self.world.towns]
+        out += [(station["name"], station["x"], station["y"]) for station in self.stations]
+        for fid, entry in sorted(self.found.items()):
+            group = self.world.features[fid]["cells"]
+            middle = group[len(group) // 2]
+            out.append((entry[0], (middle % CHART_W + 0.5) * CHART_KM, (middle // CHART_W + 0.5) * CHART_KM))
+        out += [(clean_text(call["handle"], 16), call["x"], call["y"]) for call in self.calls]
+        out.append(("The Gyre", self.world.gyre["x"], self.world.gyre["y"]))
+        return out
+
+    def _atlas_find(self, text: str) -> None:
+        """Bring a named place to the middle of the chart. A name that begins so comes before one that holds it."""
+        view, want = self.atlas_view, " ".join(text.lower().split())
+        if not want:
+            return
+        places = self._atlas_places()
+        hit = next((p for p in places if p[0].lower().startswith(want)), None) or \
+            next((p for p in places if want in p[0].lower()), None)
+        if hit is None:
+            view["note"] = f"Nothing on the chart is called \"{clean_text(text, FIND_LIMIT)}\"."
+            return
+        view.update(x=hit[1], y=hit[2], zoom=max(view["zoom"], 1), found=hit, note=f"Found: {hit[0]}.")
+
+    def _atlas_key(self, k: str, key: str) -> None:
+        view = self.atlas_view
+        if view["find"] is not None:              # a name is being typed: every printable key is part of it
+            if k == "ESC":
+                view["find"] = None
+            elif k == "ENTER":
+                text, view["find"] = view["find"], None
+                self._atlas_find(text)
+            elif k in ("BACKSPACE", "DELETE"):
+                view["find"] = view["find"][:-1]
+            elif len(key) == 1 and key.isprintable() and len(view["find"]) < FIND_LIMIT:
+                view["find"] += key
+            return
+        view["note"] = ""
+        if k in ("LEFT", "RIGHT", "UP", "DOWN") and view["zoom"] == 0:
+            view["note"] = "This is the whole continent. Z comes closer; then the arrows move about."
+        elif k in ("LEFT", "RIGHT", "UP", "DOWN"):
+            # A third of the window at a time, and never past the edge of the world.
+            x0, y0, wide, tall = self._atlas_window()
+            cx, cy = x0 + wide / 2, y0 + tall / 2
+            cx += {"LEFT": -1, "RIGHT": 1}.get(k, 0) * wide / 3
+            cy += {"UP": -1, "DOWN": 1}.get(k, 0) * tall / 3
+            view["x"] = min(max(cx, wide / 2), WORLD_W - wide / 2)
+            view["y"] = min(max(cy, tall / 2), WORLD_H - tall / 2)
+        elif k == "z":
+            if view["zoom"] == 0:
+                view["x"], view["y"] = self.state.x, self.state.y      # the first step in is on the pilot
+            view["zoom"] = (view["zoom"] + 1) % len(ATLAS_ZOOMS)
+        elif k == "-":
+            view["zoom"] = max(0, view["zoom"] - 1)              # a step back out
+        elif k == "i":
+            view["isobars"] = not view["isobars"]
+        elif k == "n":
+            view["names"] = not view["names"]
+        elif k == "/":
+            view["find"] = ""
+        elif k in ("ENTER", "ESC", "b", "c", " "):
+            self.atlas = False
+            view.update(find=None, found=None, note="")         # what was looked for is not marked for ever
+
     def _draw_atlas(self, s: "Session") -> list[str]:
-        """The chart of the whole continent: what is known, what is blank, and whose work it is."""
-        wide, screen = s.width - 2, s.frame
-        out = [s._line(0, 1, "FAIR WINDS", "accent"), s._line(0, 13, "The chart", "text")]
-        share = self.charted_share()
-        right = f"`{share * 100:.0f}`% of the land charted"
-        out.append(s._kv_right(0, s.width - 1, right))
-        cols, rows = wide, s.height - 5
-        state = self.state
-
-        def cell_of(px: int, py: int, across: int, down: int) -> int:
-            return min(CHART_H - 1, py * CHART_H // down) * CHART_W + min(CHART_W - 1, px * CHART_W // across)
-
-        def colour(cell: int):
-            rgb = terrain_rgb(self.world.chart_elevation[cell], self.world.chart_biome[cell])
-            return rgb if cell in self.chart or cell in self.known else sketch_rgb(rgb)
-        if self.map.pixels:
+        """The chart of the whole continent: what is known, the weather over it, and whose work it is."""
+        wide, screen, view, state = s.width - 2, s.frame, self.atlas_view, self.state
+        panel = ATLAS_PANEL if s.width >= ATLAS_PANEL_FROM else 0
+        cols, rows = wide - panel - (1 if panel else 0), s.height - 5
+        pixels, utf8 = self.map.pixels, self.launch.charset == "utf-8"
+        made = self._atlas_compose(cols, rows)
+        x0, y0, vw, vh = made["window"]
+        grid = made["grid"]
+        if pixels:
             for r in range(rows):
-                top = [colour(cell_of(c, r * 2, cols, rows * 2)) for c in range(cols)]
-                bottom = [colour(cell_of(c, r * 2 + 1, cols, rows * 2)) for c in range(cols)]
-                screen.pixel_row(1, 1 + r, top, bottom)
+                screen.pixel_row(1, 1 + r, grid[r * 2], grid[r * 2 + 1])
         else:
             for r in range(rows):
-                for c in range(cols):
-                    cell = cell_of(c, r, cols, rows)
-                    biome = self.world.chart_biome[cell]
-                    known = cell in self.chart or cell in self.known
-                    screen.put(1 + c, 1 + r, _MAP_GLYPHS[biome], _MAP_ROLES[biome] if known else "dim")
-
-        def mark(x: float, y: float, glyph: str, ink) -> None:
-            c, r = int(x / WORLD_W * cols), int(y / WORLD_H * rows)
-            if 0 <= c < cols and 0 <= r < rows:
-                if self.map.pixels:
-                    screen.over(1 + c, 1 + r, glyph, ink, 0.7)
-                else:
+                for c, (glyph, ink) in enumerate(grid[r]):
                     screen.put(1 + c, 1 + r, glyph, ink)
-        for town in self.world.towns:
-            mark(town["x"], town["y"], "o", "text")
-        for station in self.stations:
-            mark(station["x"], station["y"], *self._station_mark(station))
+        zoom = ATLAS_ZOOMS[view["zoom"]]
+        out = [s._line(0, 1, "FAIR WINDS", "accent"), s._line(0, 13, "The chart", "text")]
+        head = f"Day `{state.day}`  `{clock_text(state.minute)}`"
+        if zoom > 1:
+            head += f"   `{zoom}` times closer"
+        if view["isobars"] and s.width >= 110:
+            head += f"   isobars every `{ISOBAR_HPA:.0f}` hPa"
+        out.append(s._kv(0, 24, head, max(0, s.width - 49)))
+        share = self.charted_share()
+        out.append(s._kv_right(0, s.width - 1, f"`{share * 100:.0f}`% of the land charted"))
+
+        taken: set = set()
+
+        def cell_of(x: float, y: float):
+            c, r = int((x - x0) / vw * cols), int((y - y0) / vh * rows)
+            return (c, r) if 0 <= c < cols and 0 <= r < rows and x >= x0 and y >= y0 else None
+
+        def put(c: int, r: int, glyph: str, ink) -> None:
+            taken.add((c, r))
+            if pixels:
+                screen.over(1 + c, 1 + r, glyph, ink, 0.7)
+            else:
+                screen.put(1 + c, 1 + r, glyph, ink)
+
+        def mark(x: float, y: float, glyph: str, ink, force: bool = False):
+            cell = cell_of(x, y)
+            if cell is None or (cell in taken and not force):
+                return None
+            put(cell[0], cell[1], glyph, ink)
+            return cell
+
+        def label(cell, text: str, ink) -> bool:
+            """A name beside its mark: to the right if there is room, else to the left, else not at all."""
+            if cell is None or not text:
+                return False
+            c, r = cell
+            # Beside the mark with a space between, else just above or below it. A clear cell at either end
+            # of the name, so that names do not run together.
+            for start, row in ((c + 2, r), (c - len(text) - 1, r), (c - len(text) // 2, r - 1),
+                               (c - len(text) // 2, r + 1)):
+                if start >= 0 and start + len(text) <= cols and 0 <= row < rows and not any(
+                        (start + i, row) in taken for i in range(-1, len(text) + 1) if (start + i, row) != (c, r)):
+                    for i, ch in enumerate(text):
+                        put(start + i, row, ch, ink)
+                    return True
+            return False
+
+        # The pilot first, then whoever needs help, then the places: nothing may hide the first two.
+        mark(state.x, state.y, "@", "bright", force=True)
+        found = view.get("found")
+        if found is not None:                   # what was looked for, before anything can crowd it out
+            # (Without UTF-8 the route's dots are stars: there the found place is an X.)
+            label(mark(found[1], found[2], "*" if utf8 else "X", "bright"), found[0], "bright")
+        waiting = [(mark(call["x"], call["y"], "!", "warn"), call) for call in self.calls]
+        targets = self.targets
+        towns = [(mark(t["x"], t["y"], "#" if ("town", i) in targets else "o",
+                       "accent" if ("town", i) in targets else "text"), t, "text") for i, t in enumerate(self.world.towns)]
+        stations = []
+        for i, station in enumerate(self.stations):
+            glyph, ink = self._station_mark(station)
+            wanted = ("station", i) in targets
+            stations.append((mark(station["x"], station["y"], "#" if wanted else glyph, "accent" if wanted else ink),
+                             station, ink))
         for ox, oy, ink in self.others:
             mark(ox, oy, "Q", ink)
-        for call in self.calls:
-            mark(call["x"], call["y"], "!", "warn")
-        mark(state.x, state.y, "@", "bright")
+        dot = TRACK_DOT if utf8 else TRACK_PLAIN[0]
+        for cell, call in waiting:
+            label(cell, f"{clean_text(call['handle'], 12)}: {need_text(call['fuel'], call['repair'])}", "warn")
+        gyre = self.world.gyre
+        label(mark(gyre["x"], gyre["y"], "&" if not utf8 else "◎", "warn"), "THE GYRE", "warn")
+        if view["isobars"]:
+            frame = self.weather.frame(state.day, state.minute)
+            for sx, sy, _, strength, turn in frame.systems:
+                if (sx - gyre["x"]) ** 2 + (sy - gyre["y"]) ** 2 < 100.0:
+                    continue                        # the Gyre has its own name
+                label(mark(sx, sy, "L" if turn > 0 else "H", "warm" if turn > 0 else "cool"),
+                      f"{frame.pressure(sx, sy):.0f}", "text")
+        if view["names"]:
+            bound = [self.place_of(ref) for ref in targets]
+            # Where the pilot is bound first: if only some names fit, those are the ones.
+            for cell, place, ink in sorted(towns + stations, key=lambda item: not any(item[1] is b for b in bound)):
+                label(cell, place["name"], "accent" if any(place is b for b in bound) else ink)
+            shown = 0
+            for fid, entry in sorted(self.found.items()):
+                if shown >= FEATURE_LABELS * zoom:
+                    break
+                group = self.world.features[fid]["cells"]
+                middle = group[len(group) // 2]
+                cell = cell_of((middle % CHART_W + 0.5) * CHART_KM, (middle // CHART_W + 0.5) * CHART_KM)
+                if cell is not None and cell not in taken and label((cell[0] - 2, cell[1]), entry[0], "dim"):
+                    shown += 1
+
+        # The route so far, last of all and only where nothing else is: where each flight ended, joined up,
+        # and on to where the balloon is now. A dot never takes the place of a mark or a name.
+        legs = [tuple(point) for point in self.route] + [(state.x, state.y)]
+        for (ax, ay), (bx, by) in zip(legs, legs[1:]):
+            steps = max(1, int(max(abs(bx - ax) / vw * cols, abs(by - ay) / vh * rows)))
+            for i in range(1, steps):
+                mark(ax + (bx - ax) * i / steps, ay + (by - ay) * i / steps, dot, "accent")
         named = sum(1 for entry in self.found.values() if entry)
-        out.append(s._kv(s.height - 4, 1, f"You were first over `{self.charted}` cell{'' if self.charted == 1 else 's'}"
-                                          f" of land.   "
-                                          f"`{named}` of `{len(self.world.features)}` features are found and named.",
-                         wide))
+        masts = sum(1 for station in self.stations if station.get("mast_day") is not None)
         board = []
         if self.store is not None:
             try:
                 board = self.store.charters()
             except sqlite3.Error:
                 board = []
-        if board:
+        if panel:
+            col = cols + 3
+            width = s.width - 1 - col
+            s._line(1, col, "THE CONTINENT", "accent")
+            filled = round(share * 24)
+            for i in range(24):
+                screen.put(col + i, 2, "█" if i < filled else "·", (120, 214, 160) if i < filled else "dim")
+            s._kv(2, col + 25, f"`{share * 100:.0f}`%")
+            s._kv(3, col, f"`{named}` of `{len(self.world.features)}` features named", width)
+            s._kv(4, col, f"`{len(self.stations)}` stations, `{masts}` of them masts", width)
+            s._kv(5, col, f"You were first over `{self.charted}` cells", width)
+            s._line(7, col, "RECORDS", "accent")
+            s._line(7, col + 9, "most land charted", "dim")
+            for i, (name, count) in enumerate(board[:5]):
+                s._kv(8 + i, col, f"{clean_text(name, 20).replace('`', ' '):<22}`{count}`", width)
+            if not board:
+                s._line(8, col, "Nobody has charted anything yet.", "dim")
+            row = 14
+            s._line(row, col, "STRANDED", "warn" if self.calls else "accent")
+            for i, call in enumerate(self.calls[:3]):
+                dx, dy = call["x"] - state.x, call["y"] - state.y
+                s._line(row + 1 + i, col, f"{clean_text(call['handle'], 12)}: {need_text(call['fuel'], call['repair'])}, "
+                                          f"{math.sqrt(dx * dx + dy * dy):.0f} km {bearing(dx, dy)}"[:width], "text")
+            if not self.calls:
+                s._line(row + 1, col, "Nobody is waiting for help.", "dim")
+            row = max(row + 6, s.height - 11)
+            if row + 5 < s.height - 4:
+                s._line(row, col, "KEY", "accent")
+                for i, line in enumerate(("`@` you   `Q` a pilot   `!` stranded", "`o` town   `+` station   `Y` mast",
+                                          "`#` post or an office to make for", f"`{dot}` your route so far",
+                                          "`L` `H` a low, a high, in hPa")):
+                    s._kv(row + 1 + i, col, line, width, "text", "cool")
+        else:
+            out.append(s._kv(s.height - 4, 1, f"You were first over `{self.charted}` cell{'' if self.charted == 1 else 's'}"
+                                              f" of land.   `{named}` of `{len(self.world.features)}` features are "
+                                              f"found and named.", wide))
+        if view["find"] is not None:
+            out.append(s._line(s.height - 3, 1, f"Find: {view['find']}_"[:wide], "bright"))
+        elif view["note"]:
+            out.append(s._line(s.height - 3, 1, view["note"][:wide], "bright"))
+        elif board and not panel:
             line = "Most cells charted: " + "   ".join(f"{clean_text(name, 16).replace('`', ' ')} `{count}`"
                                                    for name, count in board)
             out.append(s._kv(s.height - 3, 1, line, wide))
         out.append(s._kv(s.height - 2, 1, self._status(s, wide), wide, "dim", "text"))
-        out += s._keys(s.height - 1, [("Enter", "Back")])
+        if view["find"] is not None:
+            out += s._keys(s.height - 1, [("Enter", "Find it"), ("Esc", "Leave it")])
+        else:
+            out += s._keys(s.height - 1, [("Arrows", "Pan"), ("Z", "In"), ("-", "Out"), ("I", "Isobars"),
+                                          ("N", "Names"), ("/", "Find"), ("Enter", "Back")], 2)
         return out
 
     def _station_mark(self, station: dict) -> tuple[str, str]:
@@ -6067,8 +6346,8 @@ PLAIN_HELP = (
     "  Without colour: `~` sea  `.` shore  `,` grass  `\"` forest  `:` plain  `n` hills  `^` peak",
     "# GOOD TO KNOW",
     "  `~` marks a forecast; your own layer is read true. A world day is flown once.",
-    "  Climbing costs fuel, sinking is free, holding costs 1 (0 from 11:00 to",
-    "  15:00, 2 after 20:00). Land in 15 km/h or less. 12 km from a place is there.",
+    "  Climbing costs fuel, sinking is free, holding 1 (0 from 11:00 to 15:00, 2",
+    "  after 20:00). Land in 15 km/h or less. 12 km from a place is there.",
     "  `K` plants a station kit in the wild: a sharper forecast there for everyone.",
     "  Landing at a station restocks it: no fuel there. Crates make it a mast.",
     "  `?` this help   `Ctrl-L` redraw   `Q` leave: every turn is saved.",
