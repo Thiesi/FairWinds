@@ -3330,12 +3330,12 @@ def fly_wind(db, wind: int, user_id: int, handle: str, day: int) -> dict:
     the pilot whose third day it was.
     """
     if db.execute("SELECT 1 FROM almanac WHERE wind=?", (wind,)).fetchone() is not None:
-        return {"days": 0, "new": False, "entered": False}
+        return {"days": 0, "new": False, "entered": False, "late": True}
     new = db.execute("INSERT OR IGNORE INTO sightings VALUES (?, ?, ?)", (wind, user_id, day)).rowcount == 1
     days = db.execute("SELECT count(*) FROM sightings WHERE wind=? AND user_id=?", (wind, user_id)).fetchone()[0]
     entered = days >= WIND_DAYS and db.execute(
         "INSERT OR IGNORE INTO almanac VALUES (?, ?, ?, ?)", (wind, user_id, handle, day)).rowcount == 1
-    return {"days": days, "new": new, "entered": entered}
+    return {"days": days, "new": new, "entered": entered, "late": False}
 
 
 def read_almanac(db, user_id: int) -> tuple[dict, dict]:
@@ -4196,14 +4196,23 @@ class PlainFlight:
                 return wind
         return None
 
-    def _wind_flown(self, wind: dict, done: dict | None) -> None:
+    _almanac_stale = False
+
+    def _wind_flown(self, wind: dict, done: dict | None, day: int) -> None:
         """What flying a local wind came to. Called inside the write of the turn that flew it."""
-        if done is None or not (done["new"] or done["entered"]):
+        if done is None:
             return
         kind = WIND_KINDS[wind["kind"]]
+        if done["late"]:
+            # Somebody entered it since this session last looked. Said once: the entry is taken in after the turn.
+            self._almanac_stale = True
+            self._say(f"The {kind['what']} here is in the almanac already: another pilot entered it. V.")
+            return
+        if not (done["new"] or done["entered"]):
+            return
         self.flown[wind["id"]] = done["days"]
         if done["entered"]:
-            self.almanac[wind["id"]] = (self.launch.user_id, self.launch.handle, self.state.day)
+            self.almanac[wind["id"]] = (self.launch.user_id, self.launch.handle, day)
             self.postmarks += ALMANAC_PAY
             self.points += ALMANAC_POINTS
             self._blowing_at = None
@@ -5326,7 +5335,10 @@ class PlainFlight:
         if wind is not None and wind["id"] not in self.almanac:
             launch, day = self.launch, before.day
             self.save(action, seen, lambda db: fly_wind(db, wind["id"], launch.user_id, launch.handle, day),
-                      lambda done: self._wind_flown(wind, done))
+                      lambda done: self._wind_flown(wind, done, day))
+            if self._almanac_stale:
+                self._almanac_stale = False
+                self._see_almanac()       # the wind is on the map from the next paint, under whoever entered it
         else:
             self.save(action, seen)       # before anything is shown
         if self.ended:

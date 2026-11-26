@@ -177,11 +177,17 @@ class Entering(AlmanacCase):
         self.days(1, a, b)
         self.fly(b, wind)
         self.assertEqual(b.almanac[wind["id"]][:2], (2, "Bo"))
+        paid = a.postmarks
         self.fly(a, wind)                                 # a has not looked: the records know it is entered
         self.assertEqual(self.rows("SELECT user_id FROM almanac"), [(2,)])
-        self.assertFalse(any("enters the almanac" in line for line in a.heard))
-        a._day_may_have_opened()
-        self.assertEqual(a.almanac[wind["id"]][:2], (2, "Bo"))
+        self.assertFalse(any("enters the almanac" in line or "no almanac has" in line for line in a.heard), a.heard)
+        self.assertTrue(any("in the almanac already: another pilot entered it" in line for line in a.heard), a.heard)
+        self.assertLess(a.postmarks - paid, fw.ALMANAC_PAY)
+        self.assertEqual(a.almanac[wind["id"]][:2], (2, "Bo"), "and it is taken in at once")
+        said = len([line for line in a.log if "almanac already" in line])
+        self.fly(a, wind)
+        self.assertEqual(len([line for line in a.heard if "almanac already" in line]), 0, "said once")
+        del said
         turn = self.blowing_turn(a, wind, a.today)
         a.state = dataclasses.replace(a.state, x=wind["x"] - 40.0, y=wind["y"], day=a.today, turn=turn,
                                       status="ground", layer=0)
