@@ -105,8 +105,25 @@ def frontier(game) -> None:
     game._own_db() if game.store is None else game.store.db.execute(
         "UPDATE stations SET stock_day=stock_day-20 WHERE id=4")
     game._see_stations()
+    db = game._own_db() if game.store is None else game.store.db
+    fw.call_for_help(db, 77, "Juno", spots[2][0] + 22.0, spots[2][1] - 14.0, 1, 15, 0)
+    fw.sign_book(db, 3, 77, "Juno", 1, "Came in on the evening wind. The mast is a fine thing.")
+    fw.sign_book(db, 3, 78, "Bram", 2, "Left two crates. Who brings the rest?")
+    game._see_calls()
     game.state = dataclasses.replace(game.state, x=spots[2][0], y=spots[2][1])
     game._choose_default()
+
+
+def book(game) -> None:
+    """The visitors' book at a mast, with a line half written."""
+    import dataclasses
+    frontier(game)
+    mast = game.stations[3]
+    game.state = dataclasses.replace(game.state, x=mast["x"], y=mast["y"])
+    game.key("b")
+    game.key("w")
+    for ch in "Fair winds from the first to land here":
+        game.key(ch)
 
 
 def fly(width: int, height: int, depth: str, charset: str = "utf-8", turns=("ENTER", "w", "ENTER", "ENTER", "w"),
@@ -174,6 +191,8 @@ def main(argv) -> int:
                                     encoding="utf-8")
             name = f"frontier-{width}x{height}-{depth}.html"
             (OUT / name).write_text(page(fly(width, height, depth, turns=(), setup=frontier), name), encoding="utf-8")
+            name = f"book-{width}x{height}-{depth}.html"
+            (OUT / name).write_text(page(fly(width, height, depth, turns=(), setup=book), name), encoding="utf-8")
             name = f"help-{width}x{height}-{depth}.html"
             (OUT / name).write_text(page(fly(width, height, depth, view="help"), name), encoding="utf-8")
             name = f"loft-{width}x{height}-{depth}.html"

@@ -33,7 +33,7 @@ import zoneinfo
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "0.1.0.dev21"
+VERSION = "0.1.0.dev22"
 DOOR_API = 5
 MIN_WIDTH, MIN_HEIGHT = 80, 24
 MAX_DIMENSION = 1000
@@ -3096,6 +3096,128 @@ def visit_station(db, sid: int, user_id: int, handle: str, day: int, crates: int
 
 
 # --------------------------------------------------------------------------
+# Stranded and rescued, and the visitors' books (S16). A pilot down in the
+# wild who cannot fly is on every pilot's map until they walk out or
+# somebody lands beside them with fuel. Every station keeps a book that a
+# pilot on the ground there may sign, one line a world day.
+# --------------------------------------------------------------------------
+
+RESCUE_FUEL = 15                     # a rescuer brings the stranded pilot's fuel up to this, from their own tank
+RESCUE_PAY, RESCUE_POINTS = 40, 20   # what the Post gives the rescuer
+GUESTBOOK_LIMIT = 60                 # characters in a line
+GUESTBOOK_SHOWN = 12                 # lines of a book read at once: the latest
+GUESTBOOK_MODES = ("on", "canned", "off")
+CANNED = ("Fair winds to whoever reads this.", "Came in on the last of the fuel.", "A fine view from here.",
+          "The wind brought me. I had other plans.", "Stock is full. You are welcome.", "Blown off course, and glad of it.",
+          "Mind the high ground to windward.", "Passing through. Clear skies.")
+
+
+def book_text(value: str) -> str:
+    """A line fit for a visitors' book: printable, and one cell of the screen to a character.
+
+    Accents written as one letter stay (a caller may sign in their own
+    language). Marks that stack on a letter, and characters two cells
+    wide, go: a line of them would push the screen's edge about.
+    """
+    kept = "".join(ch for ch in value if not unicodedata.category(ch).startswith("M")
+                   and unicodedata.east_asian_width(ch) not in ("W", "F"))
+    return clean_text(kept, GUESTBOOK_LIMIT)
+
+
+def need_text(fuel: int, repair) -> str:
+    """What a stranded pilot is waiting for, in a few words."""
+    parts = ([f"{fuel} fuel"] if fuel else []) + (["patches"] if repair else [])
+    return " and ".join(parts) or "a hand"
+
+
+def read_calls(db) -> list[dict]:
+    """Every pilot who is stranded and has not walked out."""
+    return [{"user_id": r[0], "handle": r[1], "x": r[2], "y": r[3], "day": r[4], "fuel": r[5], "repair": r[6],
+             "by_user": r[7], "by_handle": r[8]}
+            for r in db.execute("SELECT user_id, handle, x, y, day, fuel, repair, by_user, by_handle FROM calls"
+                                " ORDER BY user_id")]
+
+
+def call_for_help(db, user_id: int, handle: str, x: float, y: float, day: int, fuel: int, repair: int) -> bool:
+    return db.execute("INSERT OR IGNORE INTO calls (user_id, handle, x, y, day, fuel, repair)"
+                      " VALUES (?, ?, ?, ?, ?, ?, ?)", (user_id, handle, x, y, day, fuel, repair)).rowcount == 1
+
+
+def end_call(db, user_id: int) -> dict | None:
+    """Take a pilot's call down, and say what had come of it: once, since the row is gone after."""
+    row = db.execute("SELECT fuel, repair, by_user, by_handle FROM calls WHERE user_id=?", (user_id,)).fetchone()
+    db.execute("DELETE FROM calls WHERE user_id=?", (user_id,))
+    return None if row is None else {"fuel": row[0], "repair": row[1], "by_user": row[2], "by_handle": row[3]}
+
+
+def answer_call(db, who: int, by_user: int, by_handle: str, spare: int = 10 ** 6) -> dict | None:
+    """Reach a stranded pilot. None if somebody already has, or they have gone: a call is answered once.
+
+    spare is the fuel the rescuer can give. The call as it stands in the
+    records is the one answered, not the one the rescuer last read; if it
+    now wants more than can be spared it is left for somebody else.
+    """
+    row = db.execute("SELECT fuel, repair FROM calls WHERE user_id=? AND by_user IS NULL AND fuel<=?",
+                     (who, spare)).fetchone()
+    if row is None:
+        return None
+    db.execute("UPDATE calls SET by_user=?, by_handle=? WHERE user_id=?", (by_user, by_handle, who))
+    return {"fuel": row[0], "repair": row[1]}
+
+
+def read_book(db, station: int, limit: int = GUESTBOOK_SHOWN) -> list[tuple]:
+    """The latest lines of a station's book, newest first: (day, handle, text)."""
+    return db.execute("SELECT day, handle, text FROM guestbook WHERE station=? ORDER BY id DESC LIMIT ?",
+                      (station, limit)).fetchall()
+
+
+def sign_book(db, station: int, user_id: int, handle: str, day: int, text: str) -> bool:
+    """One line for each pilot, station and world day. False if today's is written."""
+    return db.execute("INSERT OR IGNORE INTO guestbook (station, user_id, handle, day, text) VALUES (?, ?, ?, ?, ?)",
+                      (station, user_id, handle, day, book_text(text))).rowcount == 1
+
+
+def guestbook_lines(folder: Path) -> list[str]:
+    """Every line in every book of a data folder, for the SysOp: each with the name to remove it by."""
+    lines = []
+    for path in sorted(Path(folder).glob("fair_winds-*.db")):
+        world = path.stem[len("fair_winds-"):]
+        if len(world) != 16 or any(c not in "0123456789abcdef" for c in world):
+            continue                            # not named as a world is: --guestbook-remove could not name it
+        db = sqlite3.connect(str(path), timeout=BUSY_TIMEOUT_SECONDS)
+        try:
+            rows = db.execute("SELECT id, station, day, handle, text FROM guestbook ORDER BY id").fetchall()
+        except sqlite3.Error as error:
+            lines.append(f"{path.name}: skipped ({error})")
+            continue
+        finally:
+            db.close()
+        for row in rows:
+            lines.append(f"{path.stem[-16:]}:{row[0]}  station {row[1]}  Day {row[2]}  "
+                         f"{clean_text(row[3], 32)}: {clean_text(row[4], GUESTBOOK_LIMIT)}")
+    return lines
+
+
+def guestbook_remove(folder: Path, name: str) -> str:
+    """Remove one line, named as --guestbook lists it: the world's sixteen digits, a colon, the line's number."""
+    world, _, number = name.partition(":")
+    if len(world) != 16 or any(c not in "0123456789abcdef" for c in world) or not number.isdigit():
+        raise ValueError(f"{name!r} is not a line as --guestbook lists them (world:number)")
+    path = Path(folder) / f"fair_winds-{world}.db"
+    if not path.exists():
+        raise ValueError(f"there is no world {world} here")
+    db = sqlite3.connect(str(path), timeout=BUSY_TIMEOUT_SECONDS)
+    try:
+        gone = db.execute("DELETE FROM guestbook WHERE id=?", (int(number),)).rowcount
+        db.commit()
+    finally:
+        db.close()
+    if not gone:
+        raise ValueError(f"world {world} has no line {number}")
+    return f"removed {name}"
+
+
+# --------------------------------------------------------------------------
 # The world's records (S10): one SQLite file for each world, shared by every
 # caller of that node. Writes are short transactions that take the write
 # lock at once; none is open while a caller thinks. A process killed at any
@@ -3103,7 +3225,7 @@ def visit_station(db, sid: int, user_id: int, handle: str, day: int, crates: int
 # --------------------------------------------------------------------------
 
 APPLICATION_ID = 0x46574442          # "FWDB": says the file is a Fair Winds world
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 LEASE_STALE_SECONDS = 90.0           # a session not heard from for this long may be replaced without asking
 HEARTBEAT_SECONDS = 20.0
 BUSY_TIMEOUT_SECONDS = 5.0           # how long a write waits for another caller's write
@@ -3133,6 +3255,14 @@ MIGRATIONS = {
         " stock_day INTEGER NOT NULL, freight INTEGER NOT NULL DEFAULT 0, mast_day INTEGER)",
         "CREATE TABLE contributions (station INTEGER NOT NULL, user_id INTEGER NOT NULL, handle TEXT NOT NULL,"
         " crates INTEGER NOT NULL, PRIMARY KEY (station, user_id)) WITHOUT ROWID",
+    ),
+    4: (
+        # a call for help: what the pilot needs, and once somebody has reached them, who
+        "CREATE TABLE calls (user_id INTEGER PRIMARY KEY, handle TEXT NOT NULL, x REAL NOT NULL, y REAL NOT NULL,"
+        " day INTEGER NOT NULL, fuel INTEGER NOT NULL, repair INTEGER NOT NULL, by_user INTEGER, by_handle TEXT)",
+        "CREATE TABLE guestbook (id INTEGER PRIMARY KEY AUTOINCREMENT, station INTEGER NOT NULL,"
+        " user_id INTEGER NOT NULL, handle TEXT NOT NULL, day INTEGER NOT NULL, text TEXT NOT NULL,"
+        " UNIQUE (station, user_id, day))",
     ),
 }
 _NO_PLACE_TO_WRITE = ("readonly", "read-only", "unable to open", "locked", "disk i/o", "full", "busy")
@@ -3308,7 +3438,9 @@ class Store:
                 on what turned out to be new.
         deed    something done to the shared world in the same transaction:
                 a function of the database. What it returns is given to
-                career as a third argument.
+                career as a third argument. career may then return the
+                career and the flight as a pair, where the deed changed
+                the flight too.
         """
         def work():
             db, now = self.db, self.clock()
@@ -3330,32 +3462,39 @@ class Store:
                                                " VALUES (?, ?, ?, ?, ?)",
                                                (fid, name, user_id, handle, state["day"])).rowcount == 1:
                     found.append(fid)
+            flight = state
             if callable(career):
                 written = career(new, found, done) if deed is not None else career(new, found)
+                if isinstance(written, tuple):
+                    written, flight = written
             else:
                 written = career
             row = db.execute("SELECT seq FROM flights WHERE user_id=?", (user_id,)).fetchone()
             seq = row[0] if row else 0
-            text = json.dumps(state)
+            text = json.dumps(flight)
             db.execute("INSERT INTO pilots VALUES (?, ?, ?, ?) ON CONFLICT (user_id) DO UPDATE SET"
                        " handle=excluded.handle, career=excluded.career",
                        (user_id, handle, now, json.dumps(written)))
             if action:
                 seq += 1
                 db.execute("INSERT INTO turns VALUES (?, ?, ?, ?, ?, ?, ?)",
-                           (user_id, seq, state["day"], state["turn"], action, text, now))
-                db.execute("DELETE FROM turns WHERE user_id=? AND day<?", (user_id, state["day"]))
+                           (user_id, seq, flight["day"], flight["turn"], action, text, now))
+                db.execute("DELETE FROM turns WHERE user_id=? AND day<?", (user_id, flight["day"]))
             db.execute("INSERT INTO flights VALUES (?, ?, ?) ON CONFLICT (user_id) DO UPDATE SET"
                        " seq=excluded.seq, state=excluded.state", (user_id, seq, text))
             db.execute("UPDATE sessions SET heartbeat=? WHERE user_id=?", (now, user_id))
             return seq
         return self._write(work)
 
-    def stations(self) -> list[dict]:
-        """Every planted station, in the order they were planted."""
+    def read(self, query):
+        """What a query of the shared world comes to: a function of the database. It writes nothing."""
         if self.db is None:
             raise sqlite3.ProgrammingError("the records are closed")
-        return read_stations(self.db)
+        return query(self.db)
+
+    def stations(self) -> list[dict]:
+        """Every planted station, in the order they were planted."""
+        return self.read(read_stations)
 
     def chart(self) -> tuple[set, dict]:
         """Every charted cell, and the features found: id -> (name, user_id, handle, day)."""
@@ -3545,6 +3684,12 @@ class PlainFlight:
         self.stations: list = list(self.world.stations)   # the world's first three, then every one planted since
         self._own = None                  # with no records to share: the stations this visit plants
         self.kits = self.crates = 0       # a station kit aboard, and crates of mast freight
+        self.calls: list = []             # other pilots who are stranded and waiting
+        self._called = False              # this pilot's own call for help is out
+        mode = (environ or {}).get("DOOR_FW_GUESTBOOK", "on").strip().lower()
+        self.book_mode = mode if mode in GUESTBOOK_MODES else "on"
+        self.book: dict | None = None     # a station's visitors' book, open
+        self.writing: str | None = None   # the line being written in it
         self.known = known_cells(self.world)      # what was on the map before anybody flew
         self.chart: set = set()           # every cell anybody has charted since
         self.found: dict = {}             # features found: id -> (name, user_id, handle, day)
@@ -3614,6 +3759,8 @@ class PlainFlight:
         self._grade_seen = self.grade()
         self._see_others()
         self._see_chart()
+        self._see_calls()
+        self._sync_call()
         if self._imported and self.saved_ok and self.store is not None and not self.ended:
             # Only once the database has the pilot. And never over an earlier file of that name.
             aside = self.legacy.with_name(self.legacy.name + ".imported")
@@ -3993,6 +4140,7 @@ class PlainFlight:
         self._see_others()                # the same glance takes in where everyone else has got to
         charted = self._see_chart()       # and what they have charted
         charted = self._see_stations() or charted     # and planted, stocked and raised
+        charted = self._see_calls() or charted        # and who is stranded; or that help has come
         if not self._look_at_the_calendar():
             return self.others != before or charted
         if self._catch_up():
@@ -4044,8 +4192,9 @@ class PlainFlight:
         """With no records to share, the stations of this visit are its own: kept in memory, in the same tables."""
         if self._own is None:
             self._own = sqlite3.connect(":memory:", isolation_level=None)
-            for statement in MIGRATIONS[3]:
-                self._own.execute(statement)
+            for step in range(3, SCHEMA_VERSION + 1):     # every table of the shared world; none of the pilots'
+                for statement in MIGRATIONS[step]:
+                    self._own.execute(statement)
             for station in self.stations[len(self.world.stations):]:      # what was known when the records went
                 self._own.execute("INSERT INTO stations VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)",
                                   tuple(station[k] for k in ("id", "name", "x", "y", "handle", "day", "stock",
@@ -4054,6 +4203,8 @@ class PlainFlight:
 
     def _see_stations(self) -> bool:
         """Take in what has been planted, stocked and raised. True if anything is new."""
+        if self.store is None and self._own is None and len(self.stations) == len(self.world.stations):
+            return False                  # no records, and nothing planted on this visit: there is nothing to read
         try:
             rows = self.store.stations() if self.store is not None else read_stations(self._own_db())
         except sqlite3.Error:
@@ -4086,17 +4237,19 @@ class PlainFlight:
         if self.store is None:
             apply(deed(self._own_db()))
             return True
-        kept = (self.postmarks, self.points, self.kits, self.crates, list(self.log), list(self.heard))
+        kept = (self.postmarks, self.points, self.kits, self.crates, list(self.log), list(self.heard), self.state,
+                list(self.manifest), list(self.taken), self.deliveries, self.days_flown, self.total_km)
 
         def career(new, found, done):
             apply(done)
-            return self._career()
+            return self._career(), self.state.to_dict()
         try:
             self.store.commit(self.launch.user_id, self.launch.handle, career, self.state.to_dict(), action, deed=deed)
             self.saved_ok = True
             return True
         except (LeaseLost, sqlite3.Error) as error:
-            self.postmarks, self.points, self.kits, self.crates, self.log, self.heard = kept
+            (self.postmarks, self.points, self.kits, self.crates, self.log, self.heard, self.state,
+             self.manifest, self.taken, self.deliveries, self.days_flown, self.total_km) = kept
             if isinstance(error, LeaseLost):
                 self.ended = "taken"
             else:
@@ -4175,6 +4328,176 @@ class PlainFlight:
                                                        self.today, crates), apply)
         self._see_stations()
         self._promote()
+
+    # -- stranded and rescued ----------------------------------------------------
+
+    def _read(self, query):
+        return self.store.read(query) if self.store is not None else query(self._own_db())
+
+    def _see_calls(self) -> bool:
+        """Who is stranded and waiting; and whether somebody has reached this pilot. True if anything is new."""
+        if self.store is None and self._own is None:
+            return False                  # no records, and nothing of this visit's own yet
+        try:
+            rows = self._read(read_calls)
+        except sqlite3.Error:
+            return False
+        me = self.launch.user_id
+        mine = next((row for row in rows if row["user_id"] == me), None)
+        calls = [row for row in rows if row["user_id"] != me and row["by_user"] is None]
+        changed = calls != self.calls
+        self.calls, self._called = calls, mine is not None
+        if mine is not None and mine["by_user"] is not None and self.busy is None and not self.ended:
+            self._rescued()
+            return True
+        return changed
+
+    def _sync_call(self) -> None:
+        """Keep this pilot's call for help as they stand: out while stranded, taken down when not."""
+        stranded = self.phase() == "stranded"
+        if stranded == self._called or self.ended:
+            return
+        state, launch = self.state, self.launch
+        if stranded:
+            fuel, repair = max(0, RESCUE_FUEL - state.fuel), int(state.grounded)
+            if self._deed("call", lambda db: call_for_help(db, launch.user_id, launch.handle, state.x, state.y,
+                                                           self.today, fuel, repair), lambda done: None):
+                self._called = True
+                self._say(f"Your call for {need_text(fuel, repair)} is on every pilot's map.")
+        elif self._deed("call", lambda db: end_call(db, launch.user_id), lambda done: None):
+            self._called = False
+
+    def _take_help(self, done: dict | None) -> bool:
+        """Take what a rescuer brought, if one came. Called inside the write that takes the call down."""
+        if done is None or done["by_user"] is None:
+            return False
+        state = self.state
+        self.state = dataclasses.replace(
+            state, fuel=min(self.tank(), state.fuel + done["fuel"]),
+            wear=min(state.wear, RELIEF["wear"]) if done["repair"] else state.wear,
+            status="ground" if state.status == "stranded" else state.status)
+        who = clean_text(done["by_handle"] or "", 16) or "A pilot"
+        self._say(f"{who} reached you with {need_text(done['fuel'], done['repair'])}. You can fly on.")
+        return True
+
+    def _rescued(self) -> None:
+        """Somebody reached this pilot while they waited: take what was brought, once."""
+        if self._deed("rescued", lambda db: end_call(db, self.launch.user_id), self._take_help):
+            self._called = False
+            self._choose_default()
+
+    def _rescue(self) -> None:
+        """Down beside a stranded pilot: bring them what they are waiting for."""
+        if self.state.status != "ground":
+            return
+        self._see_calls()
+        launch = self.launch
+        for call in list(self.calls):
+            if (call["x"] - self.state.x) ** 2 + (call["y"] - self.state.y) ** 2 > PLACE_RADIUS_KM ** 2:
+                continue
+            who = clean_text(call["handle"], 16) or "A pilot"
+            spare = max(0, self.state.fuel - COST_LAUNCH)     # patches alone can be given on any tank
+            if call["fuel"] > spare:
+                self._say(f"{who} is stranded here and wants {call['fuel']} fuel: more than you can spare.")
+                continue
+
+            def apply(done, who=who):
+                if done is None:
+                    self._say(f"{who} is no longer waiting for what you can give: somebody was here first, "
+                              f"or they want more now.")
+                    return
+                self.state = dataclasses.replace(self.state, fuel=max(0, self.state.fuel - done["fuel"]))
+                self.postmarks += RESCUE_PAY
+                self.points += RESCUE_POINTS
+                self._say(f"You reach {who} with {need_text(done['fuel'], done['repair'])}: {RESCUE_PAY} postmarks "
+                          f"from the Post, and their thanks.")
+            self._deed("rescue", lambda db, call=call, spare=spare: answer_call(
+                db, call["user_id"], launch.user_id, launch.handle, spare), apply)
+        self._see_calls()
+        self._promote()
+
+    # -- the visitors' books -------------------------------------------------------
+
+    def book_place(self) -> int | None:
+        """The station whose book lies open to the pilot: the one they are on the ground at."""
+        if self.book_mode == "off" or self.state.status not in ("ground", "stranded"):
+            return None
+        ref = self.here()
+        if ref is not None:
+            return ref[1] if ref[0] == "station" else None
+        hut = self.hut()
+        return hut["id"] if hut is not None else None
+
+    def _book_lines(self, station: int) -> list:
+        try:
+            return self._read(lambda db: read_book(db, station))
+        except sqlite3.Error:
+            return []
+
+    def _book_key(self, k: str) -> None:
+        if self.book_place() != self.book["station"] or k in ("ENTER", "ESC", "b", " "):
+            self.book = None
+        elif self.book_mode == "canned":
+            if len(k) == 1 and k.isdigit() and 1 <= int(k) <= len(CANNED):
+                self._sign(CANNED[int(k) - 1])
+        elif k == "w":
+            self.writing, self.book["note"] = "", ""
+
+    def _write_key(self, key: str) -> None:
+        """A key while a line is being written: every printable key is part of the line."""
+        if key == "ESC" or self.book is None:
+            self.writing = None
+        elif key == "ENTER":
+            text, self.writing = book_text(self.writing), None
+            if text:
+                self._sign(text)
+            else:
+                self.book["note"] = "Nothing written."
+        elif key in ("BACKSPACE", "DELETE"):
+            self.writing = self.writing[:-1]
+        elif len(key) == 1 and book_text(f"a{key}a") == f"a{key}a" and len(self.writing) < GUESTBOOK_LIMIT:
+            self.writing += key           # (a lone space would be trimmed away: it is tried between letters)
+
+    def _sign(self, text: str) -> None:
+        station, launch, book = self.book["station"], self.launch, self.book
+        if self.book_place() != station or (self.store is not None and not self._mine(write=False)):
+            return                        # the pilot is no longer at this station: nothing is signed from afar
+
+        def apply(done):
+            book["note"] = "Signed." if done else "You have signed this book today: one line a day."
+        if not self._deed("book", lambda db: sign_book(db, station, launch.user_id, launch.handle, self.today, text),
+                          apply):
+            book["note"] = "The line could not be kept."
+        book["lines"] = self._book_lines(station)
+
+    def _draw_book(self, s: "Session") -> list[str]:
+        """A station's visitors' book: the latest lines, and a place to add one."""
+        wide, book = s.width - 2, self.book
+        place = self.stations[book["station"]]
+        out = [s._line(0, 1, "FAIR WINDS", "accent"),
+               s._line(0, 13, f"The visitors' book at {place['name']}"[:wide - 12], "text")]
+        canned = self.book_mode == "canned"
+        room = s.height - 6 - (len(CANNED) + 1 if canned else 0)
+        if not book["lines"]:
+            out.append(s._line(2, 1, "Nobody has signed it yet.", "dim"))
+        for i, (day, handle, text) in enumerate(book["lines"][:max(1, room)]):
+            # Shown as plain text, and cleaned again here: what is in the records is not trusted to be clean.
+            line = f"Day {int(day)}  {book_text(str(handle))[:16] or 'A pilot'}: {book_text(str(text))}"
+            out.append(s._line(2 + i, 1, line[:wide], "text"))
+        if canned:
+            top = s.height - 4 - len(CANNED)
+            for i, phrase in enumerate(CANNED):
+                out.append(s._line(top + i, 1, f"{i + 1}  {phrase}"[:wide], "cool"))
+        if self.writing is not None:
+            out.append(s._line(s.height - 4, 1, f"> {self.writing}_"[:wide], "bright"))
+            out.append(s._line(s.height - 3, 1, f"{len(self.writing)} of {GUESTBOOK_LIMIT} characters", "dim"))
+            keys = [("Enter", "Sign"), ("Esc", "Leave it")]
+        else:
+            if book["note"]:
+                out.append(s._line(s.height - 3, 1, book["note"][:wide], "bright"))
+            keys = [(f"1-{len(CANNED)}", "Sign with a line") if canned else ("W", "Write a line"), ("Enter", "Back")]
+        out += s._keys(s.height - 1, keys)
+        return out
 
     def kit(self) -> str:
         """Buy a station kit at a town, or with one aboard hand it back."""
@@ -4549,6 +4872,9 @@ class PlainFlight:
         k = key.lower() if len(key) == 1 else key
         if self.ended:
             return "quit"                 # any key: there is nothing left to do here
+        if self.writing is not None and self.busy is None and k != "CTRL-C":
+            self._write_key(key)          # a line is being written: q and ? are letters like any other
+            return None
         if k in ("q", "CTRL-C"):
             return "quit"
         if self.busy is not None:
@@ -4565,8 +4891,15 @@ class PlainFlight:
         if self.atlas:
             self.atlas = False
             return None
+        if self.book is not None:
+            self._book_key(k)
+            return None
         if k == "c" and not self.hub and not self.loft:
             self.atlas = True
+            return None
+        if k == "b" and not self.hub and not self.loft and self.book_place() is not None:
+            station = self.book_place()
+            self.book = {"station": station, "lines": self._book_lines(station), "note": ""}
             return None
         if self.hub:
             self._hub_key(k)
@@ -4617,8 +4950,8 @@ class PlainFlight:
                 self._night()
         elif phase == "rest" and k in ("n", "ENTER", " "):
             self._night()
-        elif phase == "stranded" and k in ("w", "ENTER", " "):
-            self._walk_out()
+        elif phase == "stranded" and k == "w":
+            self._walk_out()              # W alone: a key meant for the flight must not cost two days
         elif phase == "ditched" and k in ("n", "ENTER", " "):
             self._picked_up()
         return None
@@ -4720,8 +5053,12 @@ class PlainFlight:
             return
         if landed:
             self._visit()                 # a station here is seen to, in a write of its own
+            self._rescue()                # and a pilot stranded here is helped
             if self.ended:
                 return
+        self._sync_call()                 # stranded: the call for help goes out
+        if self.ended:
+            return
         if (action == "launch" or landed) and self.saved_ok:
             # No picture of a turn that is not on disk: the screen says it was not saved instead.
             self.pending_scene = self._scene_for("launch" if action == "launch" else "landing")
@@ -4939,9 +5276,14 @@ class PlainFlight:
                                          x=state.x if x is None else x, y=state.y if y is None else y)
         self._choose_default()
 
-    def _dawn(self) -> str:
-        """What to say of the day the logbook has come to: it is here, or when it will be."""
-        self._look_at_the_calendar()
+    def _dawn(self, look: bool = True) -> str:
+        """What to say of the day the logbook has come to: it is here, or when it will be.
+
+        look=False inside a write: looking at the calendar may open a day,
+        which is a write of its own.
+        """
+        if look:
+            self._look_at_the_calendar()
         self._catch_up()                  # days that lapsed while this one was in progress
         if not self.waiting():
             return f"Day {self.state.day}. Dawn."
@@ -4952,16 +5294,28 @@ class PlainFlight:
         self._new_day(1)
         self._say(self._dawn())
         self.save("night")                # once, with the new day and its log together
+        self._sync_call()
 
     def _nearest(self, towns) -> dict:
         return min(towns, key=lambda t: ((t["x"] - self.state.x) ** 2 + (t["y"] - self.state.y) ** 2, t["cell"]))
 
     def _walk_out(self) -> None:
-        town = self._nearest(self.world.towns)
-        self._new_day(2, town["x"], town["y"])
-        self._say(f"Two days on foot to {town['name']}. {self._dawn()}")
-        self._landed(arrived=True)        # the post came along, and some of it may be for here
-        self.save("walk")
+        if self.store is not None and not self._mine(write=False):
+            return
+        self._look_at_the_calendar()      # now, not inside the write below
+
+        def apply(done):
+            # The call comes down in the same write as the walk. If somebody reached the pilot first, even in
+            # this instant, their fuel is taken and nobody walks: a rescuer is never paid for nothing.
+            if self._take_help(done):
+                return
+            town = self._nearest(self.world.towns)
+            self._new_day(2, town["x"], town["y"])
+            self._say(f"Two days on foot to {town['name']}. {self._dawn(look=False)}")
+            self._landed(arrived=True)    # the post came along, and some of it may be for here
+        if self._deed("walk", lambda db: end_call(db, self.launch.user_id), apply):
+            self._called = False
+        self._choose_default()
 
     def _picked_up(self) -> None:
         ports = [t for t in self.world.towns if t["port"]] or self.world.towns
@@ -5057,6 +5411,8 @@ class PlainFlight:
             mark(station["x"], station["y"], *self._station_mark(station))
         for ox, oy, ink in self.others:
             mark(ox, oy, "Q", ink)
+        for call in self.calls:
+            mark(call["x"], call["y"], "!", "warn")
         mark(state.x, state.y, "@", "bright")
         named = sum(1 for entry in self.found.values() if entry)
         out.append(s._kv(s.height - 4, 1, f"You were first over `{self.charted}` cell{'' if self.charted == 1 else 's'}"
@@ -5223,6 +5579,10 @@ class PlainFlight:
             return self._draw_lease(s)
         if self.atlas and not self.naming:
             return self._draw_atlas(s)
+        if self.book is not None:
+            if self.book_place() == self.book["station"]:
+                return self._draw_book(s)
+            self.book = self.writing = None
         if self.hub and self.at_office():
             return self._draw_hub(s)
         if self.loft and self.at_loft():
@@ -5278,7 +5638,7 @@ class PlainFlight:
         if width(keys, gap) > wide:
             gap = 2
         # N is only ever on the ground's line and J only on the air's, so each is the last to go where it is.
-        for spare in ("?", "P", "H", "O", "L", "A/D", "W/S", "M", "N", "J"):
+        for spare in ("?", "B", "P", "H", "O", "L", "A/D", "W/S", "M", "N", "J"):
             if width(keys, gap) <= wide:
                 break
             keys = [(key, label) for key, label in keys if key != spare]
@@ -5306,6 +5666,8 @@ class PlainFlight:
         office = [("O", "Post")] if self.at_office() else []      # the loft is a door inside it, and G from here
         if self.kits and not self.cannot_plant():
             office = [("K", "Plant station")]                     # in the wild: there is no office here
+        if self.book_place() is not None:
+            office = office + [("B", "Book")]
         if phase == "ground":
             wait = [("H", "Wait")] if self.state.turn < DAY_TURNS else []
             return [("Enter", "Launch")] + office + wait + [("N", "Night"), ("?", "Help"), leave]
@@ -5321,7 +5683,7 @@ class PlainFlight:
         state = self.state
         if phase == "stranded":
             why = "The balloon is too worn to fly" if state.grounded else "Stranded with no fuel"
-            return f"{why}. Walking out to the nearest town costs two days.", "warn"
+            return f"{why}. Walking out costs two days, or wait for help.", "warn"
         if phase == "ditched":
             return "Adrift. The packet boat will take a day to bring you to port.", "warn"
         if self.naming:
@@ -5421,6 +5783,8 @@ class PlainFlight:
             cell = view.mark(screen, place["x"], place["y"], glyph, ink)
             if "id" in place:
                 planted.append((cell, place, ink))
+        # A stranded pilot before the other balloons: theirs is one of them, on the same spot.
+        waiting = [(view.mark(screen, call["x"], call["y"], "!", "warn"), call) for call in self.calls]
         for ox, oy, colour in self.others:
             view.mark(screen, ox, oy, "Q", colour)      # another pilot's balloon, in the first colour of its envelope
         if state.status in ("aloft", "ground") and self.offered(state):
@@ -5441,6 +5805,10 @@ class PlainFlight:
         for cell, place, ink in planted:             # what pilots planted is named: nobody was born knowing it
             if cell is not None:
                 view.label(screen, cell, place["name"], ink)
+        for cell, call in waiting:                   # a stranded pilot, and what they are waiting for
+            if cell is not None:
+                view.label(screen, cell, f"{clean_text(call['handle'], 12)}: {need_text(call['fuel'], call['repair'])}",
+                           "warn")
         shown = 0
         for fid, entry in sorted(self.found.items()):
             if shown >= FEATURE_LABELS:
@@ -5691,11 +6059,11 @@ PLAIN_HELP = (
     "  `J`  drop a sack: up a layer, no fuel        `P`  pibal: true winds, 4 turns",
     "  `L`  land, from the lowest layer             `M`  drop mail within 30 km",
     "# ON THE GROUND",
-    "  `O`  post office and stores; from there `G`, the rigging loft, in towns",
+    "  `O`  post office and stores; `G` rigging loft, in towns; `B` a station's book",
     "  `H`  wait an hour for the wind               `N`  stay the night",
     "# THE MAP",
-    "  `@` you  `#` post bound there  `o` town  `+` station  `Y` mast  `Q` a pilot  `C` chart",
-    "  A dotted trail with an arrow: where a choice would carry you. `%` a squall.",
+    "  `@` you  `#` post for there  `o` town  `+` station  `Y` mast  `Q` a pilot  `C` chart",
+    "  Dots: where a choice carries you. `%` squall. `!` stranded pilot: land to help.",
     "  Without colour: `~` sea  `.` shore  `,` grass  `\"` forest  `:` plain  `n` hills  `^` peak",
     "# GOOD TO KNOW",
     "  `~` marks a forecast; your own layer is read true. A world day is flown once.",
@@ -6434,7 +6802,22 @@ def main(argv=None) -> int:
                         help="open N world days in each real day, from today on, in every world; and exit")
     parser.add_argument("--backup", metavar="FOLDER",
                         help="copy every world's records to FOLDER and exit; safe while callers are playing")
+    parser.add_argument("--guestbook", action="store_true",
+                        help="list every line in every station's visitors' book and exit")
+    parser.add_argument("--guestbook-remove", metavar="LINE",
+                        help="remove one line, named as --guestbook lists it (world:number), and exit")
     args = parser.parse_args(argv)
+    if args.guestbook or args.guestbook_remove is not None:
+        try:
+            if args.guestbook_remove is not None:
+                print(guestbook_remove(data_dir(os.environ), args.guestbook_remove))
+            else:
+                lines = guestbook_lines(data_dir(os.environ))
+                print("\n".join(lines) if lines else "no lines")
+        except (OSError, sqlite3.Error, ValueError) as error:
+            print(f"guestbook: {error}", file=sys.stderr)
+            return 1
+        return 0
     if args.tempo is not None:
         try:
             lines = set_tempo(data_dir(os.environ), args.tempo)

@@ -321,6 +321,8 @@ class GettingThere(PlainCase):
         self.assertEqual(game.phase(), "stranded")
         self.assertIn("costs two days", self.screen(game))
         self.press(game, "ENTER")
+        self.assertEqual(game.state.day, 1, "Enter is the flying key: it does not cost two days")
+        self.press(game, "w")
         self.assertEqual((game.state.day, game.state.status, game.state.fuel), (3, "ground", 0))
         self.assertIsNotNone(game.engine.place(game.state.x, game.state.y), "walked out to a town")
         self.assertIn("Two days on foot", " ".join(game.log))
@@ -541,9 +543,9 @@ class Screens(PlainCase):
     def test_help_explains_every_key(self):
         game = self.game()
         text = self.screen(game, view="help")
-        for key in ("W S", "A D", "Enter", "J ", "P ", "L ", "M ", "O ", "G,", "H ", "N ", "?", "Ctrl-L", "Q "):
+        for key in ("W S", "A D", "Enter", "J ", "P ", "L ", "M ", "O ", "G rigging loft", "B a station", "H ", "N ", "?", "Ctrl-L", "Q "):
             self.assertIn(key, text)
-        for glyph in ("@", "#", "o", "+", "~", "%", "Q a pilot"):
+        for glyph in ("@", "#", "o", "+", "~", "%", "Q a pilot", "! stranded pilot"):
             self.assertIn(glyph, text)
         for heading in ("FLYING", "ON THE GROUND", "THE MAP", "GOOD TO KNOW"):
             self.assertIn(heading, text)
