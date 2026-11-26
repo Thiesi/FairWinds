@@ -379,6 +379,14 @@ status line, the post office, the loft) the name is drawn in one ink and the
 figure in another, brighter one. The help page has headings, and every key and
 map sign in it is in a colour of its own.
 
+Wherever a sentence names a key (the log, the sentence under it, the notes on
+the Drift's, the Trials', the chart's and the post office's screens) the key
+is in the colour the key line gives its keys; in a sentence that is itself in
+that colour it is white. In the source a key stands between backticks
+(`Session._told`); the marks take no room when the log is wrapped. Of the
+log's three lines the last thing said is bright in all its lines, and what was
+said before it is dim, keys and all.
+
 **Keys.** W and S or the arrows step through sink, hold and climb. Enter or
 Space flies the choice. J chooses a jettison, L a landing, P releases a pibal
 at once. N stays the night. Keys typed before a turn's result is on screen are

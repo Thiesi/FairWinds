@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import fair_winds as fw                                   # noqa: E402
 import support                                            # noqa: E402
-from test_plain import launch                             # noqa: E402
+from test_plain import Keys, Out, launch                  # noqa: E402
 from test_rescue import RescueCase                        # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -125,7 +125,7 @@ class FirstFlight(TrialCase):
         game = self.game()
         began = time.monotonic()
         self.open(game, -1)
-        self.assertIn("W and S look at the layer above", " ".join(game.log))
+        self.assertIn("W and S look at the layer above", " ".join(game.log).replace("`", ""))
         self.assertIn("Last, because it ends the flight", fw.TUTOR_STEPS[-1][1])
         said = []
         for keys, lesson in ((("w", "s"), "Enter flies what you are looking at"), (("ENTER",), "P sends up a pibal"),
@@ -133,7 +133,7 @@ class FirstFlight(TrialCase):
                              (("s", "ENTER"), "you land from the lowest layer")):
             for key in keys:
                 game.key(key)
-            said.append(any(lesson in line for line in game.heard))
+            said.append(any(lesson in line.replace("`", "") for line in game.heard))
             self.assertTrue(said[-1], (keys, game.heard))
             self.screen(game)
         self.assertEqual(game.drift["step"], 5)
@@ -157,10 +157,10 @@ class FirstFlight(TrialCase):
         self.open(game, -1)
         game.key("ENTER")                                 # launched without looking first
         self.assertEqual(game.drift["done"], {"launch"})
-        self.assertTrue(any("Press W or S" in line for line in game.heard), "the lesson still open is asked for")
+        self.assertTrue(any("Press `W` or `S`" in line for line in game.heard), "the lesson still open is asked for")
         game.key("w")
         self.assertEqual(game.drift["done"], {"launch", "look"})
-        self.assertTrue(any("P sends up a pibal" in line for line in game.heard))
+        self.assertTrue(any("`P` sends up a pibal" in line for line in game.heard))
         game.choice = "hold"
         game.key("ENTER")
         self.assertEqual(game.drift["step"], 2, "a hold is no lesson")
@@ -172,6 +172,40 @@ class FirstFlight(TrialCase):
         self.assertFalse(game.taught)
         self.assertIn("3 of the lessons still to do", game.trial_note)
 
+    def test_a_lesson_is_bright_in_all_its_lines_and_the_keys_it_names_stand_out(self):
+        game = self.game()
+        self.open(game, -1)
+        self.assertGreater(len(game.log), 1, "the first lesson takes more than a line")
+        session = fw.Session(dataclasses.replace(game.launch, width=80, height=24), Keys(), Out(), game=game)
+        session.paint()
+        frame = session.frame
+        cells = [(frame.ch[k], frame.fg[k]) for row in range(17, 20) for k in range(row * 80, row * 80 + 80)
+                 if frame.ch[k] != " "]
+        self.assertNotIn("`", "".join(ch for ch, _ in cells), "the marks are not shown")
+        self.assertEqual({role for _, role in cells}, {"text", "accent"}, "no line of it is dimmed")
+        self.assertEqual("".join(ch for ch, role in cells if role == "accent"), "WSWS")
+        for line in game.log:
+            self.assertLessEqual(len(line.replace("`", "")), 76)
+        game.key("w")
+        game.key("s")                                     # the next lesson: the first is said earlier now, and dim
+        session.paint()
+        frame = session.frame
+        last = max(row for row in range(17, 20) if "".join(frame.ch[row * 80:row * 80 + 80]).strip())
+        roles = {frame.fg[k] for row in range(17, last) for k in range(row * 80, row * 80 + 80) if frame.ch[k] != " "}
+        self.assertEqual(roles, {"dim"}, "what was said before is dimmed, keys and all")
+        self.assertIn("accent", {frame.fg[k] for k in range(last * 80, last * 80 + 80)})
+
+    def test_a_sentence_in_the_keys_colour_shows_its_key_in_white_and_a_stray_mark_marks_nothing(self):
+        session = fw.Session(dataclasses.replace(launch(), width=80, height=24), Keys(), Out())
+        session.frame = fw.Screen(80, 24, session.launch.color_depth, session.launch.charset)
+        session._told(0, 0, "Land here. `Enter` to land.", 80, "accent")
+        self.assertEqual("".join(session.frame.ch[:26]), "Land here. Enter to land. "[:26])
+        self.assertEqual(session.frame.fg[11:16], ["value"] * 5)
+        self.assertEqual(session.frame.fg[0], "accent")
+        session._told(1, 0, "Rescued by a`b", 80, "text")
+        self.assertEqual("".join(session.frame.ch[80:93]), "Rescued by ab")
+        self.assertEqual(set(session.frame.fg[80:93]) - {None}, {"text"})
+
     def test_the_first_flight_leaves_room_to_look_about(self):
         game = self.game()
         self.open(game, -1)
@@ -180,7 +214,7 @@ class FirstFlight(TrialCase):
 
     def test_a_new_pilot_is_shown_the_way_to_it(self):
         game = self.game()
-        self.assertIn("R teaches", " ".join(game.log))
+        self.assertIn("`R` teaches", " ".join(game.log))
         self.assertIn("[R] Learn", self.screen(game))
         game.kits = 1                                     # every key the ground can offer at once, at 80 columns
         station = game.stations[0]
