@@ -4510,6 +4510,7 @@ class PlainFlight:
         self._season_done = None          # the (season, day) the seasons were last settled for
         self._season_wait = 0.0           # not before this moment, after a settling that could not be written
         self._season_dues: list = []      # closed seasons that still owe this pilot an answer
+        self._claim_wait = 0.0            # not before this moment, after dues that could not be written
         self._seasons_read: dict = {}     # closed seasons as read: they change no more
         self.album_page = 0
         self._wonder_said = None          # the wonder last pointed out, so it is pointed out once
@@ -5214,17 +5215,18 @@ class PlainFlight:
                 # Once for each day that opens: the goal of the season it is in, and every season now over.
                 self._season_wait = now + SEASON_RETRY_SECONDS      # if this cannot be written, not again at once
                 self._shared(lambda db: settle_seasons(db, seed, today, winds), write=True)
-                self._season_done, self._season_wait = (season, today), 0.0
                 self._season_dues = self._read(lambda db: unclaimed_seasons(db, me))
+                self._season_done, self._season_wait = (season, today), 0.0        # only once both are done
             self.season_now = self._read(lambda db: read_season(db, season))        # the one that still changes
+            shown = []
             for n in range(season - 1, max(0, season - 4), -1):
-                if n not in self._seasons_read:                 # a closed season is read once: it changes no more
+                past = self._seasons_read.get(n)
+                if past is None:
                     past = self._read(lambda db, n=n: read_season(db, n))
-                    if not past["closed"]:
-                        break
-                    self._seasons_read[n] = past
-            self.season_past = [self._seasons_read[n] for n in range(season - 1, max(0, season - 4), -1)
-                                if n in self._seasons_read]
+                    if past["closed"]:
+                        self._seasons_read[n] = past            # a closed season is read once: it changes no more
+                shown.append(past)                              # one over but not yet settled is shown as such
+            self.season_past = shown
         except LeaseLost:
             self.ended = "taken"
             return False
@@ -5236,7 +5238,7 @@ class PlainFlight:
 
     def _claim(self, season: int) -> None:
         """Take what a closed season owes this pilot, once: said, and paid, in one write."""
-        if season in self._claimed or self.ended:
+        if season in self._claimed or self.ended or self.now() < self._claim_wait:
             return
         me = self.launch.user_id
 
@@ -5253,6 +5255,8 @@ class PlainFlight:
         if self._deed("season", lambda db: claim_season(db, season, me), apply):
             self._claimed.add(season)
             self._season_dues = [n for n in self._season_dues if n != season]
+        else:
+            self._claim_wait = self.now() + SEASON_RETRY_SECONDS       # it cannot be written: not again at every look
 
     def _race(self, day: int) -> None:
         """A flight that has just ended in a season's last week: it stands if it is the pilot's longest of the race."""

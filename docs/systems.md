@@ -1152,7 +1152,12 @@ most three pilots. Nothing a pilot owns is reset. The map is never reset.
   pays, at their next call or look, for every closed season however long
   ago it was.
 - **Past seasons** are on the season's screen: the last three, with their
-  goal, whether it was met, and their medals.
+  goal, whether it was met, and their medals. One that is over and not yet
+  settled is shown as being settled.
+- **A node that had seasons before this build** has each of them settled the
+  first time it is opened: a goal is drawn for each and counted from the
+  records of its days, and pilots who had a hand in one that was met are
+  paid for it then. There were no races to give medals for.
 - **Nothing is reset.** A new season changes the weather and the goal and
   nothing else: postmarks, licence, gear, medals, albums, stations and the
   chart are as they were.

@@ -381,6 +381,59 @@ class Screen(SeasonCase):
         for size in ((100, 30), (132, 40)):
             self.screen(a, *size)
 
+    def test_in_the_days_before_a_season_is_settled_the_older_ones_are_still_shown(self):
+        game = self.game(handle="Ada")
+        self.to_day(26, game)
+        self.flight(game, 150.0)
+        self.to_day(29 + fw.SEASON_GRACE, game)           # season 1 is settled
+        self.to_day(57, game)                             # the first day of season 3: season 2 is over, not settled
+        game.close()
+        fresh = self.game(handle="Ada")
+        self.assertEqual([(p["season"], p["closed"]) for p in fresh.season_past], [(2, False), (1, True)])
+        fresh.key("y")
+        text = self.screen(fresh)
+        self.assertIn("Season 2:", text)
+        self.assertIn("being settled", text)
+        self.assertIn("Season 1:", text)
+        self.assertIn("gold Ada 150 km", text)
+        self.to_day(57 + fw.SEASON_GRACE, fresh)
+        self.assertEqual([(p["season"], p["closed"]) for p in fresh.season_past], [(2, True), (1, True)])
+
+    def test_dues_that_could_not_be_read_or_written_are_asked_for_again_and_not_at_every_look(self):
+        game = self.game(handle="Ada")
+        db = self.db()
+        db.execute("UPDATE seasons SET kind='chart', target=40")
+        db.executemany("INSERT INTO charted VALUES (?, 12, 3)", [(9000 + i,) for i in range(45)])
+        db.commit()
+        db.close()
+        was = game.postmarks
+        self.clock.days(28 + fw.SEASON_GRACE)
+        game._look_at_the_calendar()
+        real_read, real_commit = game.store.read, game.store.commit
+
+        def no_read(*args, **kwargs):
+            raise sqlite3.OperationalError("database is locked")
+        game.store.read = no_read
+        game._see_season()
+        self.assertNotEqual(game._season_done, (fw.season_of(game.today)[0], game.today),
+                            "the day is not done until the dues were read as well")
+        game.store.read = real_read
+        tries = []
+
+        def no_commit(*args, **kwargs):
+            tries.append(1)
+            raise sqlite3.OperationalError("disk I/O error")
+        game.store.commit = no_commit
+        self.clock.now += fw.SEASON_RETRY_SECONDS + 1
+        for _ in range(5):
+            game._see_season()
+        self.assertEqual((len(tries), game.postmarks), (1, was), "dues that cannot be written are not retried at once")
+        game.store.commit = real_commit
+        game.saved_ok = True
+        self.clock.now += fw.SEASON_RETRY_SECONDS + 1
+        game._see_season()
+        self.assertEqual(game.postmarks, was + fw.GOAL_PAY)
+
     def test_the_weather_line_says_what_the_regime_is(self):
         game = self.game()
         seen = set()
