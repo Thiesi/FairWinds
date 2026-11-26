@@ -32,8 +32,10 @@ on the P3 tracker (issue #4). From that play-test came the last-stretch moves
 screen reads. Of P4, S14 (the chart: what is seen from the basket is charted
 for everyone, features are found and named) and S15 (stations planted in the
 wild, kept stocked, and raised into mooring masts with freight from the
-towns) are built at the owner's asking, ahead of the play-test's verdict. The
-next slice is S16: stranding, rescue and guestbooks.
+towns) and S16 (a stranded pilot's call for help on every map, rescue by
+landing beside them, and the stations' visitors' books) are built at the
+owner's asking, ahead of the play-test's verdict. The next slice is S17, the
+chart of the whole continent.
 
 To look at a screen, run `python scripts/capture.py`: it writes each size and
 colour depth as an HTML page under `.test-tmp/captures`, which headless Edge

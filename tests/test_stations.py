@@ -518,7 +518,7 @@ class Records(StationCase):
         self.assertIn(77, game.chart)
         self.assertEqual(len(game.stations), 3)
         self.plant(game)
-        self.assertEqual(self.rows("PRAGMA user_version"), [(3,)])
+        self.assertEqual(self.rows("PRAGMA user_version"), [(fw.SCHEMA_VERSION,)])
         self.assertEqual(self.rows("SELECT count(*) FROM stations"), [(1,)])
 
     def test_the_help_names_them(self):

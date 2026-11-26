@@ -741,6 +741,63 @@ characters and escape sequences and shown as plain text. `DOOR_FW_GUESTBOOK`
 may be `on` (default), `canned` (phrases from a list only) or `off`. The SysOp
 tool lists and removes lines.
 
+**As built (S16).** The tables are `RESCUE_FUEL`, `RESCUE_PAY`,
+`RESCUE_POINTS`, `GUESTBOOK_LIMIT`, `GUESTBOOK_SHOWN` and `CANNED`.
+
+- **Stranded** is down in the wild and unable to launch: under 2 fuel, or too
+  worn to fly. A planted station is the wild; a town, a first station and a
+  mast are not. The moment a pilot is stranded their call for help is written
+  (`calls`): where they are, and what they want. It is fuel up to 15, or
+  patches, or both.
+- **On every map.** Each other pilot sees the stranded pilot as `!` with
+  their name and what they are waiting for, on the map and on the chart of
+  the continent. A session looks every 20 seconds.
+- **Walking out** is `W` and nothing else (Enter is the key that flies, and
+  must not cost two days by habit). It costs two world days through the
+  calendar: the logbook moves on two days, and if they have not opened the
+  pilot waits for them. The call is taken down.
+- **Waiting** is doing nothing. The pilot may leave the door; the call stays.
+- **Rescue.** A pilot who lands within 12.5 km of a stranded pilot, with the
+  fuel they want and 2 to launch again, reaches them: the fuel comes out of
+  the rescuer's tank, patches cost nothing. The rescuer is given 40
+  postmarks and 20 licence points by the Post. The stranded pilot gets the
+  fuel (and, if they were too worn to fly, wear brought down to 70), keeps
+  the spot and the days walking would have cost, and flies on. They find out
+  the next time their session looks, or at their next call.
+- **Once.** A call is answered inside the rescuer's own write, by the first
+  to arrive; a second is told somebody was there before them and keeps their
+  fuel. What was brought is taken inside the stranded pilot's own write,
+  which removes the call. A pilot who presses `W` after help has come is
+  not walked away from it.
+- **The visitors' books.** `B` on the ground at a station: one of the first
+  three, a planted one, or a mast. Towns keep none. The book shows its
+  latest 12 lines, newest first, with the day and the pilot. `W` writes a
+  line: every printable key is part of it, `Q` and `?` included; Backspace,
+  Enter to sign, Esc to leave it. One line for each pilot, station and world
+  day.
+- **What may be in a line.** Printable characters only, runs of space made
+  one, 60 characters at most: so no control characters and no escape
+  sequences. It is cleaned when it is written and again when it is shown,
+  and it is shown as plain text, never as markup.
+- **`DOOR_FW_GUESTBOOK`.** `on` (the default, and what any other value
+  means): as above. `canned`: nothing is typed; the pilot signs with one of
+  eight lines from `CANNED`, by its number. `off`: there are no books, no
+  key for them, and nothing is read from them.
+- **The SysOp.** `python fair_winds.py --guestbook` lists every line of every
+  world in the data directory, each beginning with its name
+  (`world:number`); `--guestbook-remove world:number` removes one. Both are
+  safe while callers play.
+- The records gain `calls` and `guestbook`, and the schema is version 4.
+- A visitor's call and lines are that visit's only.
+
+**Not yet built here.** The packet boat is still a key press. Other pilots
+are one mark, `Q`, wherever they were last: moored, camped and aloft are not
+told apart yet.
+
+**Not yet tuned.** Landing within 12.5 km of a stranded pilot is as hard as
+landing at a town. Whether rescue should reach further (a drop from the air,
+as mail has) is for play.
+
 **Other pilots.** The map and chart show where other pilots are moored, camped,
 stranded, or were last seen aloft, with their envelope colours. Positions are
 read from the world when a screen is drawn. Nobody needs to be online together.
@@ -1077,6 +1134,9 @@ of input). A session that is killed outright does not, so a caller who comes
 straight back after one is asked, and takes over. Before a turn is worked out
 the lease is read; the commit checks it again inside its transaction, so a
 turn costs one synced write.
+
+**Guestbooks.** `python fair_winds.py --guestbook` lists every line callers
+have written; `--guestbook-remove world:number` removes one (section 7).
 
 **Backup.** `python fair_winds.py --backup FOLDER` copies every world in the
 data directory to FOLDER through SQLite's online backup, checks each copy and
