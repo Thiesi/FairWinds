@@ -43,7 +43,10 @@ built, and so is S20 (the Trials: a first flight that teaches, and twelve
 set flights with medals) and S21 (forty wonders in every world, taken for an
 album when the balloon is there as they show, each with a picture) and S22
 (the 28-day season: a goal for the node, a race in its last week, medals,
-and nothing reset). The next slice is S23, the Gyre.
+and nothing reset) and S23 (the Gyre: bands where the forecast fails, a wall
+only layer 5 crosses, the eye and the hall). That completes P5. The plan
+calls for the owner's second play-test here, before P6 (the host, the
+SysOp's tools, acceptance and release).
 
 To look at a screen, run `python scripts/capture.py`: it writes each size and
 colour depth as an HTML page under `.test-tmp/captures`, which headless Edge

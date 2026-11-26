@@ -724,8 +724,8 @@ where the wind has put a pilot down: plant something there.
 - A visitor, or a caller whose records cannot be kept, plants and raises for
   that visit only.
 
-**Not yet built here.** Nothing may be planted in the Gyre's inner band and
-coverage is capped in its bands: both come with the Gyre. Guestbooks are S16.
+**Since built.** Nothing may be planted in the Gyre's inner band and
+coverage is capped in its bands (S23). Guestbooks came with S16.
 
 **Not yet tuned.** Whether fourteen days is the right life for a station on
 a node with one caller, and four crates the right price of a mast, is for
@@ -1178,6 +1178,57 @@ coverage is capped at half. In the inner band it is capped at zero and nothing
 can be planted. The eyewall needs layer 5 or above, or the engine. Inside is the
 eye: calm air, the fortieth wonder, and a place in the hall for the first pilot
 on the node to arrive. What a later version puts there is out of scope.
+
+**The Gyre, as built (S23).** The tables are `GYRE_OUTER_KM`,
+`GYRE_INNER_KM`, `GYRE_WALL_KM`, `GYRE_EYE_KM`, `GYRE_OUTER_COVER`,
+`GYRE_WALL_LAYER`, `GYRE_WEAR`, `EYE_PAY` and `EYE_POINTS`.
+
+| From the centre | Band | What holds there |
+| --- | --- | --- |
+| 150 to 300 km | outer | a forecast is worth half at most, whatever stations are near |
+| 60 to 150 km | inner | nothing is forecast; nothing can be planted (so the nearest a mast can stand is just outside 150 km) |
+| 30 to 60 km | the wall | only layer 5 and above gets through |
+| under 30 km | the eye | still air; the fortieth wonder; the hall |
+
+- **The failing forecast.** Coverage (section 4) is cut to 0.5 in the outer
+  band and to nothing inside the inner one, after every station has been
+  counted. A track drawn there is a guess from its first turn.
+- **The wall.** A balloon below layer 5 whose turn would carry it into the
+  wall, or across it, is thrown back where it was and takes 4 wear: the
+  whole of the move is tried, not where it ends. It is thrown back before
+  any ground ahead is met, so it pays for no climb it did not make. From the
+  eye, nothing below layer 5 gets out; being held inside costs no wear. A balloon that is already in the wall
+  below layer 5 (it came down there at midnight, or sank there) is not held:
+  the wind carries it about and out, though not into the eye. A track that
+  would run into the wall ends there and says why, by the same rule as the
+  turn. A first balloon tops out at layer 3 and
+  an Envelope II at layer 4: neither ever gets in. Envelope III does.
+- **The way in.** The Gyre turns anticlockwise and draws air inward, so a
+  balloon held in layer 5 inside the inner band spirals toward the middle,
+  unless the season's flow up there is stronger than the storm on the side
+  it came in from. Tried by climbing to layer 5 and holding, from just
+  outside the inner band: there is a way in on most days in four of the
+  five worlds tried and on about one day in forty in the fifth, whose Gyre
+  lies by the coast.
+- **The eye.** A pilot inside 30 km, aloft or down there, who is not yet
+  written down as having been there is written down with that turn (so a turn that could
+  not be written is made good by the next): 50 postmarks and 30 points,
+  once for each pilot. A Drift or a trial flown into the eye is on another
+  balloon and counts for nothing. The
+  first on the node is written in the hall, once however many arrive
+  together, and has 200 and 100.
+- **The hall** (`hall`) is what was done first on the node and is kept for
+  good. It has one line so far. It is shown on the season's screen.
+- **The chart** draws the inner band and the wall as rings of dots.
+- **What stood there before.** No town and none of the world's first
+  stations is within the inner band in any world tried (a test holds five
+  to that). A station a pilot planted inside it before this build stays on
+  the map and says nothing of the weather.
+- The records gain `hall`, and the schema is version 9.
+
+**Not yet built here.** The engine, the plan's other way through the wall,
+is not sold. What the eye holds beyond the wonder and the hall is out of
+scope.
 
 ## 10. Presentation
 
