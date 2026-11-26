@@ -204,7 +204,7 @@ class Carrying(PostCase):
         game._unload(game.manifest[0])                   # delivered, say, and the pilot is back the same day
         self.assertEqual(game.take(offer), "You have carried that one already.")
         self.assertIn("carried", self.screen_of_hub(game))
-        game.key("ENTER")
+        game.key("b")
         game.key("n")
         self.assertEqual(game.taken, [], "yesterday's are forgotten: today's offers are other offers")
 
@@ -373,14 +373,19 @@ class Stores(PostCase):
         self.assertEqual(game.offers(), [])
 
     def test_leaving_the_post_office(self):
-        for key in ("ENTER", "ESC", "b", "o", " "):
+        for key in ("ESC", "b", "o"):
             game = self.game(user_id=hash(key) % 1000 + 100)
             game.key("o")
             self.assertTrue(game.hub)
             game.key(key)
             self.assertFalse(game.hub)
-            self.assertEqual(game.state.turn, 0, "the key that closes the door launches nothing")
+        game = self.game(user_id=99)
         game.key("o")
+        for key in ("ENTER", " ", "ENTER"):
+            game.key(key)
+            self.assertTrue(game.hub, "Enter and Space do not leave: one press too many would launch")
+        self.assertEqual(game.state.status, "ground")
+        self.assertEqual(game.state.turn, 0, "the key that closes the door launches nothing")
         self.assertEqual(game.key("q"), "quit")
 
 
@@ -447,7 +452,7 @@ class Relief(PostCase):
         self.assertEqual(([item["payout"] for item in game.manifest], game.postmarks), ([fw.RELIEF["payout"]], 0))
         self.assertFalse(game.relief_due(), "once a day")
         self.assertNotIn("Relief run", self.screen(game))
-        game.key("ENTER")
+        game.key("b")
         self.assertIn("launch", game.offered(), "and the pilot can fly")
         game.state = dataclasses.replace(game.state, fuel=0)
         self.assertFalse(game.relief_due())
@@ -473,7 +478,7 @@ class Screen(PostCase):
             self.assertIn("THE POST OFFICE", text)
             self.assertIn("ABOARD", text)
             self.assertIn("STORES", text)
-            self.assertIn("[Enter] Back", text)
+            self.assertIn("[B] Back", text)
             self.assertIn("[G] Rigging loft", text)
             self.assertIn("postmarks", text)
         for changes in ({"color_depth": "16"}, {"charset": "cp437", "color_depth": "16"}, {"charset": "ascii"}):
@@ -505,7 +510,7 @@ class Screen(PostCase):
 
     def test_the_session_plays_the_post_office(self):
         game = self.game()
-        session = fw.Session(game.launch, Keys(b"o", b"1", b"f", b"\r", b"\r"), Out(), game=game)
+        session = fw.Session(game.launch, Keys(b"o", b"1", b"f", b"b", b"\r"), Out(), game=game)
         for _ in range(3):
             session.step()
         self.assertTrue(game.hub)

@@ -375,6 +375,8 @@ class Album(WonderCase):
             game.key("w")
         self.assertEqual(game.album_page, 0)
         game.key("ENTER")
+        self.assertTrue(game.album_open, "Enter does not leave the album")
+        game.key("b")
         self.assertFalse(game.album_open)
 
     def test_what_is_seen_is_named_and_what_another_saw_is_told_in_full(self):

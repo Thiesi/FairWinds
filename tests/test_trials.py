@@ -205,6 +205,18 @@ class FirstFlight(TrialCase):
         session._told(1, 0, "Rescued by a`b", 80, "text")
         self.assertEqual("".join(session.frame.ch[80:93]), "Rescued by ab")
         self.assertEqual(set(session.frame.fg[80:93]) - {None}, {"text"})
+        session._told(2, 0, "Out by road with `Ada B` and c`d. `X` leaves.", 80, "text")
+        self.assertEqual("".join(session.frame.ch[160:200]).rstrip(), "Out by road with Ada B and cd. X leaves.")
+        self.assertEqual(set(session.frame.fg[160:200]) - {None}, {"text"}, "marks that are no keys: nothing marked")
+
+    def test_a_word_alone_on_a_last_line_takes_the_one_before_it_along(self):
+        game = self.game()
+        game.log = []
+        game._say(fw.TUTOR_STEPS[0][1])
+        self.assertEqual(game.log[-1].strip(), "or `S`.")
+        game.log = []
+        game._say("x" * 70 + " " + "y" * 70 + " z")
+        self.assertEqual([line.strip() for line in game.log], ["x" * 70, "y" * 70, "z"], "a lone word stays put")
 
     def test_the_first_flight_leaves_room_to_look_about(self):
         game = self.game()

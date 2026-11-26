@@ -333,6 +333,8 @@ class Loft(LicenceCase):
         game.key("g")
         self.assertTrue(game.loft)
         game.key("ENTER")
+        self.assertTrue(game.loft, "Enter does not leave the loft")
+        game.key("b")
         self.assertFalse(game.loft)
         game.key("o")
         self.assertIn("[G] Rigging loft", self.screen(game))

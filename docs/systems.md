@@ -1454,6 +1454,14 @@ scene or a turn result is drawn are discarded, so a held key never commits
 turns unseen. The key for an action is the first letter of its label. `B` and
 Esc go back, `<` and `>` page, `/` finds, `?` shows help.
 
+**One way back.** Every screen laid over the flight (the help, the post
+office, the loft, the chart, the almanac, the album, the season, a visitors'
+book, the Drift's and the Trials' lists) is left by `B`, by Esc, or by the key
+that opened it, and its key line says `[B] Back` (`BACK_KEYS`). Enter and
+Space never leave a screen: the flight underneath takes them for a move, so
+one press too many would launch. On the almanac, the album and the season any
+other key is used up and does nothing. The help is also left by `Q`.
+
 ## 12. Storage
 
 One SQLite file for each world, `fair_winds-<seed>.db`, under

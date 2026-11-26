@@ -297,7 +297,13 @@ class Pages(AlmanacCase):
         self.assertIn("Nothing is entered yet", text)
         self.assertIn("Fly one in layer 2 or below while it blows, on 3 days: it is yours to enter.", text)
         self.assertIn("in hills.", text)
-        game.key("x")
+        self.assertIn("[B] Back", text)
+        turn = game.state.turn
+        for key in ("x", "ENTER", " "):
+            game.key(key)
+            self.assertTrue(game.pages, "no other key leaves it")
+        self.assertEqual(game.state.turn, turn, "and none of them is a move")
+        game.key("b")
         self.assertFalse(game.pages)
         self.assertEqual(game.state.turn, 0, "the key that closed it did nothing else")
         game.key("ENTER")

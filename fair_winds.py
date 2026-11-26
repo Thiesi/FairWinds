@@ -20,6 +20,7 @@ import json
 import math
 import os
 import queue
+import re
 import shutil
 import signal
 import sqlite3
@@ -3589,6 +3590,9 @@ TRIALS = (
      "balloon": {}},
 )
 # The lessons of the first flight: what has to be done to pass each, and what is said to ask for it.
+# The way back from any screen: B, or Esc, or the key that opened it. Never Enter or Space: the screen a pilot
+# comes back to takes those for a move, and one press too many would launch.
+BACK_KEYS = ("b", "ESC")
 TUTOR_STEPS = (
     ("look", "Each layer of air blows its own way. `W` and `S` look at the layer above and the one below; the "
              "dotted trail is where it would carry you. Press `W` or `S`."),
@@ -4982,7 +4986,7 @@ class PlainFlight:
             self._drift_seen = {"day": day, "table": [], "mine": None}
 
     def _drift_lobby_key(self, k: str) -> None:
-        if k in ("ESC", "b", "t", " "):
+        if k in BACK_KEYS + ("t",):
             self.drift_lobby = False
         elif k in ("p", "ENTER"):
             self._day_may_have_opened()
@@ -5161,7 +5165,7 @@ class PlainFlight:
             self.trial_at = min(len(TRIALS), self.trial_at + 1)
         elif k == "ENTER":
             self._trial_begin(self.trial_at - 1)
-        elif k in ("ESC", "b", "r", " "):
+        elif k in BACK_KEYS + ("r",):
             self.trials = False
 
     def _trial_begin(self, index: int) -> None:
@@ -5460,7 +5464,7 @@ class PlainFlight:
                                               "The eye of the Gyre: no pilot has been in it.")[:wide - 9],
                            "text" if first else "dim"))
         out.append(s._kv(s.height - 2, 1, self._status(s, wide), wide, "dim", "text"))
-        out += s._keys(s.height - 1, [("Enter", "Back")])
+        out += s._keys(s.height - 1, [("B", "Back")])
         return out
 
     # -- wonders -----------------------------------------------------------------
@@ -5618,7 +5622,7 @@ class PlainFlight:
         out.append(s._line(s.height - 3, 1, "* yours   - another pilot's   the rest: a hint, sharper as the chart "
                                             "grows"[:wide], "dim"))
         out.append(s._kv(s.height - 2, 1, self._status(s, wide), wide, "dim", "text"))
-        out += s._keys(s.height - 1, [("W/S", f"Page {self.album_page + 1} of {len(pages)}"), ("Enter", "Back")])
+        out += s._keys(s.height - 1, [("W/S", f"Page {self.album_page + 1} of {len(pages)}"), ("B", "Back")])
         return out
 
     # -- the almanac ---------------------------------------------------------
@@ -5724,7 +5728,7 @@ class PlainFlight:
             out.append(s._line(s.height - 3, 1, f"Fly one in layer {WIND_LAYERS} or below while it blows, on "
                                                 f"{WIND_DAYS} days: it is yours to enter."[:wide], "dim"))
         out.append(s._kv(s.height - 2, 1, self._status(s, wide), wide, "dim", "text"))
-        out += s._keys(s.height - 1, [("Enter", "Back")])
+        out += s._keys(s.height - 1, [("B", "Back")])
         return out
 
     # -- the chart -----------------------------------------------------------
@@ -6164,7 +6168,7 @@ class PlainFlight:
             return []
 
     def _book_key(self, k: str) -> None:
-        if self.book_place() != self.book["station"] or k in ("ENTER", "ESC", "b", " "):
+        if self.book_place() != self.book["station"] or k in BACK_KEYS:
             self.book = None
         elif self.book_mode == "canned":
             if len(k) == 1 and k.isdigit() and 1 <= int(k) <= len(CANNED):
@@ -6224,7 +6228,7 @@ class PlainFlight:
         else:
             if book["note"]:
                 out.append(s._line(s.height - 3, 1, book["note"][:wide], "bright"))
-            keys = [(f"1-{len(CANNED)}", "Sign with a line") if canned else ("W", "Write a line"), ("Enter", "Back")]
+            keys = [(f"1-{len(CANNED)}", "Sign with a line") if canned else ("W", "Write a line"), ("B", "Back")]
         out += s._keys(s.height - 1, keys)
         return out
 
@@ -6544,7 +6548,7 @@ class PlainFlight:
         return f"The envelope: {self.design['pattern']} in {names}."
 
     def _loft_key(self, k: str) -> None:
-        if not self.at_loft() or k in ("ENTER", "ESC", "b", "g", " "):
+        if not self.at_loft() or k in BACK_KEYS + ("g",):
             self.loft = False
             return
         if len(k) == 1 and k.isdigit() and 1 <= int(k) <= len(TRACKS):
@@ -6639,8 +6643,9 @@ class PlainFlight:
             self._book_key(k)
             return None
         if self.pages:
-            self.pages = False            # any key closes the almanac, and is used up
-            return None
+            if k in BACK_KEYS + ("v",):
+                self.pages = False
+            return None                   # any other key is used up and does nothing
         if self.drift_lobby:
             self._drift_lobby_key(k)
             return None
@@ -6679,7 +6684,7 @@ class PlainFlight:
                 self.album_page -= 1
             elif k in ("s", "DOWN"):
                 self.album_page = min(self.album_page + 1, len(self._album_pages()) - 1)
-            else:
+            elif k in BACK_KEYS + ("u",):
                 self.album_open = False
             self.album_page = max(0, self.album_page)
             return None
@@ -6688,8 +6693,9 @@ class PlainFlight:
             self.album_open = True
             return None
         if self.season_open:
-            self.season_open = False      # any key closes it, and is used up
-            return None
+            if k in BACK_KEYS + ("y",):
+                self.season_open = False
+            return None                   # any other key is used up and does nothing
         if k == "y" and not self.hub and not self.loft and self.drift is None:
             self._see_season()
             self.season_open = True
@@ -6759,7 +6765,7 @@ class PlainFlight:
 
     def _hub_key(self, k: str) -> None:
         """A key at the post office."""
-        if not self.at_office() or k in ("ENTER", "ESC", "b", "o", " "):
+        if not self.at_office() or k in BACK_KEYS + ("o",):
             self.hub = False
             return
         if k == "g" and self.at_loft():
@@ -6800,7 +6806,7 @@ class PlainFlight:
                 current = "       " + word          # a continued line sits under the text, not the clock
             else:
                 current = f"{current} {word}" if current else word
-        if current.startswith("       ") and " " not in current.strip() and self.log[-1].strip().count(" ") > 1:
+        if current.startswith("       ") and " " not in current.strip() and " " in self.log[-1].strip():
             # One word alone on the last line: the word before it comes down to keep it company.
             before, _, word = self.log[-1].rpartition(" ")
             self.log[-1], current = before, f"       {word} {current.strip()}"
@@ -7349,7 +7355,7 @@ class PlainFlight:
             view["names"] = not view["names"]
         elif k == "/":
             view["find"] = ""
-        elif k in ("ENTER", "ESC", "b", "c", " "):
+        elif k in BACK_KEYS + ("c",):
             self.atlas = False
             view.update(find=None, found=None, note="")         # what was looked for is not marked for ever
 
@@ -7535,7 +7541,7 @@ class PlainFlight:
             out += s._keys(s.height - 1, [("Enter", "Find it"), ("Esc", "Leave it")])
         else:
             out += s._keys(s.height - 1, [("Arrows", "Pan"), ("Z", "In"), ("-", "Out"), ("I", "Isobars"),
-                                          ("N", "Names"), ("/", "Find"), ("Enter", "Back")], 2)
+                                          ("N", "Names"), ("/", "Find"), ("B", "Back")], 2)
         return out
 
     def _station_mark(self, station: dict) -> tuple[str, str]:
@@ -7594,7 +7600,7 @@ class PlainFlight:
         elif not self.saved_ok:
             out.append(s._line(s.height - 3, 1, "This game cannot be saved here. Tell the SysOp. You can play on.", "warn"))
         out.append(s._kv(s.height - 2, 1, self._status(s, wide), wide, "dim", "text"))
-        out += s._keys(s.height - 1, [(f"1-{len(TRACKS)}", "Fit the next"), ("Enter", "Back"), ("?", "Help"),
+        out += s._keys(s.height - 1, [(f"1-{len(TRACKS)}", "Fit the next"), ("B", "Back"), ("?", "Help"),
                                       ("Q", "Quit")])
         return out
 
@@ -7676,7 +7682,7 @@ class PlainFlight:
         out.append(s._kv(s.height - 2, 1, self._status(s, wide), wide, "dim", "text"))
         keys = [(f"1-{len(offers)}" if len(offers) > 1 else "1", "Take or put back")] if offers else []
         keys += [("G", "Rigging loft")] if self.at_loft() else []
-        out += s._keys(s.height - 1, keys + [("Enter", "Back"), ("?", "Help"), ("Q", "Quit")])
+        out += s._keys(s.height - 1, keys + [("B", "Back"), ("?", "Help"), ("Q", "Quit")])
         return out
 
     def draw(self, s: "Session") -> list[str]:
@@ -8812,8 +8818,10 @@ class Session:
         In a sentence that is itself in the keys' colour a key is white; in
         a dimmed one (something said earlier) it is dimmed with the rest.
         """
-        if text.count("`") % 2:
-            text = text.replace("`", "")            # a stray mark (a name with one in it) marks nothing
+        parts = text.split("`")
+        if not len(parts) % 2 or not all(re.fullmatch(r"[A-Za-z0-9?/<>-]{1,5}", part) for part in parts[1::2]):
+            # Marks that are not about keys (a pilot's name with some in it): nothing is marked, none is shown.
+            text = text.replace("`", "")
         key = role if role == "dim" else "value" if role == "accent" else "accent"
         return self._kv(row, col, text, wide, role, key)
 
@@ -8918,7 +8926,7 @@ class Session:
             else:
                 self._kv(row, 1, t, self.width - 2, "text", "cool")
             row += 1
-        out += self._keys(self.height - 1, [("B", "Back"), ("Q", "Back")])
+        out += self._keys(self.height - 1, [("B", "Back")])
         return out
 
     def _keys(self, row: int, keys, gap: int = 3) -> list[str]:
@@ -8945,7 +8953,7 @@ class Session:
         self.notice = ""
         lower = key.lower() if len(key) == 1 else key
         if self.view == "help":
-            if lower in ("q", "b", "ESC", "?", "ENTER", "CTRL-C"):
+            if lower in BACK_KEYS + ("?", "q", "CTRL-C"):
                 self.view = "front"
             return
         if self.game is not None and layout_tier(self.width, self.height) != "undersize":
