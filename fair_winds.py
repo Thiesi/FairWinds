@@ -33,7 +33,7 @@ import zoneinfo
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "0.1.0.dev25"
+VERSION = "0.1.0.dev26"
 DOOR_API = 5
 MIN_WIDTH, MIN_HEIGHT = 80, 24
 MAX_DIMENSION = 1000
@@ -3477,6 +3477,159 @@ def my_drift(db, day: int, user_id: int) -> dict | None:
 
 
 # --------------------------------------------------------------------------
+# The Trials (S20). A first flight that teaches by having the caller do each
+# thing once, and twelve set flights with medals. Like the Drift they are
+# flown on a balloon that is not the pilot's, in weather that is fixed for
+# each, and they cost no day and touch nothing shared. Each trial's mark is
+# where a flight written down in the table comes down, so every trial has
+# a way to gold, in every world.
+# --------------------------------------------------------------------------
+
+TRIAL_MEDALS = ("no medal", "bronze", "silver", "gold")
+TRIAL_KM = (30.0, 15.0, 6.0)         # down this near the mark: bronze, silver, gold; and on a short trial...
+TRIAL_SHARE = (0.75, 0.4, 0.15)      # ...no further than this share of the way from the start to the mark
+TRIAL_GOLD_KM = 3.0                  # but gold is never asked for nearer than this
+TUTORIAL_SPARE_TURNS = 20            # the first flight leaves room to look about
+TRIAL_PAY = (0, 5, 12, 25)           # postmarks a medal is worth; a better one pays the difference
+TRIAL_SPARE_TURNS = 8                # turns allowed beyond the flight the trial was laid by
+TRIAL_DAY = 500                      # the weather of the trials is the weather of days from here on, for good
+TRIAL_FAR_KM = 10.0                  # the mark is at least this far from the start
+TRIAL_BALLOON = {"fuel": 40, "ballast": 3, "pibals": 2, "ceiling": 3}
+TUTORIAL = {"name": "The first flight", "about": "Learn to fly by flying: six short lessons.", "start": 12,
+            "script": ("launch", "pibal", "jettison", "hold", "sink", "land"), "balloon": {}}
+TRIALS = (
+    {"name": "First Hop", "about": "A short flight to a mark.", "start": 12,
+     "script": ("launch",) + ("hold",) * 4 + ("land",), "balloon": {}},
+    {"name": "Up and Over", "about": "The ground wind will not take you there.", "start": 12,
+     "script": ("launch", "climb") + ("hold",) * 4 + ("sink", "hold", "land"), "balloon": {}},
+    {"name": "Top Floor", "about": "Two layers up and down again.", "start": 16,
+     "script": ("launch", "climb", "climb") + ("hold",) * 5 + ("sink", "sink", "land"), "balloon": {}},
+    {"name": "The Long Tank", "about": "Six fuel, and the midday sun for a burner.", "start": 20,
+     "script": ("launch",) + ("hold",) * 12 + ("land",), "balloon": {"fuel": 6}},
+    {"name": "No Ballast", "about": "No sacks: every climb is paid for in fuel.", "start": 12,
+     "script": ("launch", "climb") + ("hold",) * 6 + ("sink", "land"), "balloon": {"ballast": 0}},
+    {"name": "Sack Race", "about": "Eight fuel. The sacks are your burner.", "start": 12,
+     "script": ("launch", "jettison", "jettison") + ("hold",) * 3 + ("sink", "sink", "land"),
+     "balloon": {"fuel": 8}},
+    {"name": "Rope Trick", "about": "Stay low and steer with the trail rope.", "start": 12,
+     "script": ("launch", "left", "left", "hold", "right", "left", "land"), "balloon": {}},
+    {"name": "Dawn Run", "about": "First light, when air drains off the hills.", "start": 0,
+     "script": ("launch",) + ("hold",) * 8 + ("land",), "balloon": {}},
+    {"name": "Dusk Dash", "about": "Down before dark.", "start": 44,
+     "script": ("launch", "climb") + ("hold",) * 6 + ("sink", "hold", "land"), "balloon": {}},
+    {"name": "Night Mail", "about": "After dark, with night gear.", "start": 58,
+     "script": ("launch",) + ("hold",) * 6 + ("land",), "balloon": {"night_gear": True}},
+    {"name": "The High Road", "about": "A big envelope and the fast air high up.", "start": 12,
+     "script": ("launch",) + ("climb",) * 4 + ("hold",) * 6 + ("sink",) * 4 + ("land",),
+     "balloon": {"fuel": 60, "ceiling": 5}},
+    {"name": "Long Haul", "about": "Twenty turns, one change of layer.", "start": 12,
+     "script": ("launch",) + ("hold",) * 6 + ("climb",) + ("hold",) * 8 + ("sink",) + ("hold",) * 3 + ("land",),
+     "balloon": {}},
+)
+# The lessons of the first flight: what has to be done to pass each, and what is said to ask for it.
+TUTOR_STEPS = (
+    ("look", "Each layer of air blows its own way. W and S look at the layer above and the one below; the dotted "
+             "trail is where it would carry you. Press W or S."),
+    ("launch", "Enter flies what you are looking at. Press Enter to launch."),
+    ("pibal", "A wind marked ~ is a forecast. P sends up a pibal: for four turns every layer is read true. Press P."),
+    ("jettison", "Climbing burns fuel. A sack over the side climbs for nothing: press J, then Enter."),
+    ("sink", "Sinking is free. Press S for the layer below, then Enter."),
+    ("land", "Last, because it ends the flight: you land from the lowest layer. Press L, then Enter. A gentle "
+             "ground wind makes a clean landing."),
+)
+TRIAL_HELP = (
+    "# THE TRIALS",
+    "Set flights, always open. Each has its own balloon and its own weather,",
+    "the same every time: fly one as often as you like.",
+    "They cost no day and change nothing of your own balloon or of the chart.",
+    "# THE FIRST FLIGHT",
+    "  Six lessons, each done once: looking at the layers, launching, a pibal,",
+    "  a sack of ballast, sinking, landing. The log says what to press.",
+    "# MEDALS",
+    "  Each trial has a mark, `X`. Come down on land within 6 km of it for",
+    "  gold, within 15 km for silver, within 30 km for bronze: nearer than",
+    "  that on a short trial, as the log says when it begins. Water wins",
+    "  nothing. Every mark can be reached: a flight that can be flown ends there.",
+    "  A trial allows eight turns more than that flight took; then the",
+    "  balloon comes down where it is.",
+    "  Your best medal for each trial is kept. A medal pays 5, 12 or 25",
+    "  postmarks the first time; a better one pays the difference.",
+    "# KEYS",
+    "  `W` `S` choose a trial   `Enter` fly it   `B` back",
+    "  `X` twice leaves a trial. Flying is as ever: `W` `S`, `A` `D`, `Enter`,",
+    "  `J`, `P`, `L`.",
+)
+
+
+def trial_state(spec: dict, x: float, y: float, day: int) -> "FlightState":
+    """The balloon a trial is flown on, standing at its start at its hour."""
+    balloon = dict(TRIAL_BALLOON, **spec["balloon"])
+    return FlightState(x=x, y=y, day=day, turn=spec["start"], **balloon)
+
+
+def trial_course(world: "World", weather: "Weather", index: int) -> dict:
+    """A trial's course in this world: its day, its start and its mark. index -1 is the first flight.
+
+    The trial's own flight is flown from a town on a day of fixed
+    weather; where it lands is the mark. Towns and days are tried in a
+    fixed order until the flight can be flown as written and comes down
+    on land well away from where it began. That flight is kept as "gold":
+    the way to the mark.
+    """
+    kept = world.__dict__.setdefault("_trials", {})
+    if index not in kept:
+        spec = TUTORIAL if index < 0 else TRIALS[index]
+        engine = Flight(world, weather, "trial")
+        course = None
+        for attempt in range(120):
+            day = TRIAL_DAY + (index + 1) * 131 + attempt
+            town = world.towns[draw(world.seed, "trial-start", index, attempt) % len(world.towns)]
+            state = trial_state(spec, town["x"], town["y"], day)
+            flown = True
+            for action in spec["script"]:
+                if action not in engine.actions(state):
+                    flown = False
+                    break
+                state = engine.step(state, action).state
+                if state.status != "aloft" and action != "land":
+                    flown = False
+                    break
+            far = math.sqrt((state.x - town["x"]) ** 2 + (state.y - town["y"]) ** 2)
+            if flown and state.status == "ground" and (far >= TRIAL_FAR_KM or index < 0):
+                course = {"day": day, "start": town["name"], "x": town["x"], "y": town["y"], "mx": state.x,
+                          "my": state.y, "gold": list(spec["script"])}
+                break
+        if course is None:
+            # No day in a hundred and twenty lets the flight be flown as written: a mark by the start, and no
+            # flight to vouch for it. (The tests hold that this does not happen in the worlds they try.)
+            town = world.towns[draw(world.seed, "trial-start", index, 0) % len(world.towns)]
+            course = {"day": TRIAL_DAY + (index + 1) * 131, "start": town["name"], "x": town["x"], "y": town["y"],
+                      "mx": town["x"], "my": town["y"], "gold": []}
+        kept[index] = course
+    return kept[index]
+
+
+def trial_limits(trip: float) -> tuple[float, float, float]:
+    """How near the mark wins bronze, silver and gold in a trial whose mark is so far from its start.
+
+    The distances of TRIAL_KM, or on a short trial a share of the way: so
+    that coming down where the flight began never wins anything.
+    """
+    # In whole km, rounded down: what the log says is exactly what is asked.
+    gold = float(int(min(TRIAL_KM[2], max(TRIAL_GOLD_KM, TRIAL_SHARE[2] * trip))))
+    silver = float(int(min(TRIAL_KM[1], max(gold, TRIAL_SHARE[1] * trip))))
+    bronze = float(int(min(TRIAL_KM[0], max(silver, TRIAL_SHARE[0] * trip))))
+    return bronze, silver, gold
+
+
+def trial_medal(km: float, down: str, trip: float = 1000.0) -> int:
+    """The medal a landing wins: 0 none, 1 bronze, 2 silver, 3 gold. Only a balloon down on land wins one."""
+    if down not in ("ground", "stranded"):
+        return 0
+    return sum(1 for limit in trial_limits(trip) if km <= limit)
+
+
+# --------------------------------------------------------------------------
 # The world's records (S10): one SQLite file for each world, shared by every
 # caller of that node. Writes are short transactions that take the write
 # lock at once; none is open while a caller thinks. A process killed at any
@@ -3997,6 +4150,11 @@ class PlainFlight:
         self.drift_note = ""
         self._drift_seen: dict = {"table": [], "mine": None, "day": 0}
         self._main = None                 # the pilot's own flight, set aside while a Drift is flown
+        self.trials = False               # the Trials' own screen is open
+        self.trial_at = 0                 # the line chosen there: 0 is the first flight
+        self.trial_note = ""
+        self.medals = [0] * len(TRIALS)   # the pilot's best medal in each trial
+        self.taught = False               # the first flight has been flown through
         self._blowing_at = None
         self._chart_size = None
         self._share = None
@@ -4084,6 +4242,7 @@ class PlainFlight:
         self.lift_off, self.charted = None, 0
         self.kits = self.crates = 0
         self.route = [[round(start["x"], 1), round(start["y"], 1)]]
+        self.medals, self.taught = [0] * len(TRIALS), False
         self._fit()
         home = ("town", self.world.start_town)
         for dest in places_near(self.world, start["x"], start["y"], skip=home, stations=self.stations)[:POST_CHOICES]:
@@ -4096,7 +4255,7 @@ class PlainFlight:
                               "due": self.today + FIRST_ROUND_DAYS})
         self.log = []
         self._say(f"You are at {start['name']}. There is post aboard for {self._names()}.")
-        self._say("Read the winds and fly to whichever the day favours.")
+        self._say("Read the winds and fly to whichever the day favours. New to it? R teaches.")
 
     _imported = False
     _dated = False                        # the pilot's days are the world's days
@@ -4133,20 +4292,23 @@ class PlainFlight:
 
     def waiting(self) -> bool:
         """Has the pilot flown every day that has opened?"""
-        return self.state.day > self.today
+        return self.state.day > self.today and self.drift is None       # a trial's day is not a day of the calendar
 
     def offered(self, state: FlightState | None = None) -> dict:
         """What the pilot may do now: nothing, on a day that has not opened."""
         state = state or self.state
+        if self.drift is not None:
+            return self.engine.actions(state)     # a Drift or a trial has weather of its own day: it is always open
         return {} if state.day > self.today else self.engine.actions(state)
 
     def briefing(self) -> str:
         """When the next day opens, and how many opened days still wait. The day being flown heads the screen."""
         local = self._local()
+        mine = self._main[0] if self._main is not None else self.state       # the pilot's own flight, set aside or not
         if self.waiting():
             opens = when_text(calendar_opens(self.calendar, self.state.day), local, self.launch.datetime_format)
             return f"Day {self.state.day} opens {opens}."
-        more = self.today - self.state.day
+        more = max(0, self.today - mine.day)
         opens = when_text(calendar_opens(self.calendar, self.today + 1), local, self.launch.datetime_format)
         wait = "" if more == 0 else " One more day waits." if more == 1 else \
             f" {'Two' if more == 2 else more} more days wait."
@@ -4213,6 +4375,10 @@ class PlainFlight:
         route = [[float(point[0]), float(point[1])] for point in career.get("route", [])][-ROUTE_KEPT:]
         if not all(math.isfinite(v) for point in route for v in point):
             raise ValueError("a route through nowhere")
+        medals = [int(m) for m in career.get("medals", [])][:len(TRIALS)]
+        medals += [0] * (len(TRIALS) - len(medals))
+        if any(not 0 <= m < len(TRIAL_MEDALS) for m in medals):
+            raise ValueError("no such medal")
         self._dated = bool(career.get("dated", False))
         self.state, self.manifest, self.taken = flight, manifest, taken
         self.postmarks, self.next_id = postmarks, next_id
@@ -4221,6 +4387,7 @@ class PlainFlight:
         self.charted = max(0, int(career.get("charted", 0)))
         self.kits, self.crates = kits, crates
         self.route = route
+        self.medals, self.taught = medals, bool(career.get("taught", False))
         spot = career.get("lift_off")
         self.lift_off = [float(spot[0]), float(spot[1])] if spot else None
         if self.lift_off is not None and not all(math.isfinite(v) for v in self.lift_off):
@@ -4269,6 +4436,7 @@ class PlainFlight:
         return {"manifest": self.manifest, "taken": self.taken, "postmarks": self.postmarks, "next_id": self.next_id,
                 "gear": self.gear, "points": self.points, "design": self.design, "lift_off": self.lift_off,
                 "charted": self.charted, "kits": self.kits, "crates": self.crates, "route": self.route,
+                "medals": self.medals, "taught": self.taught,
                 "deliveries": self.deliveries, "days_flown": self.days_flown, "total_km": self.total_km,
                 "log": self.log[-3:], "dated": self._dated}
 
@@ -4332,6 +4500,8 @@ class PlainFlight:
 
     def help_text(self) -> tuple:
         """The help for where the caller is: the Drift has its own."""
+        if self.trials or (self.drift is not None and self.drift.get("kind") == "trial"):
+            return TRIAL_HELP
         return DRIFT_HELP if self.drift_lobby or self.drift is not None else PLAIN_HELP
 
     def _shared(self, work, write: bool = False):
@@ -4417,7 +4587,10 @@ class PlainFlight:
             line = self._describe(event)
             if line:
                 self._say(f"{stamp}  {line}")
-        if self.state.status == "aloft" and self.state.turn - DRIFT_START_TURN >= DRIFT_TURNS:
+        if drift.get("kind") == "trial":
+            self._tutor(action)
+        if self.state.status == "aloft" and \
+                self.state.turn - drift.get("from", DRIFT_START_TURN) >= drift.get("turns", DRIFT_TURNS):
             events: list = []
             self.state = self.engine._land(self.state, events)
             self._say(f"{clock_text(self.state.minute)}  Time is up: the balloon comes down where it is.")
@@ -4450,6 +4623,9 @@ class PlainFlight:
     def _drift_end(self, left: bool = False) -> None:
         """The Drift is over, or left: the pilot's own flight is taken up again, and a finished one is scored."""
         drift, state = self.drift, self.state
+        if drift.get("kind") == "trial":
+            self._trial_end(left)
+            return
         course = drift["course"]
         km = math.sqrt((state.x - course["mx"]) ** 2 + (state.y - course["my"]) ** 2)
         turns, fuel = state.turn - DRIFT_START_TURN, state.fuel
@@ -4518,6 +4694,133 @@ class PlainFlight:
             out.append(s._line(s.height - 3, 1, self.drift_note[:wide], "bright"))
         out.append(s._kv(s.height - 2, 1, self._status(s, wide), wide, "dim", "text"))
         out += s._keys(s.height - 1, keys + [("P", "Practise"), ("?", "The rules"), ("B", "Back")])
+        return out
+
+    # -- the Trials --------------------------------------------------------------
+
+    def _trials_key(self, k: str) -> None:
+        if k in ("w", "UP"):
+            self.trial_at = max(0, self.trial_at - 1)
+        elif k in ("s", "DOWN"):
+            self.trial_at = min(len(TRIALS), self.trial_at + 1)
+        elif k == "ENTER":
+            self._trial_begin(self.trial_at - 1)
+        elif k in ("ESC", "b", "r", " "):
+            self.trials = False
+
+    def _trial_begin(self, index: int) -> None:
+        """Set the pilot's own flight aside and stand the trial's balloon at its start. -1 is the first flight."""
+        if self.store is not None and not self._mine(write=False):
+            return
+        spec = TUTORIAL if index < 0 else TRIALS[index]
+        course = trial_course(self.world, self.weather, index)
+        self._main = (self.state, self.engine, self.gear, self.choice, self.log, self.heard)
+        spare = TUTORIAL_SPARE_TURNS if index < 0 else TRIAL_SPARE_TURNS
+        self.drift = {"course": course, "scored": False, "kind": "trial", "trial": index, "from": spec["start"],
+                      "turns": len(spec["script"]) + spare, "title": spec["name"], "step": 0, "done": set()}
+        self.state = trial_state(spec, course["x"], course["y"], course["day"])
+        self.engine = Flight(self.world, self.weather, "trial")
+        self.gear = {track: 0 for track in TRACKS}
+        self.log, self.heard, self.trials = [], [], False
+        dx, dy = course["mx"] - course["x"], course["my"] - course["y"]
+        if index < 0:
+            self._say(TUTOR_STEPS[0][1])
+        else:
+            trip = math.sqrt(dx * dx + dy * dy)
+            bronze, silver, gold = trial_limits(trip)
+            self._say(f"{spec['name']}. {spec['about']} The mark is {trip:.0f} km {bearing(dx, dy)}.")
+            self._say(f"Gold within {gold:.0f} km of it, silver {silver:.0f}, bronze {bronze:.0f}. X twice leaves.")
+        self._choose_default()
+
+    def _tutor(self, did: str) -> None:
+        """The first flight: a lesson is passed by doing what it asks for, in whatever order.
+
+        The log asks for the first lesson not yet done. A caller who
+        launches before looking has passed the launch, and is asked to look.
+        """
+        drift = self.drift
+        names = [step[0] for step in TUTOR_STEPS]
+        if drift is None or drift.get("trial", 0) >= 0 or did not in names or did in drift["done"]:
+            return
+        drift["done"].add(did)
+        drift["step"] = len(drift["done"])
+        todo = next((text for name, text in TUTOR_STEPS if name not in drift["done"]), None)
+        if todo is not None:
+            self._say(todo)
+
+    def _trial_end(self, left: bool) -> None:
+        """A trial is over, or left: the pilot's own flight is taken up again, and a better medal is kept."""
+        drift, state = self.drift, self.state
+        course, index = drift["course"], drift["trial"]
+        km = math.sqrt((state.x - course["mx"]) ** 2 + (state.y - course["my"]) ** 2)
+        trip = math.sqrt((course["x"] - course["mx"]) ** 2 + (course["y"] - course["my"]) ** 2)
+        # A trial that could not be laid out in this world has no flight to vouch for its mark: it wins nothing.
+        medal = trial_medal(km, state.status, trip) if course["gold"] else 0
+        self.state, self.engine, self.gear, self.choice, self.log, self.heard = self._main
+        self.drift, self._main, self.trials = None, None, True
+        self.frames_left = 0
+        kept = (list(self.medals), self.postmarks, self.taught)
+
+        def keep() -> bool:
+            """Write the pilot's record, with no line in the journal: a trial is not a turn of theirs. If it
+            cannot be written the medal is not held either, or it would be shown and paid and then gone."""
+            self.save()
+            if self.store is not None and (self.ended or not self.saved_ok):
+                self.medals, self.postmarks, self.taught = kept
+                self.trial_note = "That could not be written down, so it does not stand. Fly it again."
+                return False
+            return True
+        if left:
+            self.trial_note = "Left. It is there to be flown again."
+        elif index < 0:
+            if drift["step"] >= len(TUTOR_STEPS):
+                first, self.taught = not self.taught, True
+                self.trial_note = "Down, and every lesson done. That is all there is to flying: the rest is the wind."
+                if first:
+                    keep()
+            else:
+                self.trial_note = (f"Down with {len(TUTOR_STEPS) - drift['step']} of the lessons still to do. "
+                                   f"Fly it again any time.")
+        else:
+            name = TRIALS[index]["name"]
+            how = "on the water" if state.status == "ditched" else f"{km:.1f} km from the mark"
+            if medal > self.medals[index]:
+                pay = TRIAL_PAY[medal] - TRIAL_PAY[self.medals[index]]
+                self.medals = self.medals[:index] + [medal] + self.medals[index + 1:]
+                self.postmarks += pay
+                self.trial_note = f"{name}: down {how}. {TRIAL_MEDALS[medal].capitalize()}, and {pay} postmarks."
+                keep()
+            elif medal:
+                self.trial_note = f"{name}: down {how}. {TRIAL_MEDALS[medal].capitalize()}: no better than your best."
+            elif not course["gold"]:
+                self.trial_note = f"{name} cannot be laid out in this world: there is no medal to be had in it."
+            else:
+                self.trial_note = f"{name}: down {how}. No medal: bronze is within {trial_limits(trip)[0]:.0f} km."
+        self._choose_default()
+
+    def _draw_trials(self, s: "Session") -> list[str]:
+        """The Trials' own screen: the first flight and the twelve, with the pilot's medals."""
+        wide = s.width - 2
+        out = [s._line(0, 1, "FAIR WINDS", "accent"), s._line(0, 13, "The Trials", "text")]
+        counts = [self.medals.count(m) for m in (3, 2, 1)]
+        out.append(s._kv_right(0, s.width - 1, f"`{counts[0]}` gold  `{counts[1]}` silver  `{counts[2]}` bronze"))
+        specs = (TUTORIAL,) + TRIALS
+        room = s.height - 6
+        first = max(0, min(self.trial_at - room + 1, len(specs) - room)) if len(specs) > room else 0
+        for row, i in enumerate(range(first, min(len(specs), first + room))):
+            spec, chosen = specs[i], i == self.trial_at
+            if i == 0:
+                won = "flown" if self.taught else "not yet flown"
+            else:
+                won = TRIAL_MEDALS[self.medals[i - 1]]
+            about = spec["about"][:max(0, wide - 34)]
+            line = f"{'>' if chosen else ' '} {spec['name']:<17}{about:<{max(0, wide - 34)}} {won:>13}"
+            out.append(s._line(2 + row, 1, line[:wide], "bright" if chosen else
+                               "accent" if i and self.medals[i - 1] == 3 else "text"))
+        if self.trial_note:
+            out.append(s._line(s.height - 3, 1, self.trial_note[:wide], "bright"))
+        out.append(s._kv(s.height - 2, 1, self._status(s, wide), wide, "dim", "text"))
+        out += s._keys(s.height - 1, [("W/S", "Choose"), ("Enter", "Fly it"), ("?", "The rules"), ("B", "Back")])
         return out
 
     # -- the almanac ---------------------------------------------------------
@@ -5532,6 +5835,9 @@ class PlainFlight:
         if self.drift_lobby:
             self._drift_lobby_key(k)
             return None
+        if self.trials:
+            self._trials_key(k)
+            return None
         if self.drift is not None:
             if k in ("x", "ESC"):
                 # X sits among the keys that fly. A scored Drift left by a slip waits where it was; a practice
@@ -5541,11 +5847,16 @@ class PlainFlight:
                 else:
                     self.drift["leaving"] = True
                     self.heard = []
-                    self._say("Leave the practice? X again leaves it; any other key flies on.")
+                    self._say("Leave this flight? X again leaves it; any other key flies on.")
                 return None
             self.drift["leaving"] = False
+            if self.drift.get("kind") == "trial" and k in ("w", "s", "UP", "DOWN"):
+                self._tutor("look")
         elif k == "t" and not self.hub and not self.loft and self.state.status != "aloft":
             self._drift_open()
+            return None
+        elif k == "r" and not self.hub and not self.loft and self.state.status != "aloft":
+            self.trials, self.trial_note = True, ""
             return None
         if k == "c" and not self.hub and not self.loft:
             self.atlas = True
@@ -6521,6 +6832,8 @@ class PlainFlight:
             return self._draw_almanac(s)
         if self.drift_lobby and not self.naming:
             return self._draw_drift(s)
+        if self.trials and not self.naming:
+            return self._draw_trials(s)
         if self.hub and self.at_office():
             return self._draw_hub(s)
         if self.loft and self.at_loft():
@@ -6534,13 +6847,16 @@ class PlainFlight:
         panel = PANEL_SMALL if self.tier == "small" else PANEL_WIDE
         self.map_cols, self.map_rows = s.width - panel - 2, s.height - 8
         self.panel_col, base, wide = s.width - panel + 1, s.height - 7, s.width - 2
-        out = [s._line(0, 1, "FAIR WINDS", "accent"),
-               s._kv(0, 13, f"Day `{state.day}`  `{clock_text(state.minute)}`")]
+        # A trial's weather is a day of its own, far from the calendar's: only its hour is the caller's business.
+        when = f"`{clock_text(state.minute)}`" if self.drift is not None and self.drift.get("kind") == "trial" \
+            else f"Day `{state.day}`  `{clock_text(state.minute)}`"
+        out = [s._line(0, 1, "FAIR WINDS", "accent"), s._kv(0, 13, when)]
         distance, toward, nearest = self.bearings()[0]
         post = f"{'Nearest post' if self.manifest else 'Nearest office'}: `{nearest['name']}, {distance:.0f} km {toward}`"
         if self.drift is not None:
-            left = max(0, DRIFT_TURNS - (state.turn - DRIFT_START_TURN))
-            post = f"The Drift: `{left}` turns left. The mark: `{distance:.0f} km {toward}`"
+            left = max(0, self.drift.get("turns", DRIFT_TURNS) - (state.turn - self.drift.get("from", DRIFT_START_TURN)))
+            title = self.drift.get("title", "The Drift")[:16]
+            post = f"{title}: `{left}` turns left. Mark `{distance:.0f} km {toward}`"
         out.append(s._kv_right(0, s.width - 1, post, 32))
         out += self._draw_map(s)
         out += self._draw_panel(s, phase)
@@ -6607,7 +6923,7 @@ class PlainFlight:
                 keys.append(("X", "Leave"))
             return keys + [("?", "Help"), ("Q", "Quit")]
         if self.drift is not None:
-            return [("Enter", "Launch"), ("X", "Leave the Drift"), ("?", "The rules"), leave]
+            return [("Enter", "Launch"), ("X", "Leave it"), ("?", "The rules"), leave]
         office = [("O", "Post")] if self.at_office() else []      # the loft is a door inside it, and G from here
         if self.kits and not self.cannot_plant():
             office = [("K", "Plant station")]                     # in the wild: there is no office here
@@ -6615,7 +6931,9 @@ class PlainFlight:
             office = office + [("B", "Book")]
         if phase == "ground":
             wait = [("H", "Wait")] if self.state.turn < DAY_TURNS else []
-            return [("Enter", "Launch")] + office + wait + [("N", "Night"), ("?", "Help"), leave]
+            # A pilot who has not flown the first flight is shown the way to it; after that it is in the help.
+            learn = [("R", "Learn")] if not self.taught else []
+            return [("Enter", "Launch")] + learn + office + wait + [("N", "Night"), ("?", "Help"), leave]
         if phase == "stranded":
             return [("W", "Walk out")] + office + [("?", "Help"), leave]
         if phase == "ditched":
@@ -7025,7 +7343,7 @@ PLAIN_HELP = (
     "  after 20:00). Land in 15 km/h or less. 12 km from a place is there.",
     "  `K` plants a station kit in the wild: a sharper forecast there for everyone.",
     "  Landing at a station restocks it: no fuel there. Crates make it a mast.",
-    "  `T` Daily Drift  `V` almanac  `?` help  `Ctrl-L` redraw  `Q` leave: all is saved.",
+    "  `T` Drift  `R` Trials  `V` almanac  `?` help  `Ctrl-L` redraw  `Q` leave: all is saved.",
 )
 
 
