@@ -387,6 +387,33 @@ that colour it is white. In the source a key stands between backticks
 log's three lines the last thing said is bright in all its lines, and what was
 said before it is dim, keys and all.
 
+**Wear is said.** A turn that wears the balloon by more than the rope's one
+point says so in the log, with what it leaves the balloon at ("The balloon
+takes 10 wear: 22 of 100."). The rope's own line says that it wears. From 70
+(`WEAR_CRITICAL`: a hard landing, 30, would ground the balloon) the turn that
+got there says so, and a warning stands above the sentence, in the warning's
+colour, until the balloon is mended: `worn_text`. At 100 the log says the
+balloon cannot fly until it is mended.
+
+**Why one would buy it.** Under the stores a line each, dimmed, says what does
+not explain itself: what wears a balloon and what wear does (shown once there
+is wear), what a station kit is for and what mast crates are for (in towns,
+where they are sold). `WHY_MEND`, `WHY_KIT`, `WHY_CRATE`; each fits 78 cells.
+Where the screen has no room for them they are left off: what the post office
+says to the pilot comes first.
+
+**Layers and their tracks.** A layer that has a track on the map is written in
+the layer table in that track's colour (`layer_inks`): the layer below in the
+colour of sinking, the balloon's own in the colour of holding, the one above in
+the colour of climbing; bright for the choice, further off for the others, as
+the tracks themselves are. `>` and `*` still mark the balloon's layer and the
+chosen one. A layer no track runs in is plain.
+
+A digit or letter that chooses a line (the three names offered for a find, a
+contract at the post office, the relief run, a track in the loft, a line for
+the visitors' book) is in the keys' colour too; a contract already carried,
+which its digit no longer takes, is dim throughout.
+
 **Keys.** W and S or the arrows step through sink, hold and climb. Enter or
 Space flies the choice. J chooses a jettison, L a landing, P releases a pibal
 at once. N stays the night. Keys typed before a turn's result is on screen are

@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import fair_winds as fw                                   # noqa: E402
 import support                                            # noqa: E402
-from test_plain import launch                             # noqa: E402
+from test_plain import Keys, Out, launch                  # noqa: E402
 from test_post import PostCase                            # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -283,6 +283,36 @@ class Features(ChartCase):
         self.assertEqual(game.postmarks, before + land // fw.CHART_PER_POSTMARK + fw.DISCOVERY_PAY)
         self.assertIn("nobody had named", " ".join(game.log))
 
+    def test_a_layer_is_written_in_the_colour_of_its_track_on_the_map(self):
+        game = self.game()
+        self.assertEqual(game.layer_inks(), {game.engine.preview(game.state, "launch", 1)["layer"]: "accent"})
+        for _ in range(3):
+            game.key("ENTER")
+            while game.naming:
+                game.key("1")
+        self.assertEqual(game.state.status, "aloft")
+        tracks = game.choices()
+        self.assertGreater(len(tracks), 1, tracks)
+        for chosen in tracks:
+            game.choice = chosen
+            inks = game.layer_inks()
+            for action in tracks:
+                layer = game.engine.preview(game.state, action, 1)["layer"]
+                self.assertEqual(inks[layer], fw._TRACK_ROLES[action] + ("" if action == chosen else "_dim"))
+            self.assertEqual(len(inks), len(tracks), "a layer no track runs in has no colour of its own")
+            for size in ((80, 24), (132, 40)):
+                session = fw.Session(dataclasses.replace(game.launch, width=size[0], height=size[1]), Keys(), Out(),
+                                     game=game)
+                session.paint()
+                frame, wide = session.frame, size[0]
+                for layer, ink in inks.items():
+                    word = f"{layer} {fw.LAYER_NAMES[layer - 1]}"
+                    at = [row * wide + line.index(word) for row in range(1, 16)
+                          for line in ["".join(frame.ch[row * wide:(row + 1) * wide])] if word in line]
+                    self.assertEqual([frame.fg[k] for k in at], [ink], (size, word))
+        game.state = dataclasses.replace(game.state, status="ditched")
+        self.assertEqual(game.layer_inks(), {})
+
     def test_the_finder_picks_one_of_three_names(self):
         game = self.game()
         feature = self.feature(game)
@@ -291,6 +321,9 @@ class Features(ChartCase):
         text = self.screen(game)
         self.assertIn(f"Name the {feature['kind']}:   1 {names[0]}   2 {names[1]}   3 {names[2]}", text)
         self.assertIn("[1-3] Name it", text)
+        self.assertEqual(game._sentence(game.phase()),
+                         (f"Name the {feature['kind']}:   `1` {names[0]}   `2` {names[1]}   `3` {names[2]}", "text"),
+                         "the digits are keys, and marked as keys")
         turn = game.state.turn
         game.key("2")
         self.assertEqual(game.naming, [])

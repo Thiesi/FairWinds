@@ -34,7 +34,7 @@ import zoneinfo
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = "0.1.0.dev30"
+VERSION = "0.1.0.dev31"
 DOOR_API = 5
 MIN_WIDTH, MIN_HEIGHT = 80, 24
 MAX_DIMENSION = 1000
@@ -3593,6 +3593,13 @@ TRIALS = (
 # The way back from any screen: B, or Esc, or the key that opened it. Never Enter or Space: the screen a pilot
 # comes back to takes those for a move, and one press too many would launch.
 BACK_KEYS = ("b", "ESC")
+# From here a hard landing grounds the balloon: the screen warns for as long as it is so.
+WEAR_CRITICAL = WEAR_GROUNDED - LANDING_WEAR["hard"]
+# What the stores sell that does not explain itself, said in a line each where it is sold. Each fits 78 cells.
+WHY_MEND = f"Wear comes of rough landings, squalls and ridges. At {WEAR_GROUNDED} it grounds you."
+WHY_KIT = "A kit plants a station in the wild: a sharper forecast there, for every pilot."
+WHY_CRATE = (f"Crates go to a station, {CRATE_PAY} each: {MAST_CRATES} raise a mast, with fuel and a post "
+             f"office.")
 TUTOR_STEPS = (
     ("look", "Each layer of air blows its own way. `W` and `S` look at the layer above and the one below; the "
              "dotted trail is where it would carry you. Press `W` or `S`."),
@@ -5047,6 +5054,7 @@ class PlainFlight:
             line = self._describe(event)
             if line:
                 self._say(f"{stamp}  {line}")
+        self._say_wear(before, stamp)
         if drift.get("kind") == "trial":
             self._tutor(action)
         if self.state.status == "aloft" and \
@@ -6221,6 +6229,7 @@ class PlainFlight:
             top = s.height - 4 - len(CANNED)
             for i, phrase in enumerate(CANNED):
                 out.append(s._line(top + i, 1, f"{i + 1}  {phrase}"[:wide], "cool"))
+                out.append(s._line(top + i, 1, str(i + 1), "accent"))       # the digit is the key
         if self.writing is not None:
             out.append(s._line(s.height - 4, 1, f"> {self.writing}_"[:wide], "bright"))
             out.append(s._line(s.height - 3, 1, f"{len(self.writing)} of {GUESTBOOK_LIMIT} characters", "dim"))
@@ -6586,6 +6595,24 @@ class PlainFlight:
         offered = self.offered(self.state)
         return [a for a in ("sink", "hold", "climb", "launch") if a in offered]
 
+    def layer_inks(self) -> dict:
+        """The colour of each layer that has a track on the map: the track's own, so the two are read together.
+
+        The chosen track's layer is in its colour; the others in the same
+        colour further off, as their tracks are. A layer no track runs in
+        has none.
+        """
+        state, inks = self.state, {}
+        if state.status not in ("aloft", "ground") or not self.offered(state):
+            return inks
+        order = self.choices()
+        if self.choice in _TRACK_ROLES and self.choice in self.offered(state):
+            order = [self.choice] + [a for a in order if a != self.choice]
+        for action in order:                        # the chosen one first: where two end in one layer, it shows
+            layer = self.engine.preview(state, action, 1)["layer"]
+            inks.setdefault(layer, _TRACK_ROLES[action] + ("" if action == self.choice else "_dim"))
+        return inks
+
     def _choose_default(self) -> None:
         offered = self.offered(self.state)
         self.choice = "hold" if "hold" in offered else next(iter(self.choices()), None)
@@ -6813,6 +6840,32 @@ class PlainFlight:
         self.log.append(current)
         del self.log[:-3]
 
+    def _say_wear(self, before: FlightState, stamp: str) -> None:
+        """Say what the turn just flown did to the balloon, and when it has become serious.
+
+        A point from the rope is said by the rope's own line. Anything more
+        is said with what it leaves the balloon at; the turn that takes it
+        to where a hard landing would ground it says that too.
+        """
+        was, now = before.wear, self.state.wear
+        if now <= was:
+            return
+        if now >= WEAR_GROUNDED:
+            self._say(f"{stamp}  The balloon takes {now - was} wear: {now} of {WEAR_GROUNDED}. It cannot fly again "
+                      f"until it is mended.")
+        elif now >= WEAR_CRITICAL > was:
+            self._say(f"{stamp}  The balloon takes {now - was} wear: {now} of {WEAR_GROUNDED}. It is badly worn: a "
+                      f"hard landing would ground it.")
+        elif now - was > ROPE_WEAR:
+            self._say(f"{stamp}  The balloon takes {now - was} wear: {now} of {WEAR_GROUNDED}.")
+
+    def worn_text(self) -> str:
+        """The standing warning of a badly worn balloon, or nothing."""
+        wear = self.state.wear
+        if not WEAR_CRITICAL <= wear < WEAR_GROUNDED:
+            return ""
+        return f"Badly worn: {wear} of {WEAR_GROUNDED}. A hard landing would ground the balloon. Mend it."
+
     def _commit(self, action: str) -> None:
         if self.store is not None and not self._mine(write=False):
             return                        # taken over: nothing is worked out or shown from here any more
@@ -6828,6 +6881,7 @@ class PlainFlight:
             line = self._describe(event)
             if line:
                 self._say(f"{stamp}  {line}")
+        self._say_wear(before, stamp)
         self._lost_cargo()
         if self.state.status == "ditched" and (self.kits or self.crates):
             self.kits = self.crates = 0
@@ -6935,7 +6989,7 @@ class PlainFlight:
         if code in ("hold", "climb", "sink", "jettison"):
             return ""                      # the drift line says it
         if code in ("left", "right"):
-            return f"The rope is out: bearing {code} of the wind."
+            return f"The rope is out: bearing {code} of the wind. It wears the balloon a little."
         if code == "drift":
             return f"Layer {self.state.layer if self.state.layer else '-'}: {event[1]:g} km, wind {event[2]}."
         if code == "forced_climb":
@@ -7569,6 +7623,7 @@ class PlainFlight:
             label = TIER_NAMES[have] if len(tiers) > 2 else "fitted" if have else "-"
             out.append(s._kv(3 + i * 2, 1, f"`{i + 1}`  {UPGRADES[track]['name']:<12}`{label:<7}"
                                            f"{gear_text(track, tiers[have])}`", room, "text", "value"))
+            out.append(s._line(3 + i * 2, 1, str(i + 1), "accent"))         # the digit is the key
             if have + 1 >= len(tiers):
                 out.append(s._line(4 + i * 2, 6, "nothing more to fit"[:room], "dim"))
                 continue
@@ -7641,12 +7696,15 @@ class PlainFlight:
                     f"{offer['payout']:>5} pm  by Day {offer['due']}")
             text += "  aboard" if mine else "  carried" if gone else ""
             out.append(s._line(row + 1 + i, 1, text[:wide], "accent" if mine else "dim" if gone else "text"))
+            if not gone:                                # the digit is the key: it takes the contract or puts it back
+                out.append(s._line(row + 1 + i, 1, str(i + 1), "value" if mine else "accent"))
         row += 1 + max(len(offers), 1)
         if not offers:
             out.append(s._line(row - 1, 1, "Nothing on offer today.", "dim"))
         if self.relief_due():
             out.append(s._line(row, 1, "R  Relief run: the postmaster fuels and patches you on account, with a mailbag to carry."[:wide],
                                "warn"))
+            out.append(s._line(row, 1, "R", "accent"))
             row += 1
         out.append(s._line(row + 1, 1, "ABOARD", "accent"))
         going = self.forwardable()
@@ -7673,6 +7731,12 @@ class PlainFlight:
             out += s._keys(row + 3, [("K", "Station kit back" if self.kits else f"Station kit, {KIT_PRICE}"),
                                      ("T", f"Mast crate, {CRATE_PRICE}")] + ([("Y", "Crate back")] if self.crates else []))
             row += 1
+        # Why one would buy these, a line each, where there is room: what is said to the pilot comes first.
+        why = ([WHY_MEND] if state.wear else []) + ([WHY_KIT, WHY_CRATE] if town else [])
+        room = s.height - 3 - (row + 3) - (2 if self.hub_note else 0)
+        for i, line in enumerate(why[:max(0, room)]):
+            out.append(s._line(row + 3 + i, 1, line[:wide], "dim"))
+        row += len(why[:max(0, room)])
         if self.hub_note:
             out.append(s._told(row + 4, 1, self.hub_note, wide, "bright"))
         if s.notice:
@@ -7740,6 +7804,8 @@ class PlainFlight:
             out.append(s._line(base + 3, 1, s.notice[:wide], "warn"))
         elif not self.saved_ok:
             out.append(s._line(base + 3, 1, "This game cannot be saved here. Tell the SysOp. You can play on.", "warn"))
+        elif self.worn_text():
+            out.append(s._line(base + 3, 1, self.worn_text()[:wide], "warn"))
         elif launch.guest:
             out.append(s._line(base + 3, 1, "You are visiting: nothing is kept when you leave.", "dim"))
         sentence, role = self._sentence(phase)
@@ -7827,8 +7893,8 @@ class PlainFlight:
             return "Adrift. The packet boat will take a day to bring you to port.", "warn"
         if self.naming:
             offer = self.naming[0]
-            names = "   ".join(f"{i + 1} {name}" for i, name in enumerate(offer["names"]))
-            return f"Name the {offer['kind']}:   {names}", "accent"
+            names = "   ".join(f"`{i + 1}` {name}" for i, name in enumerate(offer["names"]))
+            return f"Name the {offer['kind']}:   {names}", "text"       # the digits are keys, and drawn as keys
         if phase == "wait":
             opens = when_text(calendar_opens(self.calendar, state.day), self._local(), self.launch.datetime_format)
             return f"Every day that has opened is flown. Day {state.day} opens {opens}: come back then.", "accent"
@@ -8005,7 +8071,7 @@ class PlainFlight:
         for action in ("sink", "hold", "climb", "launch"):
             if action in offered:
                 costs[self.engine.preview(state, action, 1)["layer"]] = offered[action]
-        row = 2
+        row, inks = 2, self.layer_inks()
         for layer in range(top, 0, -1):
             mark = ">" if layer == here else "*" if layer == picked else " "
             if layer < low:
@@ -8019,7 +8085,8 @@ class PlainFlight:
                 speed = math.sqrt(vx * vx + vy * vy)
                 wind = f"{' ' if read else '~'}{compass(vx, vy):>3} {speed:>3.0f}"
             cost = f"{costs[layer]:>3}" if layer in costs else "   "
-            role = "bright" if layer == here else "accent" if layer == picked else "text"
+            # A layer with a track on the map is in its track's colour; the marks say which is yours and chosen.
+            role = inks.get(layer, "bright" if layer == here else "accent" if layer == picked else "text")
             out.append(s._line(row, col, f"{mark}{layer} {LAYER_NAMES[layer - 1]:<7}{wind:<9}{cost}", role))
             row += 1
         out.append(s._line(row, col, "~ forecast, not read", "dim"))
@@ -8094,11 +8161,12 @@ class PlainFlight:
                                   (3, 2, (244, 112, 92)), (4, 2, (248, 236, 206)), (3, 3, (86, 58, 40)),
                                   (4, 3, (86, 58, 40))):
                     screen.pixel(col + dx, by + dy, c)
-        text = col + (SKY_COLS + 1 if self.map.pixels else 0)
+        text, inks = col + (SKY_COLS + 1 if self.map.pixels else 0), self.layer_inks()
         for layer in range(LAYERS, 0, -1):
             row = first + (LAYERS - layer) * 2
             mark = ">" if layer == here else "*" if layer == picked else " "
-            ink = "bright" if layer == here else "accent" if layer == picked else "text" if layer <= top else "dim"
+            ink = inks.get(layer, "bright" if layer == here else "accent" if layer == picked else
+                           "text" if layer <= top else "dim")      # a layer with a track: in its track's colour
             wind = winds[layer]
             if wind is None:
                 s._line(row, text, f"{mark}{layer} {LAYER_NAMES[layer - 1]:<8}ground", "dim")

@@ -372,6 +372,58 @@ class Stores(PostCase):
         self.assertFalse(game.hub, "not in the wild")
         self.assertEqual(game.offers(), [])
 
+    def test_wear_is_said_when_it_is_taken_and_warned_of_when_it_is_serious(self):
+        game = self.game()
+        game.state = dataclasses.replace(game.state, wear=5)
+        game._say_wear(dataclasses.replace(game.state, wear=5), "06:00")
+        game._say_wear(dataclasses.replace(game.state, wear=4), "06:00")      # the rope's point: its own line says it
+        self.assertFalse(any("wear" in line for line in game.heard))
+        game.state = dataclasses.replace(game.state, wear=15)
+        game._say_wear(dataclasses.replace(game.state, wear=5), "06:15")
+        self.assertIn("06:15  The balloon takes 10 wear: 15 of 100.", game.heard)
+        self.assertEqual(game.worn_text(), "")
+        self.assertNotIn("Badly worn", self.screen(game))
+        game.state = dataclasses.replace(game.state, wear=fw.WEAR_CRITICAL + 2)
+        game._say_wear(dataclasses.replace(game.state, wear=fw.WEAR_CRITICAL - 8), "06:30")
+        self.assertTrue(any("It is badly worn: a hard landing would ground it." in line for line in game.heard))
+        self.assertLessEqual(len(game.worn_text()), 78)
+        self.assertIn("Badly worn: 72 of 100. A hard landing would ground the balloon.", self.screen(game))
+        game.state = dataclasses.replace(game.state, wear=fw.WEAR_GROUNDED)
+        game._say_wear(dataclasses.replace(game.state, wear=80), "06:45")
+        self.assertTrue(any("cannot fly again until it is mended" in line for line in game.heard))
+        self.assertEqual(game.worn_text(), "", "grounded says so in its own words")
+        self.assertEqual(fw.WEAR_CRITICAL, fw.WEAR_GROUNDED - fw.LANDING_WEAR["hard"])
+
+    def test_a_rough_landing_says_what_it_cost(self):
+        game = self.game()
+        state = dataclasses.replace(game.state, status="aloft", layer=game.engine.lowest_open(game.state.x, game.state.y),
+                                    turn=8)
+        before = state
+        events: list = []
+        game.state = game.engine._land(state, events)
+        gained = game.state.wear - before.wear
+        game._say_wear(before, "08:00")
+        self.assertEqual(any("The balloon takes" in line for line in game.heard), gained > fw.ROPE_WEAR, gained)
+
+    def test_the_stores_say_what_their_goods_are_for(self):
+        for line in (fw.WHY_MEND, fw.WHY_KIT, fw.WHY_CRATE):
+            self.assertLessEqual(len(line), 78, line)
+        game = self.game()
+        game.hub = True
+        text = self.screen(game)
+        self.assertIn(fw.WHY_KIT, text)
+        self.assertIn(fw.WHY_CRATE, text)
+        self.assertNotIn(fw.WHY_MEND, text, "nothing is worn yet: nothing to explain")
+        game.state = dataclasses.replace(game.state, wear=12)
+        game.hub_note = "Not enough postmarks."
+        game.hub = True
+        text = self.screen(game)
+        for line in (fw.WHY_MEND, fw.WHY_KIT, fw.WHY_CRATE, "Not enough postmarks."):
+            self.assertIn(line, text)
+        rows = text.split("\n")
+        self.assertLess(next(i for i, row in enumerate(rows) if fw.WHY_CRATE in row),
+                        next(i for i, row in enumerate(rows) if "Not enough postmarks." in row))
+
     def test_leaving_the_post_office(self):
         for key in ("ESC", "b", "o"):
             game = self.game(user_id=hash(key) % 1000 + 100)
