@@ -392,6 +392,14 @@ class Stores(PostCase):
         game._say_wear(dataclasses.replace(game.state, wear=80), "06:45")
         self.assertTrue(any("cannot fly again until it is mended" in line for line in game.heard))
         self.assertEqual(game.worn_text(), "", "grounded says so in its own words")
+        game.state = dataclasses.replace(game.state, wear=fw.WEAR_GROUNDED + 4)       # a squall counts on past the mark
+        game._say_wear(dataclasses.replace(game.state, wear=98), "07:00")
+        self.assertTrue(any("takes 2 wear: 100 of 100" in line for line in game.heard), game.heard)
+        game.state = dataclasses.replace(game.state, wear=fw.WEAR_CRITICAL)
+        self.assertTrue(game.worn_text().endswith("Mend it."))
+        game.drift = {"course": None, "scored": False}
+        self.assertTrue(game.worn_text().endswith("ground the balloon."), "nothing is mended on a Drift")
+        game.drift = None
         self.assertEqual(fw.WEAR_CRITICAL, fw.WEAR_GROUNDED - fw.LANDING_WEAR["hard"])
 
     def test_a_rough_landing_says_what_it_cost(self):

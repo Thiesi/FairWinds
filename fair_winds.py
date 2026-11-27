@@ -6847,7 +6847,8 @@ class PlainFlight:
         is said with what it leaves the balloon at; the turn that takes it
         to where a hard landing would ground it says that too.
         """
-        was, now = before.wear, self.state.wear
+        # A squall can take the count past the mark that grounds: said, it stops there.
+        was, now = min(before.wear, WEAR_GROUNDED), min(self.state.wear, WEAR_GROUNDED)
         if now <= was:
             return
         if now >= WEAR_GROUNDED:
@@ -6864,7 +6865,8 @@ class PlainFlight:
         wear = self.state.wear
         if not WEAR_CRITICAL <= wear < WEAR_GROUNDED:
             return ""
-        return f"Badly worn: {wear} of {WEAR_GROUNDED}. A hard landing would ground the balloon. Mend it."
+        mend = "" if self.drift is not None else " Mend it."       # nothing is mended on a Drift or a Trial
+        return f"Badly worn: {wear} of {WEAR_GROUNDED}. A hard landing would ground the balloon.{mend}"
 
     def _commit(self, action: str) -> None:
         if self.store is not None and not self._mine(write=False):
